@@ -15,8 +15,13 @@ ktlint = "1.8.0"
 ktlintGradle = "14.2.0"
 # Benchmarks. kotlinx-benchmark drives JMH; JMH is what actually measures.
 benchmark = "0.4.17"
+# The selector loop turns readiness into something a coroutine can await; that is the only reason
+# this is here. Checked against maven-metadata.xml on 2026-08-17.
+coroutines = "1.11.0"
 
 [libraries]
+coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 benchmark-runtime = { module = "org.jetbrains.kotlinx:kotlinx-benchmark-runtime", version.ref = "benchmark" }
 
 [plugins]
