@@ -1,0 +1,27 @@
+[versions]
+# Checked against maven-metadata.xml of org.jetbrains.kotlin:kotlin-stdlib on 2026-08-17: 2.4.10 is
+# the last stable, 2.4.20-RC is a release candidate.
+kotlin = "2.4.10"
+# The Gradle wrapper is pinned to 9.7.0 and the toolchain to JDK 25. This pair is not a guess — it
+# is what the neighbouring project already builds on. Note that KGP declares a supported Gradle
+# range: raising the wrapper alone fails with a message about an unsupported Gradle version rather
+# than about Kotlin.
+#
+# The CLI and the Gradle plugin are versioned independently: the plugin only launches the CLI of the
+# requested version, so the formatter is pinned here rather than left to the plugin default. Left to
+# the default, the style shifts when the plugin is bumped — which is exactly when nobody reads the
+# diff.
+ktlint = "1.8.0"
+ktlintGradle = "14.2.0"
+# Benchmarks. kotlinx-benchmark drives JMH; JMH is what actually measures.
+benchmark = "0.4.17"
+
+[libraries]
+benchmark-runtime = { module = "org.jetbrains.kotlinx:kotlinx-benchmark-runtime", version.ref = "benchmark" }
+
+[plugins]
+kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
+# JMH needs its state classes open; Kotlin classes are final by default.
+kotlin-allopen = { id = "org.jetbrains.kotlin.plugin.allopen", version.ref = "kotlin" }
+ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlintGradle" }
+benchmark = { id = "org.jetbrains.kotlinx.benchmark", version.ref = "benchmark" }
