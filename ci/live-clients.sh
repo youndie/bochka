@@ -157,6 +157,61 @@ else
   skip "rclone" "image unavailable"
 fi
 
+# --- everything at once ------------------------------------------------------------------------
+#
+# Sequential round trips find none of the failures a shared server actually has. Two properties are
+# checked here, and the second is the one that will still matter when the draft store is replaced
+# by the real one:
+#
+#   1. eight uploads of eight different keys at the same time all arrive intact;
+#   2. eight uploads of the *same* key at the same time leave an object that is **one of them**,
+#      never a mixture. "Last writer wins" is a choice; "half of one and half of another" is
+#      corruption, and it is the shape a store gets when it writes in place instead of renaming
+#      into place.
+if have_image amazon/aws-cli:latest; then
+  aws_cli() { docker_run amazon/aws-cli:latest aws --endpoint-url "$ENDPOINT" "$@"; }
+
+  for i in $(seq 1 8); do
+    head -c 500000 /dev/urandom > "$work/par-$i.bin"
+  done
+
+  pids=()
+  for i in $(seq 1 8); do
+    aws_cli s3 cp "/work/par-$i.bin" "s3://$BUCKET/parallel/$i.bin" >/dev/null 2>&1 &
+    pids+=($!)
+  done
+  wait "${pids[@]}"
+
+  distinct_ok=true
+  for i in $(seq 1 8); do
+    aws_cli s3 cp "s3://$BUCKET/parallel/$i.bin" "/work/par-back-$i.bin" >/dev/null 2>&1 || distinct_ok=false
+    [ "$(sha256sum "$work/par-$i.bin" | cut -d\  -f1)" = "$(sha256sum "$work/par-back-$i.bin" 2>/dev/null | cut -d\  -f1)" ] ||
+      distinct_ok=false
+  done
+  $distinct_ok && pass "eight concurrent uploads of different keys" || fail "eight concurrent uploads of different keys"
+
+  pids=()
+  for i in $(seq 1 8); do
+    aws_cli s3 cp "/work/par-$i.bin" "s3://$BUCKET/parallel/contended.bin" >/dev/null 2>&1 &
+    pids+=($!)
+  done
+  wait "${pids[@]}"
+
+  if aws_cli s3 cp "s3://$BUCKET/parallel/contended.bin" /work/contended-back.bin >/dev/null 2>&1; then
+    winner=$(sha256sum "$work/contended-back.bin" | cut -d\  -f1)
+    matched=false
+    for i in $(seq 1 8); do
+      [ "$winner" = "$(sha256sum "$work/par-$i.bin" | cut -d\  -f1)" ] && matched=true
+    done
+    $matched && pass "eight concurrent uploads of one key leave one of them whole" ||
+      fail "eight concurrent uploads of one key left a mixture"
+  else
+    fail "the contended key could not be read back at all"
+  fi
+else
+  skip "concurrent uploads" "image unavailable"
+fi
+
 # --- the fourth framing, which needs TLS to appear at all --------------------------------------
 #
 # STREAMING-UNSIGNED-PAYLOAD-TRAILER cannot be provoked over plaintext: botocore decides between a
