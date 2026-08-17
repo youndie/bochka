@@ -41,13 +41,21 @@ object UriCodec {
      *   line as ISO-8859-1 and every byte survives. A char above 0xFF means somebody decoded it as
      *   UTF-8 first and the original bytes are already gone.
      */
-    fun decode(raw: String): ByteArray {
+    fun decode(
+        raw: String,
+        plusIsSpace: Boolean = false,
+    ): ByteArray {
         val out = ByteArray(raw.length)
         var n = 0
         var i = 0
         while (i < raw.length) {
             val c = raw[i]
             when {
+                plusIsSpace && c == '+' -> {
+                    out[n++] = ' '.code.toByte()
+                    i++
+                }
+
                 c == '%' -> {
                     require(i + 2 < raw.length) { "truncated percent escape at $i in '$raw'" }
                     val hi = hexDigit(raw[i + 1], raw, i)
@@ -90,6 +98,15 @@ object UriCodec {
      */
     fun encodeForListing(bytes: ByteArray): String = encode(bytes, spaceAsPlus = true, ::unreservedInListing)
 
+    /**
+     * Bytes to a query component, for canonicalising a request before checking its signature.
+     *
+     * Unreserved is `A-Za-z0-9-_.~` and **nothing else** — `/` is escaped here, because in a query
+     * it is a value rather than a separator (`docs/spec/reference/botocore-auth.py:268`). This is
+     * the third rule in this class and the narrowest of them.
+     */
+    fun encodeQueryComponent(bytes: ByteArray): String = encode(bytes, spaceAsPlus = false, ::unreservedInQuery)
+
     private inline fun encode(
         bytes: ByteArray,
         spaceAsPlus: Boolean,
@@ -125,6 +142,9 @@ object UriCodec {
 
     private fun unreservedInListing(v: Int): Boolean =
         alphanumeric(v) || v == '-'.code || v == '_'.code || v == '.'.code || v == '/'.code || v == '*'.code
+
+    private fun unreservedInQuery(v: Int): Boolean =
+        alphanumeric(v) || v == '-'.code || v == '_'.code || v == '.'.code || v == '~'.code
 
     private fun hexDigit(
         c: Char,
