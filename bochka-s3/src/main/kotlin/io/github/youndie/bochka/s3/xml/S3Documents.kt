@@ -84,8 +84,8 @@ object S3Documents {
     @Suppress("LongParameterList")
     fun listBucketResult(
         bucket: String,
-        prefix: String?,
-        delimiter: String?,
+        prefix: ByteArray?,
+        delimiter: ByteArray?,
         maxKeys: Int,
         keyCount: Int,
         isTruncated: Boolean,
@@ -94,20 +94,71 @@ object S3Documents {
         encoding: KeyEncoding,
         continuationToken: String? = null,
         nextContinuationToken: String? = null,
-        startAfter: String? = null,
+        startAfter: ByteArray? = null,
     ): ByteArray =
         XmlWriter(1024 + contents.size * 128).document("ListBucketResult") {
             text("Name", bucket)
             // Prefix is always present, empty when not asked for — clients read it back.
-            encodedText("Prefix", (prefix ?: "").toByteArray(), encoding)
-            if (delimiter != null) encodedText("Delimiter", delimiter.toByteArray(), encoding)
+            encodedText("Prefix", prefix ?: ByteArray(0), encoding)
+            if (delimiter != null) encodedText("Delimiter", delimiter, encoding)
             text("MaxKeys", maxKeys.toLong())
             text("KeyCount", keyCount.toLong())
             text("IsTruncated", isTruncated)
             if (encoding == KeyEncoding.URL) text("EncodingType", "url")
             text("ContinuationToken", continuationToken)
             text("NextContinuationToken", nextContinuationToken)
-            if (startAfter != null) encodedText("StartAfter", startAfter.toByteArray(), encoding)
+            if (startAfter != null) encodedText("StartAfter", startAfter, encoding)
+            for (entry in contents) {
+                element("Contents") {
+                    encodedText("Key", entry.key.toByteArray(), encoding)
+                    text("LastModified", entry.lastModified)
+                    text("ETag", entry.eTag)
+                    text("Size", entry.size)
+                    text("StorageClass", entry.storageClass)
+                }
+            }
+            for (commonPrefix in commonPrefixes) {
+                element("CommonPrefixes") {
+                    encodedText("Prefix", commonPrefix, encoding)
+                }
+            }
+        }
+
+    /**
+     * `<ListBucketResult>` as `ListObjects` — the first version — writes it.
+     *
+     * The root element is the same and the field set is not, which is why this is its own function
+     * rather than a flag. `shapes.ListObjectsOutput.members` has `Marker` and `NextMarker` and has
+     * neither `KeyCount` nor `ContinuationToken`; a client of v1 reading a document with the v2
+     * fields finds no marker and stops after one page.
+     *
+     * `NextMarker` goes out **only** when a delimiter was asked for — that is the model's own note
+     * on the member ("This element is returned only if you have the delimiter request parameter
+     * specified"), and it is there because without a delimiter the client can use the last key it
+     * received, while a page that ended on a rolled-up prefix has no such key.
+     */
+    @Suppress("LongParameterList")
+    fun listObjectsResult(
+        bucket: String,
+        prefix: ByteArray,
+        delimiter: ByteArray?,
+        marker: ByteArray?,
+        nextMarker: ByteArray?,
+        maxKeys: Int,
+        isTruncated: Boolean,
+        contents: List<ObjectEntry>,
+        commonPrefixes: List<ByteArray>,
+        encoding: KeyEncoding,
+    ): ByteArray =
+        XmlWriter(1024 + contents.size * 128).document("ListBucketResult") {
+            text("Name", bucket)
+            encodedText("Prefix", prefix, encoding)
+            encodedText("Marker", marker ?: ByteArray(0), encoding)
+            if (nextMarker != null) encodedText("NextMarker", nextMarker, encoding)
+            text("MaxKeys", maxKeys.toLong())
+            if (delimiter != null) encodedText("Delimiter", delimiter, encoding)
+            text("IsTruncated", isTruncated)
+            if (encoding == KeyEncoding.URL) text("EncodingType", "url")
             for (entry in contents) {
                 element("Contents") {
                     encodedText("Key", entry.key.toByteArray(), encoding)
@@ -215,15 +266,18 @@ object S3Documents {
      */
     fun listVersionsResult(
         bucket: String,
-        prefix: String?,
+        prefix: ByteArray?,
+        delimiter: ByteArray?,
         maxKeys: Int,
         isTruncated: Boolean,
         contents: List<ObjectEntry>,
+        commonPrefixes: List<ByteArray>,
         encoding: KeyEncoding,
     ): ByteArray =
         XmlWriter(1024 + contents.size * 160).document("ListVersionsResult") {
             text("Name", bucket)
-            encodedText("Prefix", (prefix ?: "").toByteArray(), encoding)
+            encodedText("Prefix", prefix ?: ByteArray(0), encoding)
+            if (delimiter != null) encodedText("Delimiter", delimiter, encoding)
             text("MaxKeys", maxKeys.toLong())
             text("IsTruncated", isTruncated)
             if (encoding == KeyEncoding.URL) text("EncodingType", "url")
@@ -236,6 +290,11 @@ object S3Documents {
                     text("ETag", entry.eTag)
                     text("Size", entry.size)
                     text("StorageClass", entry.storageClass)
+                }
+            }
+            for (commonPrefix in commonPrefixes) {
+                element("CommonPrefixes") {
+                    encodedText("Prefix", commonPrefix, encoding)
                 }
             }
         }

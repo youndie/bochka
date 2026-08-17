@@ -133,13 +133,13 @@ class ObjectStoreTest {
                 for (key in listOf("a/2", "a/10", "a/1", "b/1", "😀", "！")) s.put("b", key, key)
                 s.put("other", "a/1", "elsewhere")
 
-                val all = s.list("b", ByteArray(0), 100).map { it.first.toString() }
+                val all = s.list("b", maxKeys = 100).keys.map { it.first.toString() }
                 assertEquals(listOf("a/1", "a/10", "a/2", "b/1", "！", "😀"), all)
 
-                val underA = s.list("b", "a/".toByteArray(), 100).map { it.first.toString() }
+                val underA = s.list("b", "a/".toByteArray(), maxKeys = 100).keys.map { it.first.toString() }
                 assertEquals(listOf("a/1", "a/10", "a/2"), underA, "the prefix must bound the walk")
 
-                assertEquals(1, s.list("other", ByteArray(0), 100).size, "buckets do not leak into each other")
+                assertEquals(1, s.list("other", maxKeys = 100).size, "buckets do not leak into each other")
             }
         }
 
@@ -150,11 +150,11 @@ class ObjectStoreTest {
                 s.createBucket("b")
                 for (i in 0 until 10) s.put("b", "k$i", "v")
 
-                val first = s.list("b", ByteArray(0), 4)
-                val second = s.list("b", ByteArray(0), 4, after = first.last().first)
+                val first = s.list("b", maxKeys = 4)
+                val second = s.list("b", maxKeys = 4, startAfter = first.nextAfter)
 
-                assertEquals(listOf("k0", "k1", "k2", "k3"), first.map { it.first.toString() })
-                assertEquals(listOf("k4", "k5", "k6", "k7"), second.map { it.first.toString() })
+                assertEquals(listOf("k0", "k1", "k2", "k3"), first.keys.map { it.first.toString() })
+                assertEquals(listOf("k4", "k5", "k6", "k7"), second.keys.map { it.first.toString() })
             }
         }
 
@@ -217,7 +217,7 @@ class ObjectStoreTest {
             }
 
             store().use { s ->
-                for ((key, stored) in s.list("b", ByteArray(0), 1000)) {
+                for ((key, stored) in s.list("b", maxKeys = 1000).keys) {
                     val path = s.pathOf(stored)
                     assertTrue(Files.exists(path), "$key points at a file that is not there")
                     assertEquals(stored.size, Files.size(path), "$key has the wrong size on disk")

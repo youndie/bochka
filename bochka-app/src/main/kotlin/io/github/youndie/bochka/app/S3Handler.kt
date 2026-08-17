@@ -8,11 +8,13 @@ import io.github.youndie.bochka.http.HttpRequestParser
 import io.github.youndie.bochka.http.HttpResponse
 import io.github.youndie.bochka.s3.BucketNameRules
 import io.github.youndie.bochka.s3.ByteRanges
+import io.github.youndie.bochka.s3.ListingRequest
 import io.github.youndie.bochka.s3.ObjectHeaders
 import io.github.youndie.bochka.s3.ObjectKeyRules
 import io.github.youndie.bochka.s3.PayloadChecksums
 import io.github.youndie.bochka.s3.S3ErrorResponse
 import io.github.youndie.bochka.s3.S3Router
+import io.github.youndie.bochka.s3.UriCodec
 import io.github.youndie.bochka.s3.sigv4.AwsChunkedDecoder
 import io.github.youndie.bochka.s3.sigv4.CanonicalRequest
 import io.github.youndie.bochka.s3.sigv4.S3Error
@@ -119,8 +121,8 @@ class S3Handler(
             is S3Router.Route.DeleteBucket -> deleteBucket(head, route.bucket)
             is S3Router.Route.HeadBucket -> HttpResponse(200, "OK")
             is S3Router.Route.GetBucketLocation -> bucketLocation()
-            is S3Router.Route.ListObjectsV2 -> listObjects(head, route.bucket)
-            is S3Router.Route.ListObjects -> listObjects(head, route.bucket)
+            is S3Router.Route.ListObjectsV2 -> listObjectsV2(head, route.bucket)
+            is S3Router.Route.ListObjects -> listObjectsV1(head, route.bucket)
             is S3Router.Route.ListObjectVersions -> listVersions(head, route.bucket)
             is S3Router.Route.PutObject -> putObject(head, route, verification, body)
             is S3Router.Route.GetObject -> getObject(head, route.bucket, route.key)
@@ -167,71 +169,108 @@ class S3Handler(
         )
 
     /**
-     * A listing good enough for a client to see what it just uploaded, and no more.
+     * `ListObjectsV2` — one page, in key order, with groups rolled up.
      *
-     * No `delimiter`, no `continuation-token`, no `CommonPrefixes` — those are M6, and the jump
-     * over a group that makes `delimiter` affordable is the whole reason they are their own
-     * milestone. `IsTruncated` is answered honestly rather than always false.
+     * The walk itself is [ObjectStore.list]; what is here is the wire: which parameter says where
+     * to resume, and what the next page's token looks like.
      */
-    private fun listObjects(
+    private fun listObjectsV2(
         head: HttpRequestParser.Head,
         bucket: String,
-    ): HttpResponse {
-        val params = queryParams(head.query)
-        val prefix = params["prefix"] ?: ""
-        val maxKeys = params["max-keys"]?.toIntOrNull() ?: 1000
-        val encoding =
-            if (params["encoding-type"] == "url") S3Documents.KeyEncoding.URL else S3Documents.KeyEncoding.NONE
-
-        val found = store.list(bucket, prefix.toByteArray(), maxKeys + 1)
-        val page = found.take(maxKeys)
-
-        return xml(
+    ): HttpResponse =
+        listing(head, bucket) { request, page ->
             S3Documents.listBucketResult(
                 bucket = bucket,
-                prefix = prefix,
-                delimiter = null,
-                maxKeys = maxKeys,
+                prefix = request.prefix,
+                delimiter = request.delimiter,
+                maxKeys = request.requestedMaxKeys,
+                // KeyCount is the size of the page, and a rolled-up prefix is one of its entries.
                 keyCount = page.size,
-                isTruncated = found.size > page.size,
-                contents =
-                    page.map { (key, stored) ->
-                        S3Documents.ObjectEntry(key, timestamp(stored.lastModified), stored.eTag, stored.size)
-                    },
-                commonPrefixes = emptyList(),
-                encoding = encoding,
-            ),
-        )
-    }
+                isTruncated = page.isTruncated,
+                contents = page.entries(),
+                commonPrefixes = page.commonPrefixes,
+                encoding = request.encoding(),
+                continuationToken = request.continuationToken,
+                nextContinuationToken = page.nextAfter?.let(ListingRequest::encodeToken),
+                startAfter = request.startAfterParameter,
+            )
+        }
+
+    /**
+     * `ListObjects`, the first version, which old clients still speak.
+     *
+     * Same walk, different document: the position travels as `marker`, which is the key itself
+     * rather than an opaque token.
+     */
+    private fun listObjectsV1(
+        head: HttpRequestParser.Head,
+        bucket: String,
+    ): HttpResponse =
+        listing(head, bucket) { request, page ->
+            S3Documents.listObjectsResult(
+                bucket = bucket,
+                prefix = request.prefix,
+                delimiter = request.delimiter,
+                marker = request.marker,
+                // Only with a delimiter, per the model's own note on the member: without one the
+                // client continues from the last key it was given, and a page that ended on a
+                // rolled-up prefix has no such key.
+                nextMarker = if (request.delimiter != null) page.nextAfter else null,
+                maxKeys = request.requestedMaxKeys,
+                isTruncated = page.isTruncated,
+                contents = page.entries(),
+                commonPrefixes = page.commonPrefixes,
+                encoding = request.encoding(),
+            )
+        }
 
     /** The same listing, every object at version `null` — see [S3Documents.listVersionsResult]. */
     private fun listVersions(
         head: HttpRequestParser.Head,
         bucket: String,
-    ): HttpResponse {
-        val params = queryParams(head.query)
-        val prefix = params["prefix"] ?: ""
-        val maxKeys = params["max-keys"]?.toIntOrNull() ?: 1000
-        val encoding =
-            if (params["encoding-type"] == "url") S3Documents.KeyEncoding.URL else S3Documents.KeyEncoding.NONE
-
-        val found = store.list(bucket, prefix.toByteArray(), maxKeys + 1)
-        val page = found.take(maxKeys)
-
-        return xml(
+    ): HttpResponse =
+        listing(head, bucket) { request, page ->
             S3Documents.listVersionsResult(
                 bucket = bucket,
-                prefix = prefix,
-                maxKeys = maxKeys,
-                isTruncated = found.size > page.size,
-                contents =
-                    page.map { (key, stored) ->
-                        S3Documents.ObjectEntry(key, timestamp(stored.lastModified), stored.eTag, stored.size)
-                    },
-                encoding = encoding,
-            ),
-        )
+                prefix = request.prefix,
+                delimiter = request.delimiter,
+                maxKeys = request.requestedMaxKeys,
+                isTruncated = page.isTruncated,
+                contents = page.entries(),
+                commonPrefixes = page.commonPrefixes,
+                encoding = request.encoding(),
+            )
+        }
+
+    private inline fun listing(
+        head: HttpRequestParser.Head,
+        bucket: String,
+        document: (ListingRequest, ObjectStore.Page) -> ByteArray,
+    ): HttpResponse {
+        val request =
+            try {
+                ListingRequest.of(rawQueryParams(head.query))
+            } catch (e: ListingRequest.Malformed) {
+                return error(head, e.error, detail = e.message, bucket = bucket)
+            }
+        val page =
+            store.list(
+                bucket = bucket,
+                prefix = request.prefix,
+                delimiter = request.delimiter,
+                startAfter = request.startAfter,
+                maxKeys = request.maxKeys,
+            )
+        return xml(document(request, page))
     }
+
+    private fun ObjectStore.Page.entries(): List<S3Documents.ObjectEntry> =
+        keys.map { (key, stored) ->
+            S3Documents.ObjectEntry(key, timestamp(stored.lastModified), stored.eTag, stored.size)
+        }
+
+    private fun ListingRequest.encoding(): S3Documents.KeyEncoding =
+        if (encodeKeys) S3Documents.KeyEncoding.URL else S3Documents.KeyEncoding.NONE
 
     /**
      * The four framings collapse to two paths here, and what they share is the order.
@@ -509,7 +548,15 @@ class S3Handler(
     private fun xml(body: ByteArray): HttpResponse =
         HttpResponse(200, "OK", headers = listOf("Content-Type" to "application/xml"), body = body)
 
-    private fun queryParams(query: String): Map<String, String> =
+    /**
+     * Query parameters with their values as bytes.
+     *
+     * A prefix, a delimiter and a marker are all pieces of keys, and a key is a byte string that
+     * need not be valid UTF-8 (Р3). Decoding them to `String` on the way in would replace whatever
+     * did not decode with `U+FFFD`, and the listing would then be bounded by a prefix the client
+     * never sent.
+     */
+    private fun rawQueryParams(query: String): Map<String, ByteArray> =
         query
             .split('&')
             .filter { it.isNotEmpty() }
@@ -517,11 +564,7 @@ class S3Handler(
                 val eq = token.indexOf('=')
                 val name = if (eq < 0) token else token.substring(0, eq)
                 val value = if (eq < 0) "" else token.substring(eq + 1)
-                name to
-                    String(
-                        io.github.youndie.bochka.s3.UriCodec
-                            .decode(value, plusIsSpace = true),
-                    )
+                String(UriCodec.decode(name, plusIsSpace = true)) to UriCodec.decode(value, plusIsSpace = true)
             }
 
     private fun timestamp(instant: java.time.Instant): String = ISO.format(instant)

@@ -83,8 +83,8 @@ class S3DocumentsTest {
             S3Documents
                 .listBucketResult(
                     bucket = "photos",
-                    prefix = "my dir/",
-                    delimiter = "/",
+                    prefix = "my dir/".toByteArray(),
+                    delimiter = "/".toByteArray(),
                     maxKeys = 1000,
                     keyCount = 1,
                     isTruncated = false,

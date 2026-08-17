@@ -66,7 +66,7 @@ class ObjectStorePropertiesTest {
                     }
 
                     else -> {
-                        val listed = store.list("b", ByteArray(0), Int.MAX_VALUE)
+                        val listed = store.list("b", maxKeys = Int.MAX_VALUE).keys
                         assertEquals(
                             model.keys.sortedWith(compareBy(UNSIGNED_BYTES) { it.toByteArray() }),
                             listed.map { it.first.toString() },
@@ -76,7 +76,7 @@ class ObjectStorePropertiesTest {
                 }
             }
 
-            val listed = store.list("b", ByteArray(0), Int.MAX_VALUE)
+            val listed = store.list("b", maxKeys = Int.MAX_VALUE).keys
             assertEquals(
                 model.keys.sortedWith(compareBy(UNSIGNED_BYTES) { it.toByteArray() }),
                 listed.map { it.first.toString() },
@@ -111,7 +111,14 @@ class ObjectStorePropertiesTest {
                                     prefix,
                                 )
                             }.sortedWith(compareBy(UNSIGNED_BYTES) { it.toByteArray() })
-                    val actual = store.list("b", prefix.toByteArray(), Int.MAX_VALUE).map { it.first.toString() }
+                    val actual =
+                        store
+                            .list(
+                                "b",
+                                prefix.toByteArray(),
+                                maxKeys = Int.MAX_VALUE,
+                            ).keys
+                            .map { it.first.toString() }
                     assertEquals(expected, actual, "prefix '$prefix'")
                 }
             }

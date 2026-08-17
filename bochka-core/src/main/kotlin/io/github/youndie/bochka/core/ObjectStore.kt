@@ -9,6 +9,7 @@ import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
 import java.security.MessageDigest
 import java.time.Instant
+import java.util.Arrays
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentSkipListMap
@@ -278,25 +279,142 @@ class ObjectStore(
         return true
     }
 
-    /** Keys of one bucket from [after] onwards, in the order a listing is defined by. */
+    /**
+     * One page of a listing.
+     *
+     * [nextAfter] is what a continuation token carries: the last thing on this page, whether that
+     * was a key or a rolled-up prefix. It is `null` when the page is the last one.
+     */
+    data class Page(
+        val keys: List<Pair<ObjectKey, Stored>>,
+        val commonPrefixes: List<ByteArray>,
+        val isTruncated: Boolean,
+        val nextAfter: ByteArray?,
+        /**
+         * How many index entries the walk actually read.
+         *
+         * Reported because it is the difference between a listing that jumps over a group and one
+         * that walks through it, and the two are otherwise indistinguishable from the outside:
+         * same page, same order, same answer, a hundred thousand times the work. A test asserts on
+         * this rather than on a clock, because a clock on a shared machine measures the machine.
+         */
+        val entriesRead: Int = keys.size + commonPrefixes.size,
+    ) {
+        /** What `MaxKeys` bounds and `KeyCount` reports: a rolled-up prefix counts as one. */
+        val size: Int get() = keys.size + commonPrefixes.size
+    }
+
+    /**
+     * A page of one bucket, in the order a listing is defined by (§1.5).
+     *
+     * ## The jump
+     *
+     * With a [delimiter], every key holding it after [prefix] collapses into one `CommonPrefixes`
+     * entry. The naive way is to walk the whole group and discard it; this seeks past it instead —
+     * having emitted `photos/2019/`, the next thing read is the first key at or after the smallest
+     * string greater than everything under it. A bucket with a million objects in one directory
+     * costs one entry to list, not a million (§1.4.3). It is the reason the index is an ordered
+     * structure rather than a hash.
+     *
+     * ## Resuming
+     *
+     * [startAfter] is exclusive, and a group is skipped when it is not greater than it. That second
+     * half is what makes pagination terminate: a page truncated on a rolled-up prefix carries that
+     * prefix as its marker, and the prefix sorts **before** every key under it — so resuming
+     * without the rule would roll the same group up again, for ever.
+     */
     fun list(
         bucket: String,
-        prefix: ByteArray,
-        limit: Int,
-        after: ObjectKey? = null,
-    ): List<Pair<ObjectKey, Stored>> {
-        val from = Located(bucket, after ?: ObjectKey(prefix))
-        val out = ArrayList<Pair<ObjectKey, Stored>>(minOf(limit, 1000))
-        // tailMap and not a filter over everything: the point of keeping the index ordered is that
-        // a listing touches the keys it returns and stops.
-        for ((located, stored) in objects.tailMap(from, after == null)) {
-            if (located.bucket != bucket) break
-            val bytes = located.key.toByteArray()
+        prefix: ByteArray = ByteArray(0),
+        delimiter: ByteArray? = null,
+        startAfter: ByteArray? = null,
+        maxKeys: Int = 1000,
+    ): Page {
+        // `max-keys=0` is a question with an answer — no keys, and the listing is not truncated,
+        // which is not what a loop that stops at zero would say.
+        if (maxKeys <= 0) return Page(emptyList(), emptyList(), isTruncated = false, nextAfter = null)
+
+        val keys = ArrayList<Pair<ObjectKey, Stored>>(minOf(maxKeys, 1000))
+        val groups = ArrayList<ByteArray>()
+        var truncated = false
+        var last: ByteArray? = null
+        var read = 0
+        var cursor: ByteArray = startAfter?.let(::justAfter) ?: prefix
+
+        while (true) {
+            val entry = objects.ceilingEntry(Located(bucket, ObjectKey(cursor))) ?: break
+            read++
+            if (entry.key.bucket != bucket) break
+            val bytes = entry.key.key.toByteArray()
             if (!bytes.startsWith(prefix)) break
-            out.add(located.key to stored)
-            if (out.size == limit) break
+
+            val group = delimiter?.let { groupOf(bytes, prefix.size, it) }
+            if (group != null) {
+                if (startAfter != null && Arrays.compareUnsigned(group, startAfter) <= 0) {
+                    cursor = past(group) ?: break
+                    continue
+                }
+                if (keys.size + groups.size == maxKeys) {
+                    truncated = true
+                    break
+                }
+                groups.add(group)
+                last = group
+                cursor = past(group) ?: break
+                continue
+            }
+
+            if (keys.size + groups.size == maxKeys) {
+                truncated = true
+                break
+            }
+            keys.add(entry.key.key to entry.value)
+            last = bytes
+            cursor = justAfter(bytes)
         }
-        return out
+
+        return Page(keys, groups, truncated, if (truncated) last else null, read)
+    }
+
+    /** The smallest byte string strictly greater than [value]: itself with a zero byte appended. */
+    private fun justAfter(value: ByteArray): ByteArray = value + 0
+
+    /**
+     * The smallest byte string greater than **everything** starting with [group] — the last byte
+     * incremented, carrying.
+     *
+     * `null` when there is no such string, which happens only for a group of nothing but `0xFF`
+     * bytes: everything after it is under it, so the listing is over.
+     */
+    private fun past(group: ByteArray): ByteArray? {
+        val out = group.copyOf()
+        for (i in out.indices.reversed()) {
+            if (out[i] != 0xFF.toByte()) {
+                out[i] = (out[i] + 1).toByte()
+                return out.copyOf(i + 1)
+            }
+        }
+        return null
+    }
+
+    /** `photos/2019/a.jpg` under prefix `photos/` and delimiter `/` groups as `photos/2019/`. */
+    private fun groupOf(
+        key: ByteArray,
+        from: Int,
+        delimiter: ByteArray,
+    ): ByteArray? {
+        if (delimiter.isEmpty()) return null
+        var i = from
+        outer@ while (i <= key.size - delimiter.size) {
+            for (j in delimiter.indices) {
+                if (key[i + j] != delimiter[j]) {
+                    i++
+                    continue@outer
+                }
+            }
+            return key.copyOf(i + delimiter.size)
+        }
+        return null
     }
 
     /**

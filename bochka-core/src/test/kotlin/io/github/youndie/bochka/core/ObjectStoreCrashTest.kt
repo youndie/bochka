@@ -85,7 +85,7 @@ class ObjectStoreCrashTest {
                 process.waitFor()
 
                 ObjectStore(dir).use { store ->
-                    val survivors = store.list(CrashWriter.BUCKET, ByteArray(0), Int.MAX_VALUE)
+                    val survivors = store.list(CrashWriter.BUCKET, maxKeys = Int.MAX_VALUE).keys
                     assertTrue(survivors.isNotEmpty(), "round $round: nothing survived at all")
 
                     for ((key, stored) in survivors) {
@@ -136,7 +136,7 @@ class ObjectStoreCrashTest {
             process.waitFor()
 
             ObjectStore(dir).use { store ->
-                val before = store.list(CrashWriter.BUCKET, ByteArray(0), Int.MAX_VALUE)
+                val before = store.list(CrashWriter.BUCKET, maxKeys = Int.MAX_VALUE).keys
                 // Everything on disk is fair game for the sweep, so that whatever the crash left is
                 // collected in this one run rather than an hour from now.
                 store.sweepOrphans(olderThanMillis = -1)
