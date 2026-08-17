@@ -20,6 +20,15 @@ data class HttpResponse(
      * of the last one's body.
      */
     val close: Boolean = false,
+    /**
+     * Stated instead of the body's own size, for a response that deliberately does not carry one.
+     *
+     * `HEAD` is the case: it must announce the length the `GET` would have had. Answering zero is
+     * not a cosmetic slip — a client that checks the size after an upload concludes the object is
+     * empty and deletes it as a failed transfer, which is exactly what rclone did here while three
+     * other clients said everything was fine.
+     */
+    val contentLength: Long? = null,
 ) {
     /** Whether the body goes on the wire. `HEAD` answers with the headers of a `GET` and no body. */
     fun render(withBody: Boolean = true): ByteArray {
@@ -39,7 +48,7 @@ data class HttpResponse(
                 // Always stated, even at zero: a response without it makes the client wait for the
                 // connection to close before it believes the body ended.
                 append("Content-Length: ")
-                append(body.size)
+                append(contentLength ?: body.size.toLong())
                 append("\r\n")
                 if (close) append("Connection: close\r\n")
                 append("\r\n")
@@ -57,6 +66,7 @@ data class HttpResponse(
                     reason == other.reason &&
                     headers == other.headers &&
                     close == other.close &&
+                    contentLength == other.contentLength &&
                     body.contentEquals(other.body)
             )
 

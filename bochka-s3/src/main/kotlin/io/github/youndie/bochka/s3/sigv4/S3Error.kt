@@ -109,4 +109,49 @@ enum class S3Error(
         "The Content-Md5 you specified did not match what we received.",
         400,
     ),
+
+    /** `:654`. */
+    NO_SUCH_BUCKET(
+        "NoSuchBucket",
+        "The specified bucket does not exist",
+        404,
+    ),
+
+    /** `:684`. */
+    NO_SUCH_KEY(
+        "NoSuchKey",
+        "The specified key does not exist.",
+        404,
+    ),
+
+    /** `:769`. */
+    BUCKET_NOT_EMPTY(
+        "BucketNotEmpty",
+        "The bucket you tried to delete is not empty",
+        409,
+    ),
+
+    /**
+     * `:704`, and the code that keeps bochka honest about its own scope: a request for something
+     * it does not have is refused by name rather than answered with an empty result, which would
+     * be a lie shaped exactly like an answer.
+     */
+    NOT_IMPLEMENTED(
+        "NotImplemented",
+        "A header you provided implies functionality that is not implemented",
+        501,
+    ),
+
+    /** `:908` — the code the reference server answers a key it cannot accept with. */
+    KEY_TOO_LONG(
+        "KeyTooLongError",
+        "Your key is too long",
+        400,
+    ),
+
+    INVALID_URI(
+        "InvalidURI",
+        "Couldn't parse the specified URI.",
+        400,
+    ),
 }

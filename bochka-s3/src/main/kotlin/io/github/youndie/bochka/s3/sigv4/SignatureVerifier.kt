@@ -35,6 +35,16 @@ class SignatureVerifier(
         data class Ok(
             val accessKeyId: String,
             val payloadHash: String,
+            /**
+             * Non-null when the body arrives as signed `aws-chunked` frames, already seeded with
+             * this request's own signature.
+             *
+             * Handed over ready rather than as the ingredients to build it: the chain needs the
+             * secret, and the secret has no business leaving this class. It also means the body
+             * path cannot start before the head is verified, which is the property that makes the
+             * chain worth anything.
+             */
+            val chunkSigning: ChunkSigning? = null,
         ) : Result
 
         /**
@@ -235,7 +245,19 @@ class SignatureVerifier(
             )
 
         return if (Sigv4.signaturesMatch(expected, authorization.signature)) {
-            Result.Ok(authorization.accessKeyId, payloadHash)
+            val signing =
+                if (payloadHash in SIGNED_STREAMING) {
+                    ChunkSigning(
+                        secret = secret,
+                        timestamp = timestamp,
+                        date = authorization.date,
+                        region = authorization.region,
+                        seedSignature = authorization.signature,
+                    )
+                } else {
+                    null
+                }
+            Result.Ok(authorization.accessKeyId, payloadHash, signing)
         } else {
             Result.Failure(S3Error.SIGNATURE_DOES_NOT_MATCH, "computed $expected", canonical, stringToSign)
         }
@@ -287,6 +309,17 @@ class SignatureVerifier(
         const val MAX_PRESIGN_TTL_SECONDS: Long = 604_800
 
         const val UNSIGNED_PAYLOAD: String = "UNSIGNED-PAYLOAD"
+
+        /** The framings whose chunks carry signatures (research, §1.1). */
+        const val STREAMING_SIGNED: String = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+        const val STREAMING_SIGNED_TRAILER: String = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"
+
+        /** Frames without signatures, checksum in the trailer. What modern SDKs send by default. */
+        const val STREAMING_UNSIGNED_TRAILER: String = "STREAMING-UNSIGNED-PAYLOAD-TRAILER"
+
+        val SIGNED_STREAMING: Set<String> = setOf(STREAMING_SIGNED, STREAMING_SIGNED_TRAILER)
+
+        val ALL_STREAMING: Set<String> = SIGNED_STREAMING + STREAMING_UNSIGNED_TRAILER
 
         private val TIMESTAMP: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC)

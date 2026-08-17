@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    application
 }
 
 dependencies {
@@ -7,7 +8,14 @@ dependencies {
     implementation(project(":bochka-http"))
 
     testImplementation(kotlin("test"))
+    testImplementation(libs.coroutines.test)
 }
 
-// The `application` plugin, the distribution and the runtime profile baked into the start script
-// arrive with M11 — there is no entry point yet, and the plugin fails the build without one.
+application {
+    mainClass.set("io.github.youndie.bochka.app.Main")
+    // The runtime profile the tests and benchmarks run under, so what ships is the process that was
+    // measured. The distribution itself, its configuration and the image are M11 — what this line
+    // does today is let a live client be pointed at a real socket.
+    @Suppress("UNCHECKED_CAST")
+    applicationDefaultJvmArgs = rootProject.extra["bochkaJvmArgs"] as List<String>
+}

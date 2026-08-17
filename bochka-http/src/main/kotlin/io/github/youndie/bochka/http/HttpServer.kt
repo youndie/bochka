@@ -184,15 +184,12 @@ class HttpServer(
         var isDrained = false
             private set
 
+        /** Trailers that arrived after the final HTTP chunk, if the body was chunked. */
+        var chunkedTrailers: Map<String, String> = emptyMap()
+            private set
+
         override suspend fun forEach(consume: (ByteArray, Int, Int) -> Unit) {
-            if (head.isChunked) {
-                // Chunked at the HTTP level is only used by the streaming upload framings, which
-                // the S3 layer decodes itself — it needs the raw frames, signatures and all. So the
-                // bytes go through untouched and `aws-chunked` decides where the body ends.
-                forEachRaw(consume)
-                return
-            }
-            forEachSized(consume)
+            if (head.isChunked) forEachChunked(consume) else forEachSized(consume)
         }
 
         private suspend fun forEachSized(consume: (ByteArray, Int, Int) -> Unit) {
@@ -218,21 +215,29 @@ class HttpServer(
             isDrained = true
         }
 
-        private suspend fun forEachRaw(consume: (ByteArray, Int, Int) -> Unit) {
+        /**
+         * HTTP's own framing comes off here, and what it wrapped goes on.
+         *
+         * Passing the bytes through untouched works only while the client's chunk boundaries and
+         * the transport's happen to coincide — which they do on a direct connection and do not
+         * behind a proxy, where the layers are visibly nested (see [HttpChunkedDecoder]).
+         */
+        private suspend fun forEachChunked(consume: (ByteArray, Int, Int) -> Unit) {
+            val decoder = HttpChunkedDecoder(sink = consume)
             if (leftover.size > consumedLeftover) {
-                consume(leftover, consumedLeftover, leftover.size - consumedLeftover)
-                consumedLeftover = leftover.size
+                consumedLeftover += decoder.feed(leftover, consumedLeftover, leftover.size - consumedLeftover)
             }
             val buffer = ByteBuffer.allocate(bufferBytes)
-            while (true) {
+            while (!decoder.isComplete) {
                 buffer.clear()
                 val read = connection.readSome(buffer)
-                if (read < 0) break
+                if (read < 0) throw java.io.EOFException("body ended inside a chunked frame")
                 buffer.flip()
                 val bytes = ByteArray(buffer.remaining())
                 buffer.get(bytes)
-                consume(bytes, 0, bytes.size)
+                decoder.feed(bytes)
             }
+            chunkedTrailers = decoder.trailers
             isDrained = true
         }
 
