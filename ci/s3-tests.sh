@@ -71,15 +71,22 @@ docker run --rm --network host -v "$work:/work" "$IMAGE" bash -c '
   apt-get update -qq >/dev/null 2>&1 && apt-get install -qq -y git >/dev/null 2>&1
   git clone -q --depth 1 https://github.com/ceph/s3-tests.git /s3-tests
   cd /s3-tests
-  # pytest-timeout on top of the suite's own requirements: a test that waits on something bochka
-  # never answers otherwise burns a socket timeout, and a few dozen of those eat the whole budget
-  # before pytest can print the summary — which is the one thing this script exists to produce.
+  # pytest-timeout on top of the requirements the suite declares. A test that waits on something
+  # bochka never answers otherwise burns a socket timeout, and a few dozen of those eat the whole
+  # budget before pytest can print a summary — the one thing this script exists to produce.
+  #
+  # `signal` and not `thread`: the thread method kills the whole pytest process when a test hangs
+  # in a way it cannot interrupt, and a run that dies has no summary — which this script then
+  # correctly reports as "nothing ran". One hang must cost one test, not the score.
+  #
+  # Note for whoever edits this block: it is a single-quoted shell string, so an apostrophe in a
+  # comment ends it. That is not hypothetical, it happened here.
   pip install -q -r requirements.txt pytest-timeout >/dev/null 2>&1
   git rev-parse --short HEAD > /work/suite-revision
   python /work/make-conf.py '"$PORT"'
   S3TEST_CONF=/work/s3tests.conf timeout 5400 python -m pytest s3tests/functional/test_s3.py \
     -p no:cacheprovider -q --no-header -rN --tb=no --continue-on-collection-errors \
-    --timeout=20 --timeout-method=thread \
+    --timeout=20 --timeout-method=signal \
     > /work/pytest.out 2>&1 || true
   tail -5 /work/pytest.out
 ' 2>&1 | tail -6

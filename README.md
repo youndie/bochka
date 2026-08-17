@@ -107,8 +107,15 @@ coverage. It is not the metric.
 
 That percentage is also the one number here that means something outside this repository: how much
 of `ceph/s3-tests` a single-process JVM store passes is comparable with other implementations,
-which is true of no benchmark this project could run on its own. It gets published as soon as it
-exists, ahead of everything else.
+which is true of no benchmark this project could run on its own. So it is published as soon as it
+exists, ahead of everything else:
+
+> **97 of 746 passed (13%)** — `ceph/s3-tests` at `5522d1c`, 2m15s, `./ci/s3-tests.sh`.
+
+Low, and it should be: there is no storage yet, only a draft of one, and most of the suite exercises
+versioning, ACLs, lifecycle and IAM. What the number is for is the direction it moves, which is why
+the count of tests that ran is printed beside it — a rising score and a shrinking suite look
+identical otherwise.
 
 ## What bochka is not
 
