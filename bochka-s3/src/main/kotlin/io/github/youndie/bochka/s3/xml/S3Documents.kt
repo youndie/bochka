@@ -203,6 +203,44 @@ object S3Documents {
         }
 
     /**
+     * `<ListVersionsResult>`: the same listing, with every object at version `null`.
+     *
+     * Not a versioning feature, and that is the point. `ListObjectVersions` is how a client lists a
+     * bucket that *has* no versioning — real S3 answers it on a non-versioned bucket with the
+     * objects and `VersionId=null` — so refusing it as unimplemented is wrong in the same way an
+     * empty listing would be: both answer a question that has a defined answer.
+     *
+     * Found by the compatibility suite, whose cleanup fixture calls this before every single test.
+     * A `501` here errored 837 of 838 tests without any of them reaching the thing they check.
+     */
+    fun listVersionsResult(
+        bucket: String,
+        prefix: String?,
+        maxKeys: Int,
+        isTruncated: Boolean,
+        contents: List<ObjectEntry>,
+        encoding: KeyEncoding,
+    ): ByteArray =
+        XmlWriter(1024 + contents.size * 160).document("ListVersionsResult") {
+            text("Name", bucket)
+            encodedText("Prefix", (prefix ?: "").toByteArray(), encoding)
+            text("MaxKeys", maxKeys.toLong())
+            text("IsTruncated", isTruncated)
+            if (encoding == KeyEncoding.URL) text("EncodingType", "url")
+            for (entry in contents) {
+                element("Version") {
+                    encodedText("Key", entry.key.toByteArray(), encoding)
+                    text("VersionId", "null")
+                    text("IsLatest", true)
+                    text("LastModified", entry.lastModified)
+                    text("ETag", entry.eTag)
+                    text("Size", entry.size)
+                    text("StorageClass", entry.storageClass)
+                }
+            }
+        }
+
+    /**
      * `<DeleteResult>`. In quiet mode the successes are left out and only the failures are
      * reported; the caller decides, this only writes what it is given.
      */

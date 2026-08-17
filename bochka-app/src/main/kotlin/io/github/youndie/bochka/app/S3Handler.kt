@@ -12,6 +12,7 @@ import io.github.youndie.bochka.s3.sigv4.CanonicalRequest
 import io.github.youndie.bochka.s3.sigv4.S3Error
 import io.github.youndie.bochka.s3.sigv4.SignatureVerifier
 import io.github.youndie.bochka.s3.xml.S3Documents
+import io.github.youndie.bochka.s3.xml.S3Requests
 import java.io.ByteArrayOutputStream
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -83,10 +84,12 @@ class S3Handler(
             is S3Router.Route.GetBucketLocation -> bucketLocation()
             is S3Router.Route.ListObjectsV2 -> listObjects(head, route.bucket)
             is S3Router.Route.ListObjects -> listObjects(head, route.bucket)
+            is S3Router.Route.ListObjectVersions -> listVersions(head, route.bucket)
             is S3Router.Route.PutObject -> putObject(head, route, verification, body)
             is S3Router.Route.GetObject -> getObject(head, route.bucket, route.key)
             is S3Router.Route.HeadObject -> getObject(head, route.bucket, route.key, withBody = false)
             is S3Router.Route.DeleteObject -> deleteObject(route.bucket, route.key)
+            is S3Router.Route.DeleteObjects -> deleteObjects(route.bucket, body)
             else -> error(head, S3Error.NOT_IMPLEMENTED, detail = "not implemented: $route")
         }
     }
@@ -159,6 +162,35 @@ class S3Handler(
                         S3Documents.ObjectEntry(key, timestamp(stored.lastModified), stored.eTag, stored.size)
                     },
                 commonPrefixes = emptyList(),
+                encoding = encoding,
+            ),
+        )
+    }
+
+    /** The same listing, every object at version `null` — see [S3Documents.listVersionsResult]. */
+    private fun listVersions(
+        head: HttpRequestParser.Head,
+        bucket: String,
+    ): HttpResponse {
+        val params = queryParams(head.query)
+        val prefix = params["prefix"] ?: ""
+        val maxKeys = params["max-keys"]?.toIntOrNull() ?: 1000
+        val encoding =
+            if (params["encoding-type"] == "url") S3Documents.KeyEncoding.URL else S3Documents.KeyEncoding.NONE
+
+        val found = store.list(bucket, prefix.toByteArray(), maxKeys + 1)
+        val page = found.take(maxKeys)
+
+        return xml(
+            S3Documents.listVersionsResult(
+                bucket = bucket,
+                prefix = prefix,
+                maxKeys = maxKeys,
+                isTruncated = found.size > page.size,
+                contents =
+                    page.map { (key, stored) ->
+                        S3Documents.ObjectEntry(key, timestamp(stored.lastModified), stored.eTag, stored.size)
+                    },
                 encoding = encoding,
             ),
         )
@@ -287,6 +319,30 @@ class S3Handler(
         )
     }
 
+    /**
+     * `POST /<bucket>?delete` — the batch delete, and the operation whose absence is felt long
+     * before anybody asks for it: it is how `aws s3 rm --recursive`, `mc rm --recursive` and every
+     * test-suite cleanup empties a bucket. Without it a bucket can be filled and never emptied,
+     * and the compatibility suite errors every test after the first in its own teardown.
+     */
+    private suspend fun deleteObjects(
+        bucket: String,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        val collected = ByteArrayOutputStream()
+        body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+        val request = S3Requests.parseDelete(collected.toByteArray())
+
+        val deleted = mutableListOf<S3Documents.DeletedEntry>()
+        for (key in request.keys) {
+            store.delete(bucket, key)
+            // Deleting what is not there is a success in S3, so every key is reported deleted.
+            deleted += S3Documents.DeletedEntry(key)
+        }
+        // In quiet mode only failures are reported, and there are none to report.
+        return xml(S3Documents.deleteResult(if (request.quiet) emptyList() else deleted, emptyList()))
+    }
+
     private fun deleteObject(
         bucket: String,
         key: ObjectKey,
@@ -307,12 +363,14 @@ class S3Handler(
             is S3Router.Route.HeadBucket -> route.bucket
             is S3Router.Route.GetBucketLocation -> route.bucket
             is S3Router.Route.ListObjectsV2 -> route.bucket
+            is S3Router.Route.ListObjectVersions -> route.bucket
             is S3Router.Route.ListObjects -> route.bucket
             is S3Router.Route.DeleteObjects -> route.bucket
             is S3Router.Route.PutObject -> route.bucket
             is S3Router.Route.GetObject -> route.bucket
             is S3Router.Route.HeadObject -> route.bucket
             is S3Router.Route.DeleteObject -> route.bucket
+            is S3Router.Route.DeleteObjects -> route.bucket
             else -> null
         }
 

@@ -25,16 +25,20 @@ object Main {
 
         // Two by default, because the compatibility suite needs two and a server built around one
         // key cannot run half of it (research, §1.11.1).
+        // `BOCHKA_KEYS=id:secret,id2:secret2`. A list rather than a fixed pair, because the
+        // compatibility suite wants three — main, alt and tenant — and a server shaped around one
+        // key cannot run half of what it is going to be measured by (research, §1.11.1).
         val credentials =
             Credentials(
-                mapOf(
-                    (env("BOCHKA_ACCESS_KEY") ?: "bochkaadmin") to (env("BOCHKA_SECRET_KEY") ?: "bochkasecret"),
-                    (
-                        env(
-                            "BOCHKA_ALT_ACCESS_KEY",
-                        ) ?: "bochkaalt"
-                    ) to (env("BOCHKA_ALT_SECRET_KEY") ?: "bochkaaltsecret"),
-                ),
+                env("BOCHKA_KEYS")
+                    ?.split(",")
+                    ?.filter { it.isNotBlank() }
+                    ?.associate { pair ->
+                        val colon = pair.indexOf(':')
+                        require(colon > 0) { "BOCHKA_KEYS entries look like id:secret, got '$pair'" }
+                        pair.substring(0, colon).trim() to pair.substring(colon + 1).trim()
+                    }
+                    ?: mapOf("bochkaadmin" to "bochkasecret", "bochkaalt" to "bochkaaltsecret"),
             )
 
         val handler =

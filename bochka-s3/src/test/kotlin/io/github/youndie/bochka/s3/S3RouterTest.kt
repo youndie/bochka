@@ -121,10 +121,19 @@ class S3RouterTest {
     }
 
     @Test
+    fun `listing versions is answered, because a bucket without versioning still has an answer`() {
+        // It looks like a versioning feature and is not one: `?versions` is how a client lists a
+        // bucket that has no versioning, and the answer is the objects at version `null`. Refusing
+        // it makes a store unusable rather than unversioned — the compatibility suite calls it
+        // before every single test to clean up, and a 501 errored 837 of 838 tests before any of
+        // them reached what they check.
+        assertEquals(S3Router.Route.ListObjectVersions("photos"), pathStyle.route("GET", "h", "/photos", "versions"))
+    }
+
+    @Test
     fun `what bochka does not implement is refused by name rather than answered`() {
         // The important half. `GET /photos?versions` answered with an empty listing tells the
         // client there are no versions, which is a lie shaped exactly like an answer.
-        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos", "versions"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos", "acl"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "versioning"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos/a.txt", "acl"))

@@ -51,6 +51,17 @@ class S3Router(
             val bucket: String,
         ) : Route
 
+        /**
+         * `GET /<bucket>?versions`, and it is here despite versioning being out of scope.
+         *
+         * A client uses it to list a bucket that has no versioning — the answer is the objects at
+         * version `null`. Refusing it is what makes a store unusable rather than unversioned:
+         * the compatibility suite calls it before every test to clean up.
+         */
+        data class ListObjectVersions(
+            val bucket: String,
+        ) : Route
+
         data class DeleteObjects(
             val bucket: String,
         ) : Route
@@ -108,9 +119,15 @@ class S3Router(
         /**
          * A well-formed request for something bochka does not implement.
          *
-         * Deliberately not the same as a malformed one: `GET /bucket?versions` deserves
-         * `NotImplemented`, and answering it with an empty listing would be a lie shaped exactly
-         * like an answer — the client would conclude there are no versions.
+         * Deliberately not the same as a malformed one: `GET /bucket?lifecycle` deserves
+         * `NotImplemented`, and answering it with an empty configuration would be a lie shaped
+         * exactly like an answer — the client would conclude there are no rules.
+         *
+         * The line between the two is narrower than it looks. `?versions` was on this side of it
+         * until the compatibility suite showed otherwise: listing versions of a bucket that has no
+         * versioning is not an unimplemented feature, it is a question with a defined answer
+         * (every object at version `null`). Refusing it made 837 of 838 tests error in a cleanup
+         * fixture before reaching anything they were about.
          */
         data class NotImplemented(
             val what: String,
@@ -162,6 +179,10 @@ class S3Router(
 
                     "uploads" in params -> {
                         Route.ListMultipartUploads(bucket)
+                    }
+
+                    "versions" in params -> {
+                        Route.ListObjectVersions(bucket)
                     }
 
                     params["list-type"] == "2" -> {
@@ -305,7 +326,6 @@ class S3Router(
                 "acl",
                 "policy",
                 "versioning",
-                "versions",
                 "lifecycle",
                 "cors",
                 "tagging",
