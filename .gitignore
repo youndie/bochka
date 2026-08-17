@@ -1,0 +1,12 @@
+.gradle/
+build/
+.kotlin/
+.idea/
+*.iml
+.DS_Store
+local.properties
+
+# Anything a measurement writes. Measurements go to build/measurements on purpose — a run that
+# lands in /tmp is measuring tmpfs, that is, memory (see CLAUDE.md).
+/data/
+*.log

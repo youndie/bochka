@@ -1,0 +1,25 @@
+# The style lives here, not in the plugin defaults: otherwise it shifts when the plugin is bumped
+# rather than when we decide to change it.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{kt,kts}]
+indent_style = space
+indent_size = 4
+# 120, not the default 140. Storage code is full of arithmetic that reads better wrapped than
+# stretched, and 120 is what fits two files side by side on a laptop.
+max_line_length = 120
+ktlint_code_style = ktlint_official
+
+[*.{json,yml,yaml,toml}]
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Markdown uses trailing spaces for hard line breaks; trimming them silently reflows documents.
+trim_trailing_whitespace = false
