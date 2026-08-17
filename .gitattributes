@@ -1,0 +1,11 @@
+# Everything under docs/spec is a byte-exact snapshot of somebody else's artefact, and several of
+# them are wire captures where CRLF is data rather than a line ending. Git's end-of-line
+# normalisation rewrites those on commit — with `core.autocrlf=input` set globally it silently
+# stripped four bytes out of an `aws-chunked` body here, which the decoder then correctly rejected.
+#
+# The reason this is worth a file of its own: the corruption happens on the way *into* the
+# repository, so the working copy stays valid and the tests stay green for whoever committed them.
+# It only appears on a fresh clone — that is, in CI and for every other reader.
+#
+# `-text` and not `binary`: conversion off, but diffs still readable.
+docs/spec/** -text
