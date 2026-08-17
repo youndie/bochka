@@ -45,7 +45,10 @@ class ObjectStorePropertiesTest {
                     in 0..5 -> {
                         val k = key(random)
                         val value = "value-$step"
-                        store.put("b", ObjectKey.of(k), null) { out -> out.write(value.toByteArray()) }
+                        store.put("b", ObjectKey.of(k), Metadata.EMPTY) { out ->
+                            val bytes = value.toByteArray()
+                            out.write(bytes, 0, bytes.size)
+                        }
                         model[k] = value
                     }
 
@@ -94,7 +97,10 @@ class ObjectStorePropertiesTest {
                 repeat(500) {
                     val k = key(random)
                     all.add(k)
-                    store.put("b", ObjectKey.of(k), null) { out -> out.write(k.toByteArray()) }
+                    store.put("b", ObjectKey.of(k), Metadata.EMPTY) { out ->
+                        val bytes = k.toByteArray()
+                        out.write(bytes, 0, bytes.size)
+                    }
                 }
 
                 for (prefix in listOf("", "a", "a/", "b", "é", "😀")) {

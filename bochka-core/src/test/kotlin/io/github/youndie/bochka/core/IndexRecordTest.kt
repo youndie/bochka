@@ -20,9 +20,39 @@ class IndexRecordTest {
                 size = 1_234_567_890L,
                 eTag = "\"d41d8cd98f00b204e9800998ecf8427e\"",
                 lastModifiedMillis = 1_755_400_000_000L,
-                contentType = "text/plain; charset=utf-8",
+                metadata =
+                    Metadata(
+                        contentType = "text/plain; charset=utf-8",
+                        cacheControl = "max-age=60",
+                        contentDisposition = "attachment; filename=\"b.txt\"",
+                        contentEncoding = "gzip",
+                        contentLanguage = "ru",
+                        expires = "Thu, 01 Jan 2026 00:00:00 GMT",
+                        user = mapOf("x-amz-meta-owner" to "youndie", "x-amz-meta-empty" to ""),
+                        checksum = Metadata.Checksum("crc32c", "AAAAAA=="),
+                    ),
             ),
         )
+    }
+
+    @Test
+    fun `an empty metadata value is a value, not an absence`() {
+        // `x-amz-meta-x:` with nothing after the colon is a header S3 keeps and returns. Encoding
+        // absence as an empty field would fold the two together, and the object would come back
+        // without a header it was uploaded with.
+        val record =
+            IndexRecord.Put(
+                bucket = "b",
+                key = ObjectKey.of("k"),
+                fileId = "id",
+                size = 0,
+                eTag = "\"e\"",
+                lastModifiedMillis = 0,
+                metadata = Metadata(contentType = "", user = mapOf("x-amz-meta-x" to "")),
+            )
+        val decoded = IndexRecord.decode(IndexRecord.encode(record)) as IndexRecord.Put
+        assertEquals("", decoded.metadata.contentType)
+        assertEquals(mapOf("x-amz-meta-x" to ""), decoded.metadata.user)
     }
 
     @Test
@@ -43,9 +73,10 @@ class IndexRecordTest {
                 size = 0,
                 eTag = "\"e\"",
                 lastModifiedMillis = 0,
-                contentType = null,
+                metadata = Metadata.EMPTY,
             )
-        assertEquals(null, (IndexRecord.decode(IndexRecord.encode(record)) as IndexRecord.Put).contentType)
+        val decoded = IndexRecord.decode(IndexRecord.encode(record)) as IndexRecord.Put
+        assertEquals(Metadata.EMPTY, decoded.metadata)
     }
 
     @Test
@@ -64,7 +95,7 @@ class IndexRecordTest {
                         size = 111,
                         eTag = "etag-value",
                         lastModifiedMillis = 222,
-                        contentType = "content-type",
+                        metadata = Metadata(contentType = "content-type"),
                     ),
                 ),
             ) as IndexRecord.Put
@@ -75,7 +106,7 @@ class IndexRecordTest {
         assertEquals(111, decoded.size)
         assertEquals("etag-value", decoded.eTag)
         assertEquals(222, decoded.lastModifiedMillis)
-        assertEquals("content-type", decoded.contentType)
+        assertEquals("content-type", decoded.metadata.contentType)
     }
 
     @Test

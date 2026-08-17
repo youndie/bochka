@@ -1,7 +1,7 @@
 package io.github.youndie.bochka.core
 
 import java.io.Closeable
-import java.io.OutputStream
+import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
@@ -62,8 +62,25 @@ class ObjectStore(
         val size: Long,
         val eTag: String,
         val lastModified: Instant,
-        val contentType: String?,
+        val metadata: Metadata,
     )
+
+    /**
+     * Where the bytes of an object go.
+     *
+     * The same shape as every other byte path in the server — [HttpHandler.RequestBody.forEach],
+     * the `aws-chunked` decoder, the HTTP chunk decoder — and that is the point of it having a name
+     * (M-76). It was a `java.io.OutputStream` first, which meant the one place bytes are written
+     * had a second description of the same thing, with a hand-rolled one-byte array in it for a
+     * `write(Int)` nobody calls.
+     */
+    fun interface Sink {
+        fun write(
+            bytes: ByteArray,
+            offset: Int,
+            length: Int,
+        )
+    }
 
     private data class Located(
         val bucket: String,
@@ -116,7 +133,7 @@ class ObjectStore(
                                 size = record.size,
                                 eTag = record.eTag,
                                 lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
-                                contentType = record.contentType,
+                                metadata = record.metadata,
                             )
                     }
                 }
@@ -152,9 +169,29 @@ class ObjectStore(
     suspend fun put(
         bucket: String,
         key: ObjectKey,
-        contentType: String?,
-        write: suspend (OutputStream) -> Unit,
-    ): Stored {
+        metadata: Metadata,
+        write: suspend (Sink) -> Unit,
+    ): Stored = commit(bucket, key, metadata, stage(write))
+
+    /**
+     * An object's bytes on the disk, not yet anybody's.
+     *
+     * Written, checksummed and `fsync`ed, and pointed at by nothing — so a crash here leaves an
+     * orphan for [sweepOrphans] and nothing else. It becomes an object at [commit] and disappears
+     * at [discard].
+     *
+     * The two steps are apart because the decision to keep the bytes can depend on the bytes: a
+     * `Content-MD5` that turns out not to describe them, a chunk signature that does not verify.
+     * Deleting the key afterwards would be the wrong repair — it destroys the object that was
+     * already there, so a refused overwrite would cost the client the version it had.
+     */
+    data class Staged(
+        val fileId: String,
+        val size: Long,
+        val eTag: String,
+    )
+
+    suspend fun stage(write: suspend (Sink) -> Unit): Staged {
         val fileId = UUID.randomUUID().toString()
         val target = pathOf(fileId)
         Files.createDirectories(target.parent)
@@ -163,61 +200,64 @@ class ObjectStore(
         val digest = MessageDigest.getInstance("MD5")
         var size = 0L
         FileChannel.open(partial, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { channel ->
-            val sink =
-                object : OutputStream() {
-                    private val one = ByteArray(1)
-
-                    override fun write(b: Int) {
-                        one[0] = b.toByte()
-                        write(one, 0, 1)
-                    }
-
-                    override fun write(
-                        b: ByteArray,
-                        off: Int,
-                        len: Int,
-                    ) {
-                        var written = 0
-                        val buffer = java.nio.ByteBuffer.wrap(b, off, len)
-                        while (buffer.hasRemaining()) written += channel.write(buffer)
-                        digest.update(b, off, len)
-                        size += len
-                    }
-                }
-            write(sink)
+            write { bytes, offset, length ->
+                val buffer = ByteBuffer.wrap(bytes, offset, length)
+                while (buffer.hasRemaining()) channel.write(buffer)
+                digest.update(bytes, offset, length)
+                size += length
+            }
             // The barrier that makes the rename mean something. Without it the file exists and its
             // contents do not, and the index would be pointing at a hole.
             if (durability == Durability.FSYNC) channel.force(true)
         }
         Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE)
 
+        return Staged(
+            fileId = fileId,
+            size = size,
+            eTag = "\"" + digest.digest().joinToString("") { "%02x".format(it) } + "\"",
+        )
+    }
+
+    /** Makes [staged] the object at [key]. Everything before this point is invisible. */
+    fun commit(
+        bucket: String,
+        key: ObjectKey,
+        metadata: Metadata,
+        staged: Staged,
+    ): Stored {
         val stored =
             Stored(
-                fileId = fileId,
-                size = size,
-                eTag = "\"" + digest.digest().joinToString("") { "%02x".format(it) } + "\"",
+                fileId = staged.fileId,
+                size = staged.size,
+                eTag = staged.eTag,
                 lastModified = Instant.now(),
-                contentType = contentType,
+                metadata = metadata,
             )
 
         // Only now does the object exist as far as anybody asking is concerned.
         val previous = objects.put(Located(bucket, key), stored)
-        this.write(
+        write(
             IndexRecord.Put(
                 bucket = bucket,
                 key = key,
-                fileId = fileId,
-                size = size,
+                fileId = stored.fileId,
+                size = stored.size,
                 eTag = stored.eTag,
                 lastModifiedMillis = stored.lastModified.toEpochMilli(),
-                contentType = contentType,
+                metadata = metadata,
             ),
         )
 
         // The replaced file goes after the index stops pointing at it, and a reader that opened it
-        // before that keeps reading — the descriptor outlives the name.
+        // before that keeps reading — the descriptor outlives the name (Р2, M-44).
         if (previous != null) Files.deleteIfExists(pathOf(previous.fileId))
         return stored
+    }
+
+    /** Throws away bytes that were written and turned out not to be wanted. */
+    fun discard(staged: Staged) {
+        Files.deleteIfExists(pathOf(staged.fileId))
     }
 
     fun get(

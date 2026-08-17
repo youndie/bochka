@@ -157,7 +157,44 @@ class HttpServer(
         head: HttpRequestParser.Head,
         response: HttpResponse,
     ) {
-        connection.writeFully(ByteBuffer.wrap(response.render(withBody = head.method != "HEAD")))
+        val withBody = head.method != "HEAD"
+        connection.writeFully(ByteBuffer.wrap(response.render(withBody = withBody)))
+        val file = response.file ?: return
+        if (withBody) sendFile(connection, file)
+    }
+
+    /**
+     * The object's bytes, straight from the page cache to the socket.
+     *
+     * `transferTo` and not a read-write loop, and the target is the connection's own
+     * [Connection.transferTarget] rather than anything wrapping it: the JDK takes the `sendfile`
+     * path only when the destination is a real `SocketChannelImpl`, and any decorator silently
+     * turns this into a copy through the heap that returns identical bytes (§1.6.3). That is what
+     * M-60 gates and what M-61 measures.
+     *
+     * The loop is not optional. `transferTo` is allowed to move fewer bytes than asked — on a
+     * non-blocking socket it returns as soon as the send buffer is full — and a zero means the
+     * socket is not writable rather than that the file ended, so the connection is waited on.
+     */
+    private suspend fun sendFile(
+        connection: Connection,
+        file: HttpResponse.FileSlice,
+    ) {
+        java.nio.channels.FileChannel
+            .open(file.path, java.nio.file.StandardOpenOption.READ)
+            .use { source ->
+                var position = file.offset
+                var remaining = file.length
+                while (remaining > 0) {
+                    val moved = source.transferTo(position, remaining, connection.transferTarget)
+                    if (moved > 0) {
+                        position += moved
+                        remaining -= moved
+                    } else {
+                        connection.awaitWritable()
+                    }
+                }
+            }
     }
 
     override fun close() {

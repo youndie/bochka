@@ -3,17 +3,23 @@ package io.github.youndie.bochka.http
 import java.nio.charset.StandardCharsets
 
 /**
- * A response with its body already in hand.
+ * A response, whose body is either bytes already in hand or a stretch of a file.
  *
- * Enough for everything the server answers except `GET` of an object, which will hand the socket to
- * `transferTo` instead of building a byte array (M-59). That one is deliberately not modelled yet:
- * a "body or file" union invented before the file path exists would be shaped by guesswork.
+ * Both cases exist because the two are genuinely different responses. Everything the server says
+ * about itself — XML documents, errors — is small and assembled; the body of a `GET` is an object
+ * that can be five gigabytes, and reading it into a `ByteArray` to answer would defeat the point of
+ * never holding one. The file case is what M-59 hands to `transferTo`.
  */
 data class HttpResponse(
     val status: Int,
     val reason: String,
     val headers: List<Pair<String, String>> = emptyList(),
     val body: ByteArray = EMPTY,
+    /**
+     * The body as a stretch of a file, when there is one. Mutually exclusive with [body]; the
+     * server writes the head, then the file.
+     */
+    val file: FileSlice? = null,
     /**
      * Set when the connection cannot be reused — a refusal whose body was never read, for
      * instance. Keeping such a connection alive means the next request on it starts in the middle
@@ -30,6 +36,19 @@ data class HttpResponse(
      */
     val contentLength: Long? = null,
 ) {
+    /**
+     * A stretch of a file to answer with: the whole object, or the part a `Range` asked for.
+     *
+     * Held as a path and not an open channel because a response outlives neither — the server opens
+     * it when it writes it, and a handler that opened it would have to close it on every path a
+     * response can fail on.
+     */
+    data class FileSlice(
+        val path: java.nio.file.Path,
+        val offset: Long,
+        val length: Long,
+    )
+
     /** Whether the body goes on the wire. `HEAD` answers with the headers of a `GET` and no body. */
     fun render(withBody: Boolean = true): ByteArray {
         val head =
@@ -48,7 +67,7 @@ data class HttpResponse(
                 // Always stated, even at zero: a response without it makes the client wait for the
                 // connection to close before it believes the body ended.
                 append("Content-Length: ")
-                append(contentLength ?: body.size.toLong())
+                append(contentLength ?: file?.length ?: body.size.toLong())
                 append("\r\n")
                 if (close) append("Connection: close\r\n")
                 append("\r\n")
@@ -67,6 +86,7 @@ data class HttpResponse(
                     headers == other.headers &&
                     close == other.close &&
                     contentLength == other.contentLength &&
+                    file == other.file &&
                     body.contentEquals(other.body)
             )
 

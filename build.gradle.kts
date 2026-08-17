@@ -116,6 +116,12 @@ subprojects {
                     .dir("docs/spec")
                     .asFile.absolutePath,
             )
+            // The end-to-end tests drive the server with the JDK's own HTTP client, and one thing
+            // they have to be able to set is `Host`: it decides virtual-hosted routing and it is
+            // signed, so a mismatch between the two is exactly the failure worth reproducing. The
+            // client refuses to set it unless told to here.
+            systemProperty("jdk.httpclient.allowRestrictedHeaders", "host")
+
             testLogging {
                 events("failed")
                 exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

@@ -26,7 +26,10 @@ class ObjectStoreTest {
         bucket: String,
         key: String,
         content: String,
-    ) = put(bucket, ObjectKey.of(key), "text/plain") { out -> out.write(content.toByteArray()) }
+    ) = put(bucket, ObjectKey.of(key), Metadata(contentType = "text/plain")) { out ->
+        val bytes = content.toByteArray()
+        out.write(bytes, 0, bytes.size)
+    }
 
     private fun ObjectStore.read(
         bucket: String,
@@ -229,10 +232,10 @@ class ObjectStoreTest {
         runTest {
             store().use { s ->
                 s.createBucket("b")
-                val stored = s.put("b", ObjectKey.of("empty"), null) { }
+                val stored = s.put("b", ObjectKey.of("empty"), Metadata.EMPTY) { }
 
                 assertEquals(0, stored.size)
-                assertNull(stored.contentType)
+                assertNull(stored.metadata.contentType)
                 assertNotNull(s.get("b", ObjectKey.of("empty")))
                 assertContentEquals(ByteArray(0), Files.readAllBytes(s.pathOf(stored)))
             }

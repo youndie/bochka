@@ -27,6 +27,15 @@ interface Connection : Closeable {
     suspend fun readSome(buffer: ByteBuffer): Int
 
     suspend fun writeFully(buffer: ByteBuffer)
+
+    /**
+     * Suspends until the socket will take more.
+     *
+     * Needed by the one writer that does not go through [writeFully]: `transferTo` writes to the
+     * channel itself, so when it returns zero there is no buffer to retry with — only a socket to
+     * wait on.
+     */
+    suspend fun awaitWritable()
 }
 
 /** Non-blocking transport: readiness comes from [SelectorLoop], the coroutine suspends meanwhile. */
@@ -53,6 +62,8 @@ class SelectorConnection(
             if (channel.write(buffer) == 0) loop.awaitWritable(key)
         }
     }
+
+    override suspend fun awaitWritable() = loop.awaitWritable(key)
 
     override fun close() {
         key.cancel()

@@ -108,8 +108,9 @@ class ObjectStoreCrashTest {
 
                     // And the store is usable: it keeps writing from the boundary recovery chose.
                     runBlocking {
-                        store.put(CrashWriter.BUCKET, ObjectKey.of("after-the-crash"), null) { out ->
-                            out.write("still works".toByteArray())
+                        store.put(CrashWriter.BUCKET, ObjectKey.of("after-the-crash"), Metadata.EMPTY) { out ->
+                            val bytes = "still works".toByteArray()
+                            out.write(bytes, 0, bytes.size)
                         }
                     }
                     assertEquals(
@@ -189,7 +190,10 @@ object CrashWriter {
         runBlocking {
             while (true) {
                 val key = ObjectKey.of("object-$stored")
-                store.put(BUCKET, key, "text/plain") { out -> out.write(contentOf(key).toByteArray()) }
+                store.put(BUCKET, key, Metadata(contentType = "text/plain")) { out ->
+                    val bytes = contentOf(key).toByteArray()
+                    out.write(bytes, 0, bytes.size)
+                }
                 stored++
                 println("$PROGRESS $stored")
                 System.out.flush()

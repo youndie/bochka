@@ -1,11 +1,16 @@
 package io.github.youndie.bochka.app
 
+import io.github.youndie.bochka.core.Metadata
 import io.github.youndie.bochka.core.ObjectKey
 import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.http.HttpHandler
 import io.github.youndie.bochka.http.HttpRequestParser
 import io.github.youndie.bochka.http.HttpResponse
+import io.github.youndie.bochka.s3.BucketNameRules
+import io.github.youndie.bochka.s3.ByteRanges
+import io.github.youndie.bochka.s3.ObjectHeaders
 import io.github.youndie.bochka.s3.ObjectKeyRules
+import io.github.youndie.bochka.s3.PayloadChecksums
 import io.github.youndie.bochka.s3.S3ErrorResponse
 import io.github.youndie.bochka.s3.S3Router
 import io.github.youndie.bochka.s3.sigv4.AwsChunkedDecoder
@@ -15,7 +20,6 @@ import io.github.youndie.bochka.s3.sigv4.SignatureVerifier
 import io.github.youndie.bochka.s3.xml.S3Documents
 import io.github.youndie.bochka.s3.xml.S3Requests
 import java.io.ByteArrayOutputStream
-import java.nio.file.Files
 import java.security.MessageDigest
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
@@ -72,10 +76,31 @@ class S3Handler(
         // The bucket is checked here rather than in `handle` for the same reason as the signature:
         // uploading five gigabytes into a bucket that does not exist should cost nothing.
         bucketOf(route)?.let { bucket ->
+            // The name is judged before existence, because a name that cannot exist is not a
+            // missing bucket — `NoSuchBucket` for `AB` would tell a client to go and create it.
+            BucketNameRules.check(bucket)?.let { rejection ->
+                return error(head, S3Error.INVALID_BUCKET_NAME, bucket = bucket, detail = rejection.message)
+            }
             val mustExist = route !is S3Router.Route.CreateBucket && route !is S3Router.Route.ListBuckets
             if (mustExist && !store.hasBucket(bucket)) {
                 return error(head, S3Error.NO_SUCH_BUCKET, bucket = bucket)
             }
+        }
+
+        if (route is S3Router.Route.PutObject) {
+            PayloadChecksums.of { head.header(it) }.rejection?.let { rejection ->
+                return error(head, rejection.error, detail = rejection.detail, key = route.key, bucket = route.bucket)
+            }
+            ObjectHeaders.checkSize(ObjectHeaders.read(head.headers))?.let { rejection ->
+                return error(head, rejection.error, detail = rejection.detail, key = route.key, bucket = route.bucket)
+            }
+        }
+
+        // A batch delete states a checksum of its own body or it does not happen (M-45): the body
+        // is a list of things to destroy, and a request that arrives corrupted destroys different
+        // objects with nothing left to notice it by.
+        if (route is S3Router.Route.DeleteObjects && !PayloadChecksums.anyStated { head.header(it) }) {
+            return error(head, S3Error.MISSING_CONTENT_MD5, bucket = route.bucket)
         }
 
         return null
@@ -208,6 +233,14 @@ class S3Handler(
         )
     }
 
+    /**
+     * The four framings collapse to two paths here, and what they share is the order.
+     *
+     * The bytes are staged first, then everything the client said about them is checked, and only a
+     * body that survives all of it becomes the object. Verifying after committing would mean a
+     * refused upload had already replaced the object that was there — the client would be told its
+     * request failed and would have lost the version it had.
+     */
     private suspend fun putObject(
         head: HttpRequestParser.Head,
         route: S3Router.Route.PutObject,
@@ -216,32 +249,59 @@ class S3Handler(
     ): HttpResponse {
         val payloadHash = verification.payloadHash
         val streaming = payloadHash in SignatureVerifier.ALL_STREAMING
+        val checksums = PayloadChecksums.of { head.header(it) }
+        val metadata = ObjectHeaders.read(head.headers).copy(checksum = checksums.stored())
+        // The signed hash of a whole body is verified here rather than in the signature layer: it
+        // is a statement about bytes, and the bytes only exist once they have been read.
+        val signedHash =
+            if (!streaming && payloadHash != SignatureVerifier.UNSIGNED_PAYLOAD) {
+                MessageDigest.getInstance("SHA-256")
+            } else {
+                null
+            }
 
+        var staged: ObjectStore.Staged? = null
         return try {
-            val stored =
+            staged =
                 if (streaming) {
-                    putStreaming(head, route, verification, body)
+                    stageStreaming(head, verification, body, checksums)
                 } else {
-                    putWhole(head, route, payloadHash, body)
+                    stageWhole(body, checksums, signedHash)
                 }
-            HttpResponse(200, "OK", headers = listOf("ETag" to stored.eTag))
+
+            if (signedHash != null) {
+                val computed = signedHash.digest().joinToString("") { "%02x".format(it) }
+                if (computed != payloadHash) {
+                    return error(
+                        head,
+                        S3Error.CONTENT_SHA256_MISMATCH,
+                        detail = "client said $payloadHash, computed $computed",
+                        key = route.key,
+                        bucket = route.bucket,
+                    )
+                }
+            }
+            checksums.verify()?.let { rejection ->
+                return error(head, rejection.error, detail = rejection.detail, key = route.key, bucket = route.bucket)
+            }
+
+            val stored = store.commit(route.bucket, route.key, metadata, staged)
+            staged = null
+            HttpResponse(200, "OK", headers = checksumHeaders(metadata) + ("ETag" to stored.eTag))
         } catch (e: AwsChunkedDecoder.MalformedBody) {
             error(head, e.error, detail = e.message)
-        } catch (e: PayloadMismatch) {
-            error(head, S3Error.CONTENT_SHA256_MISMATCH, detail = e.message)
+        } finally {
+            // Anything still staged at this point is a body that was written and refused.
+            staged?.let(store::discard)
         }
     }
 
-    private class PayloadMismatch(
-        message: String,
-    ) : RuntimeException(message)
-
-    private suspend fun putStreaming(
+    private suspend fun stageStreaming(
         head: HttpRequestParser.Head,
-        route: S3Router.Route.PutObject,
         verification: SignatureVerifier.Result.Ok,
         body: HttpHandler.RequestBody,
-    ): ObjectStore.Stored {
+        checksums: PayloadChecksums,
+    ): ObjectStore.Staged {
         // The real length of the object is here rather than in Content-Length, which describes the
         // framing and which the client removed anyway (§1.1).
         val declared =
@@ -258,50 +318,42 @@ class S3Handler(
                 ?.filter { it.isNotEmpty() }
                 ?: emptyList()
 
-        var decoder: AwsChunkedDecoder? = null
-        val stored =
-            store.put(route.bucket, route.key, head.header("content-type")) { out ->
-                val sink =
-                    AwsChunkedDecoder(
-                        decodedLength = declared,
-                        signing = verification.chunkSigning,
-                        expectedTrailers = announced,
-                    ) { bytes, offset, length -> out.write(bytes, offset, length) }
-                decoder = sink
-                body.forEach { bytes, offset, length -> sink.feed(bytes, offset, length) }
-                sink.finish()
-            }
-        checkNotNull(decoder)
-        return stored
+        return store.stage { out ->
+            val sink =
+                AwsChunkedDecoder(
+                    decodedLength = declared,
+                    signing = verification.chunkSigning,
+                    expectedTrailers = announced,
+                ) { bytes, offset, length ->
+                    out.write(bytes, offset, length)
+                    checksums.update(bytes, offset, length)
+                }
+            body.forEach { bytes, offset, length -> sink.feed(bytes, offset, length) }
+            sink.finish()
+        }
     }
 
-    private suspend fun putWhole(
-        head: HttpRequestParser.Head,
-        route: S3Router.Route.PutObject,
-        payloadHash: String,
+    private suspend fun stageWhole(
         body: HttpHandler.RequestBody,
-    ): ObjectStore.Stored {
-        val digest = MessageDigest.getInstance("SHA-256")
-        val verify = payloadHash != SignatureVerifier.UNSIGNED_PAYLOAD
-
-        val stored =
-            store.put(route.bucket, route.key, head.header("content-type")) { out ->
-                body.forEach { bytes, offset, length ->
-                    out.write(bytes, offset, length)
-                    if (verify) digest.update(bytes, offset, length)
-                }
-            }
-
-        if (verify) {
-            val computed = digest.digest().joinToString("") { "%02x".format(it) }
-            if (computed != payloadHash) {
-                store.delete(route.bucket, route.key)
-                throw PayloadMismatch("client said $payloadHash, computed $computed")
+        checksums: PayloadChecksums,
+        signedHash: MessageDigest?,
+    ): ObjectStore.Staged =
+        store.stage { out ->
+            body.forEach { bytes, offset, length ->
+                out.write(bytes, offset, length)
+                checksums.update(bytes, offset, length)
+                signedHash?.update(bytes, offset, length)
             }
         }
-        return stored
-    }
 
+    /**
+     * `GET` and `HEAD` of an object, which are the same answer with and without its body.
+     *
+     * The body never becomes a byte array: what goes back is the file and the stretch of it that
+     * was asked for, and the server writes it with `transferTo` (M-59). That also makes `Range`
+     * cost nothing — a suffix range of a five-gigabyte object reads the bytes it returns and no
+     * others.
+     */
     private fun getObject(
         head: HttpRequestParser.Head,
         bucket: String,
@@ -309,27 +361,58 @@ class S3Handler(
         withBody: Boolean = true,
     ): HttpResponse {
         val stored = store.get(bucket, key) ?: return error(head, S3Error.NO_SUCH_KEY, key = key, bucket = bucket)
+        val path = store.pathOf(stored)
         val headers =
             buildList {
                 add("ETag" to stored.eTag)
                 add("Last-Modified" to httpDate(stored.lastModified))
                 add("Accept-Ranges" to "bytes")
-                stored.contentType?.let { add("Content-Type" to it) }
+                addAll(ObjectHeaders.write(stored.metadata))
+                if (head.header("x-amz-checksum-mode").equals("ENABLED", ignoreCase = true)) {
+                    addAll(checksumHeaders(stored.metadata))
+                }
             }
-        // Reading the object into a byte array is the draft part: M-59 hands the socket to
-        // `transferTo` instead, which is the reason the connection exposes its channel at all.
-        val bytes = if (withBody) Files.readAllBytes(store.pathOf(stored)) else ByteArray(0)
-        // HEAD announces the length of the body it is not sending. Answering 0 made rclone treat a
-        // perfectly good upload as corrupted and delete it — and only rclone, because it is the one
-        // client of the four that checks the size afterwards.
-        return HttpResponse(
-            200,
-            "OK",
-            headers = headers,
-            body = bytes,
-            contentLength = if (withBody) null else stored.size,
-        )
+
+        return when (val range = ByteRanges.resolve(head.header("range"), stored.size)) {
+            is ByteRanges.Resolved.Unsatisfiable -> {
+                error(
+                    head,
+                    S3Error.INVALID_RANGE,
+                    key = key,
+                    bucket = bucket,
+                    detail = head.header("range"),
+                    extraHeaders = listOf("Content-Range" to ByteRanges.unsatisfiedRange(stored.size)),
+                )
+            }
+
+            is ByteRanges.Resolved.Whole -> {
+                HttpResponse(
+                    200,
+                    "OK",
+                    headers = headers,
+                    file = HttpResponse.FileSlice(path, 0, stored.size),
+                    // HEAD announces the length of the body it is not sending. Answering 0 made
+                    // rclone treat a perfectly good upload as corrupted and delete it — and only
+                    // rclone, because it is the one client of the four that checks afterwards.
+                    contentLength = stored.size,
+                )
+            }
+
+            is ByteRanges.Resolved.Satisfiable -> {
+                HttpResponse(
+                    206,
+                    "Partial Content",
+                    headers = headers + ("Content-Range" to ByteRanges.contentRange(range, stored.size)),
+                    file = HttpResponse.FileSlice(path, range.start, range.length),
+                    contentLength = range.length,
+                )
+            }
+        }.let { if (withBody) it else it.copy(file = null) }
     }
+
+    /** `x-amz-checksum-<algorithm>`, echoed back exactly as the client stated it on upload. */
+    private fun checksumHeaders(metadata: Metadata): List<Pair<String, String>> =
+        metadata.checksum?.let { listOf("x-amz-checksum-${it.algorithm}" to it.value) } ?: emptyList()
 
     /**
      * `POST /<bucket>?delete` — the batch delete, and the operation whose absence is felt long
@@ -404,6 +487,7 @@ class S3Handler(
         key: ObjectKey? = null,
         bucket: String? = null,
         detail: String? = null,
+        extraHeaders: List<Pair<String, String>> = emptyList(),
     ): HttpResponse {
         val rendered = S3ErrorResponse.render(error, resource = head.path, key = key, bucket = bucket, detail = detail)
         val body =
@@ -419,7 +503,7 @@ class S3Handler(
             } else {
                 rendered.body
             }
-        return HttpResponse(rendered.status, reasonFor(rendered.status), rendered.headers, body)
+        return HttpResponse(rendered.status, reasonFor(rendered.status), rendered.headers + extraHeaders, body)
     }
 
     private fun xml(body: ByteArray): HttpResponse =
@@ -459,10 +543,13 @@ class S3Handler(
             when (status) {
                 200 -> "OK"
                 204 -> "No Content"
+                206 -> "Partial Content"
                 400 -> "Bad Request"
                 403 -> "Forbidden"
                 404 -> "Not Found"
                 409 -> "Conflict"
+                411 -> "Length Required"
+                416 -> "Requested Range Not Satisfiable"
                 501 -> "Not Implemented"
                 else -> "Error"
             }

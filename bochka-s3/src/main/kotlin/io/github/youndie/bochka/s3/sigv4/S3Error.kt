@@ -110,6 +110,61 @@ enum class S3Error(
         400,
     ),
 
+    /** `:544` — the checksum header itself is unreadable, as opposed to disagreeing with the bytes. */
+    INVALID_DIGEST(
+        "InvalidDigest",
+        "The Content-Md5 you specified is not valid.",
+        400,
+    ),
+
+    /**
+     * `:1293` — and the operation it exists for is `DeleteObjects`.
+     *
+     * A batch delete without a checksum of its own body is refused rather than executed: the body
+     * is a list of things to destroy, and a bit flipped in transit deletes a different object with
+     * no way to notice afterwards. Every S3 SDK sends one.
+     */
+    MISSING_CONTENT_MD5(
+        "MissingContentMD5",
+        "Missing required header for this request: Content-Md5.",
+        400,
+    ),
+
+    /** `:664`. */
+    INVALID_BUCKET_NAME(
+        "InvalidBucketName",
+        "The specified bucket is not valid.",
+        400,
+    ),
+
+    /** `:539` — `416`, and the only place in the server that answers with that status. */
+    INVALID_RANGE(
+        "InvalidRange",
+        "The requested range is not satisfiable",
+        416,
+    ),
+
+    /** `:604` — a header that is present, understood, and holds something impossible. */
+    INVALID_ARGUMENT(
+        "InvalidArgument",
+        "Invalid argument",
+        400,
+    ),
+
+    /** `:1283` — the request contradicts itself, as opposed to naming something unknown. */
+    INVALID_REQUEST(
+        "InvalidRequest",
+        "Invalid Request",
+        400,
+    ),
+
+    /** `:889`. */
+    METADATA_TOO_LARGE(
+        "MetadataTooLarge",
+        "Your metadata headers exceed the maximum allowed metadata size.",
+        400,
+    ),
+
     /** `:654`. */
     NO_SUCH_BUCKET(
         "NoSuchBucket",

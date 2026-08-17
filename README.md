@@ -3,7 +3,7 @@
 [![kotlin](https://img.shields.io/badge/Kotlin-2.4.10-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
-[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-97%2F746-yellow)](ci/s3-tests.sh)
+[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-109%2F746-yellow)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An S3-compatible object store in Kotlin/JVM. One process, one node, one disk: no erasure coding,
@@ -123,10 +123,10 @@ of `ceph/s3-tests` a single-process JVM store passes is comparable with other im
 which is true of no benchmark this project could run on its own. So it is published as soon as it
 exists, ahead of everything else:
 
-> **97 of 746 passed (13%)** — `ceph/s3-tests` at `5522d1c`, 2m15s, `./ci/s3-tests.sh`.
+> **109 of 746 passed (14%)** — `ceph/s3-tests` at `5522d1c`, 2m45s, `./ci/s3-tests.sh`.
 
-Low, and it should be: there is no storage yet, only a draft of one, and most of the suite exercises
-versioning, ACLs, lifecycle and IAM. What the number is for is the direction it moves, which is why
+Low, and it should be: there is no multipart upload yet and no listing worth the name, and most of
+the suite exercises versioning, ACLs, lifecycle and IAM. What the number is for is the direction it moves, which is why
 the count of tests that ran is printed beside it — a rising score and a shrinking suite look
 identical otherwise.
 
