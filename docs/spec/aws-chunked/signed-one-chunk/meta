@@ -1,0 +1,9 @@
+mode=signed
+access-key=AKIDEXAMPLE
+secret=wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY
+timestamp=20150830T123600Z
+date=20150830
+region=us-east-1
+seed-signature=4f232c4386841ef735655705268965c44a0e4690baa4adea153f7db9fa80a0a9
+decoded-length=11
+trailers=

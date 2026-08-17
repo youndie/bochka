@@ -128,9 +128,9 @@
 - [x] **M-15** Проверка заголовочной подписи: `Authorization`, `X-Amz-Date`, окно расхождения
       часов, `x-amz-content-sha256`, `X-Amz-Security-Token`
 - [x] **M-16** Presign: проверка подписи из query, `X-Amz-Expires` и его потолок 604800
-- [ ] **M-17** **`aws-chunked`**: разбор кадров `<hex>;chunk-signature=<hex>`, цепочка подписей
+- [x] **M-17** **`aws-chunked`**: разбор кадров `<hex>;chunk-signature=<hex>`, цепочка подписей
       кусков, `X-Amz-Decoded-Content-Length`, лимиты (кусок ≤ 16 МиБ, строка ≤ 4 КиБ) — §1.1
-- [ ] **M-18** Трейлеры: `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` и
+- [x] **M-18** Трейлеры: `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` и
       `STREAMING-UNSIGNED-PAYLOAD-TRAILER`, заголовок `X-Amz-Trailer`, проверка суммы из трейлера
 - [x] **M-19** Ошибка `SignatureDoesNotMatch` несёт **свой** canonical request в теле — это то,
       чем клиент чинит расхождение за минуту (s3kn, Риск 4, здесь другой стороной)

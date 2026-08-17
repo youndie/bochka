@@ -95,4 +95,18 @@ enum class S3Error(
         "Signature header missing SignedHeaders field.",
         400,
     ),
+
+    /** `:583` — what a torn or misframed body answers with. */
+    INCOMPLETE_BODY(
+        "IncompleteBody",
+        "You did not provide the number of bytes specified by the Content-Length HTTP header.",
+        400,
+    ),
+
+    /** `:549` — the checksum the client sent does not describe the bytes it sent. */
+    BAD_DIGEST(
+        "BadDigest",
+        "The Content-Md5 you specified did not match what we received.",
+        400,
+    ),
 }
