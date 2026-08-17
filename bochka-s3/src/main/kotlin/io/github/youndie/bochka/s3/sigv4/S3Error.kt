@@ -165,6 +165,44 @@ enum class S3Error(
         400,
     ),
 
+    /** `:689`. */
+    NO_SUCH_UPLOAD(
+        "NoSuchUpload",
+        "The specified multipart upload does not exist. The upload ID may be invalid, " +
+            "or the upload may have been aborted or completed.",
+        404,
+    ),
+
+    /** `:774`. */
+    ENTITY_TOO_SMALL(
+        "EntityTooSmall",
+        "Your proposed upload is smaller than the minimum allowed object size.",
+        400,
+    ),
+
+    /** `:784`. */
+    INVALID_PART(
+        "InvalidPart",
+        "One or more of the specified parts could not be found. The part may not have been " +
+            "uploaded, or the specified entity tag may not match the part's entity tag.",
+        400,
+    ),
+
+    /** `:789`. */
+    INVALID_PART_ORDER(
+        "InvalidPartOrder",
+        "The list of parts was not in ascending order. Parts list must be specified in " +
+            "order by part number.",
+        400,
+    ),
+
+    /** `:824` — a body this server could not read at all, as opposed to one it disagrees with. */
+    MALFORMED_XML(
+        "MalformedXML",
+        "The XML you provided was not well-formed or did not validate against our published schema.",
+        400,
+    ),
+
     /** `:654`. */
     NO_SUCH_BUCKET(
         "NoSuchBucket",

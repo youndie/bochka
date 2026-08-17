@@ -157,6 +157,66 @@ else
   skip "rclone" "image unavailable"
 fi
 
+# --- multipart, which no client does unless the file is big enough ------------------------------
+#
+# The ordinary round trips above never reach it: every client here has a threshold, and the 3 MB
+# payload is under all of them. So this uploads something over aws-cli's 8 MB default and then
+# checks the two things that distinguish a real multipart implementation from one that only looks
+# like it — the bytes come back identical, and the ETag carries the `-N` suffix that says the
+# object was assembled rather than written whole.
+#
+# `mc` is here as well because it splits differently, which is the point of having two: the part
+# boundaries a server sees are the client's choice, not the protocol's.
+if have_image amazon/aws-cli:latest; then
+  aws_cli() { docker_run amazon/aws-cli:latest aws --endpoint-url "$ENDPOINT" "$@"; }
+
+  head -c 17000000 /dev/urandom > "$work/large.bin"
+  large_expected=$(sha256sum "$work/large.bin" | cut -d' ' -f1)
+
+  if aws_cli s3 cp /work/large.bin "s3://$BUCKET/large-aws.bin" >/dev/null 2>&1 &&
+     aws_cli s3 cp "s3://$BUCKET/large-aws.bin" /work/large-back.bin >/dev/null 2>&1 &&
+     [ "$(sha256sum "$work/large-back.bin" | cut -d' ' -f1)" = "$large_expected" ]; then
+    pass "aws-cli multipart round trip"
+  else
+    fail "aws-cli multipart round trip"
+  fi
+
+  # An ETag without the suffix means the upload was not multipart at all, and the round trip
+  # above would pass anyway — which is exactly the check that would have been missing.
+  etag=$(aws_cli s3api head-object --bucket "$BUCKET" --key large-aws.bin --query ETag --output text 2>/dev/null)
+  case "$etag" in
+    *-*) pass "the assembled object is marked as assembled ($etag)" ;;
+    *)   fail "multipart ETag has no part count: '$etag'" ;;
+  esac
+
+  # Abandoned uploads have to be visible, or they are unreclaimable by anything but a restart.
+  aws_cli s3api create-multipart-upload --bucket "$BUCKET" --key abandoned.bin >/dev/null 2>&1
+  if aws_cli s3api list-multipart-uploads --bucket "$BUCKET" 2>/dev/null | grep -q abandoned.bin; then
+    pass "an upload in flight is listed"
+  else
+    fail "an upload in flight is listed"
+  fi
+else
+  skip "multipart" "image unavailable"
+fi
+
+if have_image minio/mc:latest; then
+  # The config directory is on the mounted volume, not inside the container: every `mc` here is a
+  # fresh container, so an alias written to the container's own /tmp is gone by the next call —
+  # and what that looks like is not an error but a client that quietly does nothing.
+  mc() { docker_run minio/mc:latest mc --config-dir /work/mc "$@"; }
+  mc alias set bochka "$ENDPOINT" $KEY $SECRET >/dev/null 2>&1
+  if mc cp /work/large.bin bochka/$BUCKET/large-mc.bin >/dev/null 2>&1 &&
+     mc cp bochka/$BUCKET/large-mc.bin /work/large-mc-back.bin >/dev/null 2>&1 &&
+     [ "$(sha256sum "$work/large-mc-back.bin" | cut -d' ' -f1)" = "$large_expected" ]; then
+    pass "mc multipart round trip"
+  else
+    fail "mc multipart round trip"
+  fi
+else
+  skip "mc multipart" "image unavailable"
+fi
+
 # --- everything at once ------------------------------------------------------------------------
 #
 # Sequential round trips find none of the failures a shared server actually has. Two properties are

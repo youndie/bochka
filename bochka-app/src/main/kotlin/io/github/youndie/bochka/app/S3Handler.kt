@@ -21,6 +21,7 @@ import io.github.youndie.bochka.s3.sigv4.S3Error
 import io.github.youndie.bochka.s3.sigv4.SignatureVerifier
 import io.github.youndie.bochka.s3.xml.S3Documents
 import io.github.youndie.bochka.s3.xml.S3Requests
+import io.github.youndie.bochka.s3.xml.XmlReader
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.time.ZoneOffset
@@ -58,11 +59,30 @@ class S3Handler(
         // decided from the head. `Content-Length` for an ordinary body, `X-Amz-Decoded-Content-Length`
         // for a streaming one; a chunked upload with neither could only be stored at whatever length
         // happened to arrive.
-        if (route is S3Router.Route.PutObject &&
+        if ((route is S3Router.Route.PutObject || route is S3Router.Route.UploadPart) &&
             head.contentLength == null &&
             head.header("x-amz-decoded-content-length") == null
         ) {
-            return error(head, S3Error.MISSING_CONTENT_LENGTH, key = route.key, bucket = route.bucket)
+            return error(head, S3Error.MISSING_CONTENT_LENGTH, key = keyOf(route), bucket = bucketOf(route))
+        }
+
+        // A part number outside 1..10 000 is a request that could never be completed
+        // (`s3-service-2.json:1604`), and it is visible from the head.
+        if (route is S3Router.Route.UploadPart && route.partNumber !in 1..S3Requests.MAX_PARTS) {
+            return error(
+                head,
+                S3Error.INVALID_ARGUMENT,
+                detail = "part number ${route.partNumber} is outside 1..${S3Requests.MAX_PARTS}",
+                key = route.key,
+                bucket = route.bucket,
+            )
+        }
+
+        // An upload nobody started cannot take a part, and refusing here costs no body (§1.2).
+        uploadIdOf(route)?.let { uploadId ->
+            if (store.upload(uploadId) == null) {
+                return error(head, S3Error.NO_SUCH_UPLOAD, key = keyOf(route), bucket = bucketOf(route))
+            }
         }
 
         keyOf(route)?.let { key ->
@@ -129,9 +149,184 @@ class S3Handler(
             is S3Router.Route.HeadObject -> getObject(head, route.bucket, route.key, withBody = false)
             is S3Router.Route.DeleteObject -> deleteObject(route.bucket, route.key)
             is S3Router.Route.DeleteObjects -> deleteObjects(route.bucket, body)
+            is S3Router.Route.CreateMultipartUpload -> createUpload(head, route)
+            is S3Router.Route.UploadPart -> uploadPart(head, route, verification, body)
+            is S3Router.Route.ListParts -> listParts(head, route)
+            is S3Router.Route.AbortMultipartUpload -> abortUpload(head, route)
+            is S3Router.Route.CompleteMultipartUpload -> completeUpload(head, route, body)
+            is S3Router.Route.ListMultipartUploads -> listUploads(head, route.bucket)
             else -> error(head, S3Error.NOT_IMPLEMENTED, detail = "not implemented: $route")
         }
     }
+
+    // --- multipart upload (M7) ----------------------------------------------------------------
+
+    private fun createUpload(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.CreateMultipartUpload,
+    ): HttpResponse {
+        // The metadata travels on this request and not on the parts: the parts are bytes, the
+        // object is what they become, and only this request knows anything about the object.
+        val upload = store.createUpload(route.bucket, route.key, ObjectHeaders.read(head.headers))
+        return xml(S3Documents.initiateMultipartUploadResult(route.bucket, route.key, upload.id))
+    }
+
+    private suspend fun uploadPart(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.UploadPart,
+        verification: SignatureVerifier.Result.Ok,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        val checksums = PayloadChecksums.of { head.header(it) }
+        val streaming = verification.payloadHash in SignatureVerifier.ALL_STREAMING
+        val signedHash =
+            if (!streaming && verification.payloadHash != SignatureVerifier.UNSIGNED_PAYLOAD) {
+                MessageDigest.getInstance("SHA-256")
+            } else {
+                null
+            }
+
+        // A part goes through the same four framings as an object, because it is the same upload
+        // path: `aws s3 cp` of a large file sends every part aws-chunked with a signature apiece.
+        var staged: ObjectStore.Staged? = null
+        return try {
+            staged =
+                if (streaming) {
+                    stageStreaming(head, verification, body, checksums)
+                } else {
+                    stageWhole(body, checksums, signedHash)
+                }
+            if (signedHash != null) {
+                val computed = signedHash.digest().joinToString("") { "%02x".format(it) }
+                if (computed != verification.payloadHash) {
+                    return error(head, S3Error.CONTENT_SHA256_MISMATCH, detail = "computed $computed")
+                }
+            }
+            checksums.verify()?.let { return error(head, it.error, detail = it.detail) }
+
+            val part = store.commitPart(route.uploadId, route.partNumber, staged)
+            staged = null
+            HttpResponse(200, "OK", headers = listOf("ETag" to part.eTag))
+        } catch (e: AwsChunkedDecoder.MalformedBody) {
+            error(head, e.error, detail = e.message)
+        } catch (e: ObjectStore.CompletionRefused) {
+            error(head, refusalOf(e.reason), detail = e.message)
+        } finally {
+            staged?.let(store::discard)
+        }
+    }
+
+    private fun listParts(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.ListParts,
+    ): HttpResponse {
+        store.upload(route.uploadId)
+            ?: return error(head, S3Error.NO_SUCH_UPLOAD, key = route.key, bucket = route.bucket)
+        val parts = store.parts(route.uploadId)
+        return xml(
+            S3Documents.listPartsResult(
+                bucket = route.bucket,
+                key = route.key,
+                uploadId = route.uploadId,
+                partNumberMarker = 0,
+                nextPartNumberMarker = parts.lastOrNull()?.number ?: 0,
+                maxParts = S3Requests.MAX_PARTS,
+                isTruncated = false,
+                parts =
+                    parts.map {
+                        S3Documents.PartEntry(it.number, timestamp(it.lastModified), it.eTag, it.size)
+                    },
+            ),
+        )
+    }
+
+    private fun abortUpload(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.AbortMultipartUpload,
+    ): HttpResponse =
+        if (store.abortUpload(route.uploadId)) {
+            HttpResponse(204, "No Content")
+        } else {
+            error(head, S3Error.NO_SUCH_UPLOAD, key = route.key, bucket = route.bucket)
+        }
+
+    /**
+     * Joins the parts, or says why it will not.
+     *
+     * S3 has a second shape for this response — `200 OK` with an `<Error>` in the body — because
+     * the assembly can take long enough that the status has to go out before the outcome is known.
+     * bochka never needs it: everything refusable is decided before a byte is copied, so the
+     * status is always the true one. The compatibility suite expects exactly that (`400` with
+     * `EntityTooSmall`, `test_multipart_upload_size_too_small`).
+     */
+    private suspend fun completeUpload(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.CompleteMultipartUpload,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        val collected = ByteArrayOutputStream()
+        body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+
+        val requested =
+            try {
+                S3Requests.parseCompleteMultipartUpload(collected.toByteArray())
+            } catch (e: XmlReader.MalformedXmlException) {
+                return error(head, S3Error.MALFORMED_XML, detail = e.message, key = route.key, bucket = route.bucket)
+            }
+
+        return try {
+            val stored = store.completeUpload(route.uploadId, requested.map { it.partNumber to it.eTag })
+            xml(
+                S3Documents.completeMultipartUploadResult(
+                    location = "/${route.bucket}/${UriCodec.encodePath(route.key.toByteArray())}",
+                    bucket = route.bucket,
+                    key = route.key,
+                    eTag = stored.eTag,
+                ),
+            )
+        } catch (e: ObjectStore.CompletionRefused) {
+            error(head, refusalOf(e.reason), detail = e.message, key = route.key, bucket = route.bucket)
+        }
+    }
+
+    private fun listUploads(
+        head: HttpRequestParser.Head,
+        bucket: String,
+    ): HttpResponse {
+        val request =
+            try {
+                ListingRequest.of(rawQueryParams(head.query))
+            } catch (e: ListingRequest.Malformed) {
+                return error(head, e.error, detail = e.message, bucket = bucket)
+            }
+        val uploads = store.uploads(bucket).filter { it.key.toByteArray().startsWith(request.prefix) }
+        return xml(
+            S3Documents.listMultipartUploadsResult(
+                bucket = bucket,
+                prefix = request.prefix,
+                delimiter = request.delimiter,
+                maxUploads = request.requestedMaxKeys,
+                isTruncated = false,
+                uploads =
+                    uploads.map {
+                        S3Documents.UploadEntry(it.key, it.id, timestamp(it.startedAt))
+                    },
+                encoding = request.encoding(),
+            ),
+        )
+    }
+
+    private fun refusalOf(reason: ObjectStore.CompletionRefused.Reason): S3Error =
+        when (reason) {
+            ObjectStore.CompletionRefused.Reason.NO_SUCH_UPLOAD -> S3Error.NO_SUCH_UPLOAD
+            ObjectStore.CompletionRefused.Reason.NO_PARTS -> S3Error.INVALID_REQUEST
+            ObjectStore.CompletionRefused.Reason.INVALID_PART -> S3Error.INVALID_PART
+            ObjectStore.CompletionRefused.Reason.INVALID_PART_ORDER -> S3Error.INVALID_PART_ORDER
+            ObjectStore.CompletionRefused.Reason.ENTITY_TOO_SMALL -> S3Error.ENTITY_TOO_SMALL
+        }
+
+    private fun ByteArray.startsWith(prefix: ByteArray): Boolean =
+        prefix.size <= size && prefix.indices.all { this[it] == prefix[it] }
 
     private fun listBuckets(): HttpResponse =
         xml(
@@ -504,6 +699,22 @@ class S3Handler(
             is S3Router.Route.GetObject -> route.bucket
             is S3Router.Route.HeadObject -> route.bucket
             is S3Router.Route.DeleteObject -> route.bucket
+            is S3Router.Route.CreateMultipartUpload -> route.bucket
+            is S3Router.Route.UploadPart -> route.bucket
+            is S3Router.Route.CompleteMultipartUpload -> route.bucket
+            is S3Router.Route.AbortMultipartUpload -> route.bucket
+            is S3Router.Route.ListParts -> route.bucket
+            is S3Router.Route.ListMultipartUploads -> route.bucket
+            else -> null
+        }
+
+    /** The upload a request names, when it names one — what has to exist before the body is read. */
+    private fun uploadIdOf(route: S3Router.Route): String? =
+        when (route) {
+            is S3Router.Route.UploadPart -> route.uploadId
+            is S3Router.Route.CompleteMultipartUpload -> route.uploadId
+            is S3Router.Route.AbortMultipartUpload -> route.uploadId
+            is S3Router.Route.ListParts -> route.uploadId
             else -> null
         }
 
@@ -513,6 +724,11 @@ class S3Handler(
             is S3Router.Route.GetObject -> route.key
             is S3Router.Route.HeadObject -> route.key
             is S3Router.Route.DeleteObject -> route.key
+            is S3Router.Route.CreateMultipartUpload -> route.key
+            is S3Router.Route.UploadPart -> route.key
+            is S3Router.Route.CompleteMultipartUpload -> route.key
+            is S3Router.Route.AbortMultipartUpload -> route.key
+            is S3Router.Route.ListParts -> route.key
             else -> null
         }
 

@@ -253,6 +253,46 @@ object S3Documents {
             }
         }
 
+    data class UploadEntry(
+        val key: ObjectKey,
+        val uploadId: String,
+        val initiated: String,
+    )
+
+    /**
+     * `<ListMultipartUploadsResult>` — the uploads that have begun and not finished.
+     *
+     * Worth having for a reason that is not completeness: an abandoned upload holds its parts on
+     * the disk and nothing else will ever mention it. This is how an operator finds them, and
+     * `AbortMultipartUpload` is how they go (M-57).
+     */
+    @Suppress("LongParameterList")
+    fun listMultipartUploadsResult(
+        bucket: String,
+        prefix: ByteArray,
+        delimiter: ByteArray?,
+        maxUploads: Int,
+        isTruncated: Boolean,
+        uploads: List<UploadEntry>,
+        encoding: KeyEncoding,
+    ): ByteArray =
+        XmlWriter(512 + uploads.size * 128).document("ListMultipartUploadsResult") {
+            text("Bucket", bucket)
+            encodedText("Prefix", prefix, encoding)
+            if (delimiter != null) encodedText("Delimiter", delimiter, encoding)
+            text("MaxUploads", maxUploads.toLong())
+            text("IsTruncated", isTruncated)
+            if (encoding == KeyEncoding.URL) text("EncodingType", "url")
+            for (entry in uploads) {
+                element("Upload") {
+                    encodedText("Key", entry.key.toByteArray(), encoding)
+                    text("UploadId", entry.uploadId)
+                    text("Initiated", entry.initiated)
+                    text("StorageClass", "STANDARD")
+                }
+            }
+        }
+
     /**
      * `<ListVersionsResult>`: the same listing, with every object at version `null`.
      *

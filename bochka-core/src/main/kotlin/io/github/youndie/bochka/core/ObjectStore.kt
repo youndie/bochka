@@ -108,6 +108,10 @@ class ObjectStore(
     /** One writer at a time on the log: its records must land in the order they were decided. */
     private val writing = ReentrantLock()
 
+    // Declared here rather than beside the rest of the multipart code because property
+    // initialisers run in declaration order and `init` replays the log into this one.
+    private val uploads = ConcurrentHashMap<String, UploadState>()
+
     /** What the log said when it was opened. Worth printing at startup rather than discarding. */
     val recovery: RecordLog.Recovery
 
@@ -136,6 +140,38 @@ class ObjectStore(
                                 lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
                                 metadata = record.metadata,
                             )
+                    }
+
+                    is IndexRecord.UploadStarted -> {
+                        uploads[record.uploadId] =
+                            UploadState(
+                                Upload(
+                                    id = record.uploadId,
+                                    bucket = record.bucket,
+                                    key = record.key,
+                                    metadata = record.metadata,
+                                    startedAt = Instant.ofEpochMilli(record.startedAtMillis),
+                                ),
+                            )
+                    }
+
+                    is IndexRecord.UploadPart -> {
+                        // An upload the log never opened cannot have parts; a record for one is a
+                        // torn tail rather than something to invent an upload from.
+                        uploads[record.uploadId]?.parts?.put(
+                            record.number,
+                            Part(
+                                number = record.number,
+                                fileId = record.fileId,
+                                size = record.size,
+                                eTag = record.eTag,
+                                lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
+                            ),
+                        )
+                    }
+
+                    is IndexRecord.UploadEnded -> {
+                        uploads.remove(record.uploadId)
                     }
                 }
             }
@@ -417,6 +453,236 @@ class ObjectStore(
         return null
     }
 
+    // --- multipart upload (M7) ----------------------------------------------------------------
+
+    /**
+     * An upload in progress: a key that does not exist yet and the parts collected towards it.
+     *
+     * Kept in the index log like everything else, and for the same reason: a multipart upload of a
+     * five-gigabyte object runs for minutes and a restart in the middle must not silently discard
+     * the parts a client has already been told were accepted.
+     */
+    data class Upload(
+        val id: String,
+        val bucket: String,
+        val key: ObjectKey,
+        val metadata: Metadata,
+        val startedAt: Instant,
+    )
+
+    data class Part(
+        val number: Int,
+        val fileId: String,
+        val size: Long,
+        val eTag: String,
+        val lastModified: Instant,
+    )
+
+    /** Why a completion cannot happen. The S3 layer turns each of these into a code and a status. */
+    class CompletionRefused(
+        val reason: Reason,
+        override val message: String,
+    ) : RuntimeException(message) {
+        enum class Reason { NO_SUCH_UPLOAD, NO_PARTS, INVALID_PART, INVALID_PART_ORDER, ENTITY_TOO_SMALL }
+    }
+
+    private class UploadState(
+        val upload: Upload,
+    ) {
+        val parts = ConcurrentSkipListMap<Int, Part>()
+    }
+
+    fun createUpload(
+        bucket: String,
+        key: ObjectKey,
+        metadata: Metadata,
+    ): Upload {
+        val upload = Upload(UUID.randomUUID().toString(), bucket, key, metadata, Instant.now())
+        uploads[upload.id] = UploadState(upload)
+        write(
+            IndexRecord.UploadStarted(
+                bucket = bucket,
+                key = key,
+                uploadId = upload.id,
+                startedAtMillis = upload.startedAt.toEpochMilli(),
+                metadata = metadata,
+            ),
+        )
+        return upload
+    }
+
+    fun upload(id: String): Upload? = uploads[id]?.upload
+
+    fun uploads(bucket: String): List<Upload> =
+        uploads.values
+            .map { it.upload }
+            .filter { it.bucket == bucket }
+            .sortedWith(compareBy({ it.key }, { it.id }))
+
+    fun parts(id: String): List<Part> = uploads[id]?.parts?.values?.toList() ?: emptyList()
+
+    /**
+     * Writes one part.
+     *
+     * A part with a number that is already there replaces it — that is S3's rule, and the file of
+     * the old one goes only after the index stops pointing at it, exactly as for an object.
+     */
+    suspend fun putPart(
+        uploadId: String,
+        number: Int,
+        write: suspend (Sink) -> Unit,
+    ): Part = commitPart(uploadId, number, stage(write))
+
+    /** The same, for bytes already staged — the request path checks them before keeping them. */
+    fun commitPart(
+        uploadId: String,
+        number: Int,
+        staged: Staged,
+    ): Part {
+        val state = uploads[uploadId] ?: throw CompletionRefused(CompletionRefused.Reason.NO_SUCH_UPLOAD, uploadId)
+        val part = Part(number, staged.fileId, staged.size, staged.eTag, Instant.now())
+        val previous = state.parts.put(number, part)
+        this.write(
+            IndexRecord.UploadPart(
+                bucket = state.upload.bucket,
+                uploadId = uploadId,
+                number = number,
+                fileId = staged.fileId,
+                size = staged.size,
+                eTag = staged.eTag,
+                lastModifiedMillis = part.lastModified.toEpochMilli(),
+            ),
+        )
+        if (previous != null) Files.deleteIfExists(pathOf(previous.fileId))
+        return part
+    }
+
+    fun abortUpload(uploadId: String): Boolean {
+        val state = uploads.remove(uploadId) ?: return false
+        write(IndexRecord.UploadEnded(state.upload.bucket, uploadId))
+        for (part in state.parts.values) Files.deleteIfExists(pathOf(part.fileId))
+        return true
+    }
+
+    /**
+     * Joins the parts into one object.
+     *
+     * Everything that can be refused is refused **before** a byte is copied: an upload that does
+     * not exist, an empty list, parts out of order, a part whose `ETag` does not match, a part
+     * below the minimum that is not the last. That ordering is why this server never needs S3's
+     * other shape for this operation — the one where a `200 OK` carries an `<Error>` in its body
+     * because the answer was not known when the response started (protocol-s3.md §4).
+     *
+     * The copy itself is `transferFrom` between two files, which is the one direction of it that
+     * takes a fast path: the JDK requires the **source** to be a real `FileChannelImpl` (§1.6.2),
+     * which is exactly a part on disk and is exactly not a socket.
+     */
+    fun completeUpload(
+        uploadId: String,
+        requested: List<Pair<Int, String>>,
+    ): Stored {
+        val state =
+            uploads[uploadId] ?: throw CompletionRefused(CompletionRefused.Reason.NO_SUCH_UPLOAD, uploadId)
+        if (requested.isEmpty()) {
+            throw CompletionRefused(CompletionRefused.Reason.NO_PARTS, "a completion with no parts in it")
+        }
+        for (i in 1 until requested.size) {
+            if (requested[i].first <= requested[i - 1].first) {
+                throw CompletionRefused(
+                    CompletionRefused.Reason.INVALID_PART_ORDER,
+                    "part ${requested[i].first} came after ${requested[i - 1].first}",
+                )
+            }
+        }
+
+        val chosen =
+            requested.map { (number, eTag) ->
+                val part =
+                    state.parts[number]
+                        ?: throw CompletionRefused(CompletionRefused.Reason.INVALID_PART, "no part $number")
+                if (part.eTag.trim('"') != eTag.trim('"')) {
+                    throw CompletionRefused(
+                        CompletionRefused.Reason.INVALID_PART,
+                        "part $number has ${part.eTag}, the completion says $eTag",
+                    )
+                }
+                part
+            }
+        for (part in chosen.dropLast(1)) {
+            if (part.size < MIN_PART_SIZE) {
+                throw CompletionRefused(
+                    CompletionRefused.Reason.ENTITY_TOO_SMALL,
+                    "part ${part.number} is ${part.size} bytes, the minimum is $MIN_PART_SIZE",
+                )
+            }
+        }
+
+        val fileId = UUID.randomUUID().toString()
+        val target = pathOf(fileId)
+        Files.createDirectories(target.parent)
+        val partial = target.resolveSibling("${target.fileName}.partial")
+        var size = 0L
+        FileChannel.open(partial, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { out ->
+            for (part in chosen) {
+                FileChannel.open(pathOf(part.fileId), StandardOpenOption.READ).use { source ->
+                    var moved = 0L
+                    while (moved < part.size) {
+                        val n = out.transferFrom(source, size + moved, part.size - moved)
+                        if (n <= 0) throw java.io.EOFException("part ${part.number} ended early")
+                        moved += n
+                    }
+                    size += moved
+                }
+            }
+            if (durability == Durability.FSYNC) out.force(true)
+        }
+        Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE)
+
+        val stored =
+            commit(
+                state.upload.bucket,
+                state.upload.key,
+                state.upload.metadata,
+                Staged(fileId, size, multipartETag(chosen)),
+            )
+        uploads.remove(uploadId)
+        write(IndexRecord.UploadEnded(state.upload.bucket, uploadId))
+        for (part in state.parts.values) Files.deleteIfExists(pathOf(part.fileId))
+        return stored
+    }
+
+    /**
+     * Forgets uploads nobody finished.
+     *
+     * An abandoned upload holds its parts on the disk for ever otherwise, and there is no other
+     * moment to notice: a client that stops calling says nothing (M-57).
+     */
+    fun sweepUploads(olderThanMillis: Long = 7 * 24 * 60 * 60 * 1000L): Int {
+        val cutoff = System.currentTimeMillis() - olderThanMillis
+        var removed = 0
+        for (state in uploads.values.toList()) {
+            if (state.upload.startedAt.toEpochMilli() > cutoff) continue
+            if (abortUpload(state.upload.id)) removed++
+        }
+        return removed
+    }
+
+    /**
+     * `"<md5 of the parts' md5s>-<count>"`, which is what makes a multipart `ETag` recognisable.
+     *
+     * Not the MD5 of the object: a client that computed one over the whole file and compared would
+     * find they disagree, which is exactly why the suffix is there — it says "this is not that
+     * kind of ETag".
+     */
+    private fun multipartETag(parts: List<Part>): String {
+        val digest = MessageDigest.getInstance("MD5")
+        for (part in parts) digest.update(unhex(part.eTag.trim('"')))
+        return "\"" + digest.digest().joinToString("") { "%02x".format(it) } + "-" + parts.size + "\""
+    }
+
+    private fun unhex(text: String): ByteArray =
+        ByteArray(text.length / 2) { ((text[it * 2].digitToInt(16) shl 4) or text[it * 2 + 1].digitToInt(16)).toByte() }
+
     /**
      * Deletes object files nobody points at.
      *
@@ -426,6 +692,9 @@ class ObjectStore(
      */
     fun sweepOrphans(olderThanMillis: Long = 60 * 60 * 1000): Int {
         val referenced = objects.values.mapTo(HashSet()) { it.fileId }
+        // A part of an upload in progress is pointed at by the upload rather than by an object,
+        // and a sweep that did not know about them would collect a client's work mid-upload.
+        for (state in uploads.values) for (part in state.parts.values) referenced.add(part.fileId)
         val cutoff = System.currentTimeMillis() - olderThanMillis
         var removed = 0
         Files.walk(data).use { walk ->
@@ -457,6 +726,15 @@ class ObjectStore(
     /** `data/ab/cd/<uuid>` — two levels so that no directory ever holds a million entries. */
     private fun pathOf(fileId: String): Path =
         data.resolve(fileId.substring(0, 2)).resolve(fileId.substring(2, 4)).resolve(fileId)
+
+    private companion object {
+        /**
+         * The floor on every part but the last, from the AWS documentation's own table
+         * ("Amazon S3 multipart upload limits"). Closed by a live request in a neighbouring
+         * project: two parts of one megabyte each answered `EntityTooSmall`.
+         */
+        const val MIN_PART_SIZE = 5 * 1024 * 1024L
+    }
 
     private fun ByteArray.startsWith(prefix: ByteArray): Boolean {
         if (prefix.size > size) return false
