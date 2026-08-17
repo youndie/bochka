@@ -1,6 +1,7 @@
 package io.github.youndie.bochka.app
 
 import io.github.youndie.bochka.core.ObjectKey
+import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.http.HttpHandler
 import io.github.youndie.bochka.http.HttpRequestParser
 import io.github.youndie.bochka.http.HttpResponse
@@ -32,7 +33,7 @@ import java.time.format.DateTimeFormatter
  * costs a string split; a field would cost a race.
  */
 class S3Handler(
-    private val store: DraftStore,
+    private val store: ObjectStore,
     private val verifier: SignatureVerifier,
     private val router: S3Router,
 ) : HttpHandler {
@@ -240,7 +241,7 @@ class S3Handler(
         route: S3Router.Route.PutObject,
         verification: SignatureVerifier.Result.Ok,
         body: HttpHandler.RequestBody,
-    ): DraftStore.StoredObject {
+    ): ObjectStore.Stored {
         // The real length of the object is here rather than in Content-Length, which describes the
         // framing and which the client removed anyway (§1.1).
         val declared =
@@ -279,7 +280,7 @@ class S3Handler(
         route: S3Router.Route.PutObject,
         payloadHash: String,
         body: HttpHandler.RequestBody,
-    ): DraftStore.StoredObject {
+    ): ObjectStore.Stored {
         val digest = MessageDigest.getInstance("SHA-256")
         val verify = payloadHash != SignatureVerifier.UNSIGNED_PAYLOAD
 
@@ -317,7 +318,7 @@ class S3Handler(
             }
         // Reading the object into a byte array is the draft part: M-59 hands the socket to
         // `transferTo` instead, which is the reason the connection exposes its channel at all.
-        val bytes = if (withBody) Files.readAllBytes(stored.path) else ByteArray(0)
+        val bytes = if (withBody) Files.readAllBytes(store.pathOf(stored)) else ByteArray(0)
         // HEAD announces the length of the body it is not sending. Answering 0 made rclone treat a
         // perfectly good upload as corrupted and delete it — and only rclone, because it is the one
         // client of the four that checks the size afterwards.
@@ -381,7 +382,6 @@ class S3Handler(
             is S3Router.Route.GetObject -> route.bucket
             is S3Router.Route.HeadObject -> route.bucket
             is S3Router.Route.DeleteObject -> route.bucket
-            is S3Router.Route.DeleteObjects -> route.bucket
             else -> null
         }
 

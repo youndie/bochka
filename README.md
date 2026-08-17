@@ -20,14 +20,15 @@ it can also be the thing you start inside a test.
 ## Status: it answers real clients, and it does not keep anything yet
 
 `aws-cli`, `boto3`, `mc` and `rclone` can create a bucket, upload a file, list it and read it back
-byte for byte — over plaintext and through an nginx TLS terminator. What is behind that is a
-**draft** store: a file per object, an index in a map, no durability, no recovery, no crash test.
-The real one is the next milestone, and it starts with the crash test rather than with the write.
+byte for byte — over plaintext and through an nginx TLS terminator — and what they upload survives
+the process being killed.
 
 Built so far: the key as a byte string with its own order, SigV4 verified in both forms, all four
 body framings including `aws-chunked` with the signature chain, an HTTP/1.1 server on a selector,
-routing, errors. Not built: durable storage, listing with `delimiter` and pagination, multipart,
-`Range`, zero-copy reads. [BACKLOG.md](BACKLOG.md) says which milestone each of those is, and every
+routing, errors, and storage — an object is a file under a UUID, the key lives only in the index,
+the index is a log with a checksum per record, and the write order is the one whose worst outcome
+is an orphan rather than a key pointing at nothing. Not built: listing with `delimiter` and
+pagination, multipart, `Range`, zero-copy reads. [BACKLOG.md](BACKLOG.md) says which milestone each of those is, and every
 closed one ends with what came out differently than planned.
 
 Anything below describing behaviour bochka does not have says so — that is the project's first
@@ -70,8 +71,6 @@ Two of those come from reading MinIO's source, two from reading the JDK's, and t
 something on this machine and looking at the output.
 
 ## Internals
-
-Decided in the research; the storage half is still the plan rather than the code:
 
 | | |
 |---|---|

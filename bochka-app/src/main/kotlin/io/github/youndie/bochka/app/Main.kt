@@ -1,5 +1,6 @@
 package io.github.youndie.bochka.app
 
+import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.http.HttpServer
 import io.github.youndie.bochka.s3.S3Router
 import io.github.youndie.bochka.s3.sigv4.Credentials
@@ -41,9 +42,10 @@ object Main {
                     ?: mapOf("bochkaadmin" to "bochkasecret", "bochkaalt" to "bochkaaltsecret"),
             )
 
+        val store = ObjectStore(dataDir)
         val handler =
             S3Handler(
-                store = DraftStore(dataDir),
+                store = store,
                 verifier = SignatureVerifier(credentials, region = region),
                 router = S3Router(virtualHostSuffixes = env("BOCHKA_VIRTUAL_HOST_SUFFIXES")?.split(",") ?: emptyList()),
             )
@@ -51,6 +53,14 @@ object Main {
         val logged = LoggingHandler(handler, enabled = env("BOCHKA_LOG") == "1")
         val server = HttpServer(logged, bindAddress = address, port = port)
         println("bochka listening on $address:${server.boundPort}, data in $dataDir")
+        // What the log said when it was opened, rather than a silent start: a run that discarded a
+        // torn tail is a fact about the last shutdown, and the only place it is ever visible.
+        with(store.recovery) {
+            println(
+                "index: $records records, $acceptedBytes bytes accepted, stopped by $stoppedBy" +
+                    if (discardedBytes > 0) ", $discardedBytes bytes discarded" else "",
+            )
+        }
         println("access keys: ${credentials.ids.sorted().joinToString(", ")}")
         Runtime.getRuntime().addShutdownHook(Thread { server.close() })
         Thread.currentThread().join()
