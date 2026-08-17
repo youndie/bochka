@@ -2,7 +2,8 @@
 
 [![kotlin](https://img.shields.io/badge/Kotlin-2.4.10-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
-[![status](https://img.shields.io/badge/status-research-orange)](docs/research/research-architecture.md)
+[![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
+[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-97%2F746-yellow)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An S3-compatible object store in Kotlin/JVM. One process, one node, one disk: no erasure coding,
@@ -16,13 +17,23 @@ mock (`S3Mock`, itself Kotlin, shipped as a Testcontainer and a JUnit extension)
 actually keeps what you give it is missing — and, because it has to be small to be worth writing,
 it can also be the thing you start inside a test.
 
-## Status: no code yet
+## Status: it answers real clients, and it does not keep anything yet
 
-This repository currently holds **research and a backlog, and nothing else**. Nothing here
-describes running software; anything that looks like a description of behaviour is intent, and
-says so. That is the project's first rule — `main` describes what exists.
+`aws-cli`, `boto3`, `mc` and `rclone` can create a bucket, upload a file, list it and read it back
+byte for byte — over plaintext and through an nginx TLS terminator. What is behind that is a
+**draft** store: a file per object, an index in a map, no durability, no recovery, no crash test.
+The real one is the next milestone, and it starts with the crash test rather than with the write.
 
-What the research produced is a list of things that are true and counter-intuitive, each verified
+Built so far: the key as a byte string with its own order, SigV4 verified in both forms, all four
+body framings including `aws-chunked` with the signature chain, an HTTP/1.1 server on a selector,
+routing, errors. Not built: durable storage, listing with `delimiter` and pagination, multipart,
+`Range`, zero-copy reads. [BACKLOG.md](BACKLOG.md) says which milestone each of those is, and every
+closed one ends with what came out differently than planned.
+
+Anything below describing behaviour bochka does not have says so — that is the project's first
+rule, `main` describes what exists.
+
+What the research produced before any of it was a list of things that are true and counter-intuitive, each verified
 against a source rather than remembered. They are the reason the design looks the way it does:
 
 - **"Seven operations" is the client's scope, not the server's.** `aws s3 cp` sends its body as
@@ -58,9 +69,9 @@ against a source rather than remembered. They are the reason the design looks th
 Two of those come from reading MinIO's source, two from reading the JDK's, and three from running
 something on this machine and looking at the output.
 
-## Planned internals
+## Internals
 
-Decided in the research, none of it built yet:
+Decided in the research; the storage half is still the plan rather than the code:
 
 | | |
 |---|---|
