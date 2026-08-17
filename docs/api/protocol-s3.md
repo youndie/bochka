@@ -1,0 +1,291 @@
+---
+id: protocol-s3
+title: Контракт S3 на проводе — серверная сторона
+status: draft
+date: 2026-08-17
+research: research-architecture
+---
+
+# Контракт: S3 на проводе
+
+Что bochka обязана принимать и что отвечать. **По этому документу пишутся тесты** — каждый пункт
+либо превращается в тест, либо помечен как «целевое».
+
+> **Статус: документ целиком целевой.** Реализованы только ключ и XML (M1). Всё остальное описывает
+> то, что будет, а не то, что есть. Пункт становится фактом вместе с задачей, которая его закрывает,
+> и тогда из него уходит пометка.
+
+Источники — только из [`docs/spec/`](../spec/): машинная модель API (`s3-service-2.json`),
+эталонная реализация подписи (`reference/botocore-auth.py`), векторы. Там, где ответа нет ни в
+модели, ни в векторах, источником назван код эталонного **сервера** (`minio/minio`) с файлом
+и строкой — и это отмечено отдельно, потому что MinIO не S3 (ресёрч, Риск 6).
+
+---
+
+## 1. Адресация
+
+| Стиль | URL | Что в `Host` |
+|---|---|---|
+| path-style | `http://host:9000/<bucket>/<key>` | `host:9000` |
+| virtual-hosted | `http://<bucket>.host/<key>` | `<bucket>.host` |
+
+Оба обязательны: path-style — то, чем ходят в локальную развёртку (адрес `127.0.0.1` не может нести
+бакет DNS-меткой), virtual-hosted — умолчание AWS SDK. Различаются по `Host`, и `Host` входит
+в подпись, поэтому стиль обязан быть определён **до** сборки canonical request, а не при
+маршрутизации.
+
+Ключ — всё, что после первого `/` за именем бакета, включая последующие `/`. Разбор:
+раздельно раскодировать имя бакета и остаток; `%2F` внутри ключа декодируется в обычный байт `/`
+и никакого дальнейшего разделения не вызывает.
+
+*Целевое, M-24.*
+
+## 2. Ключ
+
+**Реализовано (M-08, M-09, M-10).**
+
+Ключ — последовательность байтов, не текст:
+[`ObjectKey`](../../bochka-core/src/main/kotlin/io/github/youndie/bochka/core/ObjectKey.kt).
+
+### 2.1 Порядок
+
+Беззнаковое сравнение байтов. `ListObjectsV2` возвращает объекты «in lexicographical order based
+on their key names» (`s3-service-2.json`, `ListObjectsV2`, «Sorting order of returned objects»);
+для байтовой строки это значит именно это. Приёмка — 534 вектора в
+[`docs/spec/key-order/vectors.txt`](../spec/key-order/vectors.txt), выданные `sorted()` в Python.
+
+От этого порядка определены `start-after` и `continuation-token`, поэтому ошибка в нём — не
+«странный вид листинга», а пропущенные и продублированные объекты между страницами.
+
+### 2.2 Кодирование: две функции, не одна
+
+[`UriCodec`](../../bochka-s3/src/main/kotlin/io/github/youndie/bochka/s3/UriCodec.kt).
+
+| Байт | На пути запроса | В ответе листинга при `encoding-type=url` |
+|---|---|---|
+| пробел | `%20` | `+` |
+| `~` | не кодируется | `%7E` |
+| `*` | `%2A` | не кодируется |
+| `/` | не кодируется | не кодируется |
+| `+` (литеральный) | `%2B` | `%2B` |
+
+Путь — по `docs/spec/s3-signing-vectors/key-encoding`; ответ — по `minio/minio`,
+`cmd/api-utils.go:28-44`, где исключения перечислены в комментарии дословно.
+
+Декодирование пути: `%XX` → байт; `+` остаётся плюсом (это не форма); **нормализация не делается** —
+`a/./b` остаётся `a/./b` (`reference/botocore-auth.py:538`). Битая escape-последовательность —
+`400`, а не догадка.
+
+### 2.3 Что принимается как ключ
+
+[`ObjectKeyRules`](../../bochka-s3/src/main/kotlin/io/github/youndie/bochka/s3/ObjectKeyRules.kt).
+
+| Ключ | bochka | Эталонный сервер | Почему |
+|---|---|---|---|
+| `a//b` | **принимает** | `XMinioInvalidObjectName` | ключ не попадает в файловую систему (Р2) |
+| `a/./b`, `a/../b` | **принимает** | `XMinioInvalidResourceName` | там же |
+| `a/b` и `a/b/c` рядом | **принимает** | `XMinioObjectExistsAsDirectory` | там же |
+| `Photo.JPG` и `photo.jpg` | **два разных ключа** | зависит от ФС | там же |
+| `café.txt` в NFC и NFD | **два разных ключа** | зависит от ФС | там же |
+| невалидный UTF-8 | **принимает** | принимает | ключ — байты |
+| пустой | `400 InvalidURI` | — | `shapes.ObjectKey`, `min: 1` |
+| длиннее 1024 **байт** | `400 KeyTooLongError` | тот же код | прозой в документации AWS; в модели величины нет |
+
+Первые пять строк — не послабление, а следствие раскладки: на диске лежит UUID, ключ живёт
+в индексе. Это единственное место контракта, где bochka **шире** эталонного сервера.
+
+## 3. Подпись
+
+*Целевое, M-13…M-19.*
+
+### 3.1 Четыре способа передать тело
+
+Определяются заголовком `x-amz-content-sha256`. Сервер обязан принимать все четыре — `aws s3 cp`
+по умолчанию пользуется третьим или четвёртым, и сервер, умеющий только первые два, не работает
+с ним вовсе (ресёрч, §1.1).
+
+| `x-amz-content-sha256` | Тело | Длина объекта берётся из |
+|---|---|---|
+| `<hex sha256>` | как есть, хеш проверяется | `Content-Length` |
+| `UNSIGNED-PAYLOAD` | как есть, не проверяется | `Content-Length` |
+| `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` | кадры, подпись каждого куска | `X-Amz-Decoded-Content-Length` |
+| `STREAMING-UNSIGNED-PAYLOAD-TRAILER` | кадры, сумма в трейлере | `X-Amz-Decoded-Content-Length` |
+
+Плюс `STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` — кадры с подписями **и** трейлером
+(`minio/minio`, `cmd/streaming-signature-v4.go:43-44`, `cmd/auth-handler.go:91-142`).
+
+### 3.2 Кадр `aws-chunked`
+
+```
+<размер-hex>;chunk-signature=<hex>\r\n<тело куска>\r\n
+...
+0;chunk-signature=<hex>\r\n\r\n
+```
+
+Подписи кусков образуют цепочку: в string to sign каждого куска входит подпись предыдущего, первая
+цепляется за подпись самого запроса. Алгоритм — `AWS4-HMAC-SHA256-PAYLOAD`, для трейлера
+`AWS4-HMAC-SHA256-TRAILER` (`cmd/streaming-signature-v4.go:45-46`).
+
+Сопутствующие заголовки: `Content-Encoding: aws-chunked`, `X-Amz-Trailer: <имя заголовка суммы>`,
+`X-Amz-Decoded-Content-Length: <длина объекта>`. Исходный `Content-Length` клиент **удаляет**
+(botocore, `httpchecksum.py`, `AwsChunkedWrapper`).
+
+Лимиты: кусок ≤ 16 МиБ, строка заголовка ≤ 4 КиБ (`cmd/streaming-signature-v4.go:178,260`).
+Превышение — отказ, а не попытка прочитать.
+
+### 3.3 Canonical request
+
+```
+<METHOD>\n<CANONICAL_URI>\n<CANONICAL_QUERY>\n<CANONICAL_HEADERS>\n\n<SIGNED_HEADERS>\n<PAYLOAD_HASH>
+```
+
+`botocore-auth.py:370`. Путь берётся **как пришёл**, без нормализации и без перекодирования
+(`:538`) — то есть подписывается сырая строка из request line, а не результат нашего декодирования.
+
+Расхождение подписи — `403 SignatureDoesNotMatch`, и в теле ответа обязан лежать **наш** canonical
+request: клиенту нечем сравнить иначе, и построчный дифф находит причину за минуту (M-19).
+
+### 3.4 `Expect: 100-continue`
+
+botocore ставит его на **любое** файлоподобное тело и ждёт ответа ровно 1 секунду
+(`handlers.py:395-398`, `awsrequest.py:124-146`). Сервер обязан:
+
+* ответить `100 Continue` перед чтением тела, если запрос принят;
+* уметь ответить **окончательным статусом** (`403`, `404`, `400`), не прочитав ни байта тела.
+
+Второе — требование к порядку проверок, а не к HTTP: подпись и права проверяются по заголовкам.
+Иначе отказ по правам стоит пяти гигабайт трафика.
+
+## 4. Операции v1
+
+*Целевое, M-27…M-57.* Полный список параметров каждой операции — в `s3-service-2.json`,
+здесь копия не заводится (иначе разъедется).
+
+| Операция | Метод и URI | Успех |
+|---|---|---|
+| `ListBuckets` | `GET /` | 200, `ListAllMyBucketsResult` |
+| `CreateBucket` | `PUT /<bucket>` | 200 |
+| `DeleteBucket` | `DELETE /<bucket>` | **204** |
+| `HeadBucket` | `HEAD /<bucket>` | 200, тела нет |
+| `GetBucketLocation` | `GET /<bucket>?location` | 200, `LocationConstraint` |
+| `PutObject` | `PUT /<bucket>/<key>` | 200, `ETag` заголовком |
+| `GetObject` | `GET /<bucket>/<key>` | 200, при `Range` — **206** |
+| `HeadObject` | `HEAD /<bucket>/<key>` | 200, тела нет |
+| `DeleteObject` | `DELETE /<bucket>/<key>` | **204** |
+| `DeleteObjects` | `POST /<bucket>?delete` | 200, `DeleteResult` |
+| `ListObjectsV2` | `GET /<bucket>?list-type=2` | 200, `ListBucketResult` |
+| `ListObjects` | `GET /<bucket>` | 200, `ListBucketResult` |
+| `CreateMultipartUpload` | `POST /<bucket>/<key>?uploads` | 200, `InitiateMultipartUploadResult` |
+| `UploadPart` | `PUT /<bucket>/<key>?partNumber=N&uploadId=…` | 200, `ETag` **заголовком** |
+| `CompleteMultipartUpload` | `POST /<bucket>/<key>?uploadId=…` | 200 — **см. ниже** |
+| `AbortMultipartUpload` | `DELETE /<bucket>/<key>?uploadId=…` | **204** |
+| `ListParts` | `GET /<bucket>/<key>?uploadId=…` | 200, `ListPartsResult` |
+
+Три места, где интуиция врёт и тест обязан это закрепить:
+
+* **удаление несуществующего ключа — успех** (204), а не `NoSuchKey`;
+* **`HEAD` не имеет тела даже на ошибке**: `404` приезжает без XML, и по нему нельзя отличить
+  отсутствующий объект от отсутствующего бакета;
+* **`CompleteMultipartUpload` может вернуть `200 OK` с ошибкой внутри тела**
+  (`s3-service-2.json:32`). Успех определяется корневым элементом: `CompleteMultipartUploadResult`
+  либо `Error`. Значит ответ нельзя начинать отдавать до того, как результат известен.
+
+## 5. Листинг
+
+*Целевое, M-44…M-49.*
+
+```
+GET /<bucket>?list-type=2[&prefix=][&delimiter=][&max-keys=][&continuation-token=][&start-after=][&encoding-type=url]
+```
+
+Параметры — `shapes.ListObjectsV2Request.members`, ответ — `shapes.ListObjectsV2Output.members`.
+
+| Правило | Источник |
+|---|---|
+| Порядок — беззнаковый по байтам ключа | раздел 2.1 |
+| `KeyCount` — число элементов **на странице**, не всего в бакете | `shapes.ListObjectsV2Output` |
+| Страница последняя, когда `<IsTruncated>false</IsTruncated>` | там же |
+| `Prefix` присутствует всегда, пустой если не запрошен | наблюдение по эталону; клиенты читают его обратно |
+| `CommonPrefixes` — плоский список, каждый в своём элементе | `shapes`, `flattened` |
+| При `encoding-type=url` кодируются `Key`, `Prefix`, `Delimiter`, `StartAfter` и `CommonPrefixes.Prefix` | botocore, `decode_list_object_v2` |
+| `continuation-token` — непрозрачная строка, обратно уезжает дословно | там же (код, не комментарий) |
+
+**Семантика токена при параллельной записи** — открытый вопрос 1 ресёрча, решается в M-52 и до
+тех пор в контракте не зафиксирована.
+
+## 6. XML
+
+**Реализовано (M-11).**
+[`S3Documents`](../../bochka-s3/src/main/kotlin/io/github/youndie/bochka/s3/xml/S3Documents.kt),
+[`S3Requests`](../../bochka-s3/src/main/kotlin/io/github/youndie/bochka/s3/xml/S3Requests.kt).
+
+Корневые элементы и пространство имён — по структурам эталонного сервера
+(`cmd/api-response.go:102,178,226,403,412,436`; `cmd/api-errors.go:64`):
+
+| Документ | Корень | Пространство имён |
+|---|---|---|
+| листинг объектов | `ListBucketResult` | `http://s3.amazonaws.com/doc/2006-03-01/` |
+| список бакетов | `ListAllMyBucketsResult` | то же |
+| части | `ListPartsResult` | то же |
+| создание загрузки | `InitiateMultipartUploadResult` | то же |
+| завершение загрузки | `CompleteMultipartUploadResult` | то же |
+| пакетное удаление | `DeleteResult` | то же |
+| **ошибка** | `Error` | **нет** |
+
+Ошибка без пространства имён — не мелочь: клиент, сопоставляющий корень с namespace, не опознает
+ответ вовсе.
+
+Плоскость списков — из модели: `Contents`, `CommonPrefixes`, `Deleted`, `Part` повторяются
+элементом напрямую, а `Buckets` **оборачивает** `Bucket` (`shapes.ListBucketsOutput.members`).
+
+**Ключ уезжает байтами.** Экранируются только пять сущностей; управляющие байты остаются как есть.
+Ответ модели на непредставимые в XML 1.0 ключи — не переписать ключ, а `encoding-type=url`
+(`shapes.EncodingType`). Клиент, не попросивший кодирования и получивший такой ключ, получает
+документ, который его парсер отвергнет, — ровно как от S3.
+
+Читаются два тела: `Delete` (≤ 1000 объектов) и `CompleteMultipartUpload` (≤ 10 000 частей).
+`<!DOCTYPE>` отвергается, из сущностей распознаются только пять предопределённых.
+
+## 7. Ошибки
+
+*Целевое, M-25.*
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<Error>
+  <Code>NoSuchKey</Code>
+  <Message>The specified key does not exist.</Message>
+  <Resource>/photos/missing.jpg</Resource>
+  <RequestId>...</RequestId>
+  <HostId>...</HostId>
+</Error>
+```
+
+`RequestId` уезжает всегда, в том числе когда сказать больше нечего: без этой пары обращение
+в поддержку не рассматривают, и клиентские библиотеки несут её в исключение безусловно.
+
+Коды, которые понадобятся заведомо: `NoSuchKey`, `NoSuchBucket`, `NoSuchUpload`,
+`BucketAlreadyOwnedByYou`, `BucketAlreadyExists`, `BucketNotEmpty`, `AccessDenied`,
+`SignatureDoesNotMatch`, `EntityTooSmall`, `InvalidPart`, `InvalidPartOrder`,
+`MissingContentLength`, `KeyTooLongError`, `InvalidURI`, `InvalidArgument`, `InternalError`.
+
+`HEAD` тела не имеет по определению метода — там остаются только статус и заголовки.
+
+## 8. Числа, которых нет в модели
+
+| Величина | Значение | Откуда |
+|---|---|---|
+| длина ключа | 1024 байта | проза документации AWS |
+| минимальный размер части | 5 МиБ | закрыто живым запросом в соседнем проекте (`EntityTooSmall` на двух частях по 1 МиБ) |
+| номера частей | 1…10 000 | `s3-service-2.json:1604` |
+| размер куска `aws-chunked` | ≤ 16 МиБ | `cmd/streaming-signature-v4.go:260` |
+| объектов в одном `DeleteObjects` | 1000 | ограничение протокола |
+| срок presign-ссылки | ≤ 604 800 с | `smithy-typescript`, `MAX_PRESIGNED_TTL` |
+
+## 9. Чего в контракте нет
+
+Версионирование, ACL, политики бакетов, теги, lifecycle, SSE, `CopyObject`, `SelectObjectContent`,
+S3 Express. Причины и условия возврата — [BACKLOG.md](../../BACKLOG.md), раздел «Вне рамок».
+
+`ListObjectVersions` отсутствует вместе с версионированием; клиент, который ходит им, получит
+`NotImplemented`, а не пустой список — пустой список выглядит как «версий нет», и это враньё.
