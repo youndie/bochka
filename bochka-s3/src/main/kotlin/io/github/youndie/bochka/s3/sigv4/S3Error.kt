@@ -149,6 +149,22 @@ enum class S3Error(
         400,
     ),
 
+    /**
+     * `411 Length Required`, and the code and text come from the model's own error table rather
+     * than the reference server: "You must provide the Content-Length HTTP header."
+     *
+     * A `PUT` whose length is stated nowhere — no `Content-Length`, and no
+     * `X-Amz-Decoded-Content-Length` for a streaming body — is refused rather than accepted at
+     * whatever length happens to arrive. Found by pointing an independent client at the server:
+     * its test for this expected 411 and got 200, which means a truncated upload would have been
+     * stored as a complete object.
+     */
+    MISSING_CONTENT_LENGTH(
+        "MissingContentLength",
+        "You must provide the Content-Length HTTP header.",
+        411,
+    ),
+
     INVALID_URI(
         "InvalidURI",
         "Couldn't parse the specified URI.",

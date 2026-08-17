@@ -110,8 +110,9 @@ Three independent levels, because each is blind to what the others catch:
    The count of enabled tests is printed next to the percentage, because otherwise a rising score
    and a shrinking suite look identical.
 
-Note who is missing from level 2: this project's author also wrote an S3 client, and testing a
-server with your own client is the weakest check available — it signs its bodies the one simple
+s3kn is in level 2 as well — `ci/s3kn.sh` runs its live tests against bochka, 15 of 21 today — but
+it is the one client whose result is never the metric. Its author is this project's author, and
+testing a server with your own client is the weakest check available — it signs its bodies the one simple
 way, so it never exercises the thing most likely to be broken, and it does that while looking
 green. It stays in the set as a second independent implementation of the signature and as presign
 coverage. It is not the metric.

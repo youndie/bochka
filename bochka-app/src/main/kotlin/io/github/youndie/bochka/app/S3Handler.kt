@@ -47,6 +47,17 @@ class S3Handler(
             is SignatureVerifier.Result.Ok -> Unit
         }
 
+        // A body whose length is stated nowhere is refused before it is read, like everything else
+        // decided from the head. `Content-Length` for an ordinary body, `X-Amz-Decoded-Content-Length`
+        // for a streaming one; a chunked upload with neither could only be stored at whatever length
+        // happened to arrive.
+        if (route is S3Router.Route.PutObject &&
+            head.contentLength == null &&
+            head.header("x-amz-decoded-content-length") == null
+        ) {
+            return error(head, S3Error.MISSING_CONTENT_LENGTH, key = route.key, bucket = route.bucket)
+        }
+
         keyOf(route)?.let { key ->
             ObjectKeyRules.check(key)?.let { rejection ->
                 return error(
