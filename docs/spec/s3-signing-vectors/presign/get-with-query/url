@@ -1,0 +1,1 @@
+https://photos.s3.us-east-1.amazonaws.com/hello.txt?versionId=v1&X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=AKIDEXAMPLE%2F20150830%2Fus-east-1%2Fs3%2Faws4_request&X-Amz-Date=20150830T123600Z&X-Amz-Expires=3600&X-Amz-SignedHeaders=host&X-Amz-Signature=a887c65c318370a1ed629549cf3660f0028fda7272b094e437f941622064bd4f

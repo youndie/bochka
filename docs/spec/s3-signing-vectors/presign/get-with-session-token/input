@@ -1,0 +1,9 @@
+method=GET
+style=virtual
+bucket=photos
+key=hello.txt
+query=
+body=
+unsigned=true
+token=AQoDYXdzEPT//////////wEXAMPLEtc764bNrC9SAPBSM22wDOk4x4H+IZ8j4FZTwdQW==
+expires=3600

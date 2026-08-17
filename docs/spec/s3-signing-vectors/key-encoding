@@ -1,0 +1,9 @@
+hello.txt	hello.txt
+my dir/file.txt	my%20dir/file.txt
+a+b	a%2Bb
+a~b	a~b
+файл.txt	%D1%84%D0%B0%D0%B9%D0%BB.txt
+🙂	%F0%9F%99%82
+a//b	a//b
+a/./b	a/./b
+photos/2015/august/myphoto.jpg	photos/2015/august/myphoto.jpg

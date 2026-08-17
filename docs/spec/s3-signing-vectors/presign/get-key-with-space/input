@@ -1,0 +1,9 @@
+method=GET
+style=virtual
+bucket=photos
+key=my dir/file.txt
+query=
+body=
+unsigned=true
+token=
+expires=900

@@ -105,6 +105,17 @@ subprojects {
             // if the profile did not reach the forked JVM, neither did this, and the check fails on
             // a missing expectation instead of quietly having nothing to compare against.
             systemProperty("bochka.expectedJvmArgs", profile.joinToString(" "))
+
+            // Tests read the specification out of the repository rather than off the network, and
+            // they cite a file and a line in it (project rule 2). The path is injected because a
+            // test's working directory is its module, and `../docs/spec` in a dozen tests is a
+            // dozen places to fix when a module moves.
+            systemProperty(
+                "bochka.specDir",
+                rootProject.layout.projectDirectory
+                    .dir("docs/spec")
+                    .asFile.absolutePath,
+            )
             testLogging {
                 events("failed")
                 exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

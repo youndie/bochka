@@ -1,0 +1,8 @@
+method=GET
+style=virtual
+bucket=photos
+key=a/./b
+query=
+body=
+unsigned=false
+token=

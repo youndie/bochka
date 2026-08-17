@@ -1,0 +1,9 @@
+method=GET
+style=virtual
+bucket=photos
+key=hello.txt
+query=versionId=v1
+body=
+unsigned=true
+token=
+expires=3600

@@ -1,0 +1,8 @@
+method=GET
+style=virtual
+bucket=photos
+key=файл.txt
+query=
+body=
+unsigned=false
+token=

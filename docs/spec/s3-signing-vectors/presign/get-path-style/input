@@ -1,0 +1,9 @@
+method=GET
+style=path
+bucket=photos
+key=hello.txt
+query=
+body=
+unsigned=true
+token=
+expires=3600

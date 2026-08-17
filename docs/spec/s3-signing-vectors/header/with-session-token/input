@@ -1,0 +1,8 @@
+method=GET
+style=virtual
+bucket=photos
+key=hello.txt
+query=
+body=
+unsigned=false
+token=AQoDYXdzEPT//////////wEXAMPLEtc764bNrC9SAPBSM22wDOk4x4H+IZ8j4FZTwdQW==

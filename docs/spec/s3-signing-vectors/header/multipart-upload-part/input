@@ -1,0 +1,8 @@
+method=PUT
+style=virtual
+bucket=photos
+key=hello.txt
+query=partNumber=1&uploadId=abc
+body=
+unsigned=false
+token=

@@ -1,0 +1,8 @@
+method=GET
+style=path
+bucket=photos
+key=
+query=list-type=2
+body=
+unsigned=false
+token=
