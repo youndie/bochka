@@ -37,3 +37,18 @@ tasks.withType<JavaExec>().configureEach {
     @Suppress("UNCHECKED_CAST")
     jvmArgs(rootProject.extra["bochkaJvmArgs"] as List<String>)
 }
+
+// The measurements of M8, which are not benchmarks in the JMH sense and are deliberately not run
+// by `check`: they move gigabytes through a disk, take minutes, and answer questions whose answer
+// belongs in a document rather than in a pass/fail gate. What they found is in
+// docs/measurements.md.
+//
+// `-Pbochka.measure=serve|write|assemble|all`; `BOCHKA_MEASURE_DIR` says where the files go and
+// is refused if it points at a memory filesystem.
+tasks.register<JavaExec>("measure") {
+    group = "verification"
+    description = "Runs the M8 measurements and prints what they found"
+    mainClass.set("io.github.youndie.bochka.benchmark.Measurements")
+    classpath = sourceSets["main"].runtimeClasspath
+    args = listOf(project.findProperty("bochka.measure") as String? ?: "all")
+}

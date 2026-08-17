@@ -17,22 +17,39 @@ mock (`S3Mock`, itself Kotlin, shipped as a Testcontainer and a JUnit extension)
 actually keeps what you give it is missing — and, because it has to be small to be worth writing,
 it can also be the thing you start inside a test.
 
-## Status: it answers real clients, and it does not keep anything yet
+## Status: it stores objects and real clients can use it
 
-`aws-cli`, `boto3`, `mc` and `rclone` can create a bucket, upload a file, list it and read it back
-byte for byte — over plaintext and through an nginx TLS terminator — and what they upload survives
-the process being killed.
+`aws-cli`, `boto3`, `mc` and `rclone` can create a bucket, upload a file — whole or in parts —
+list it with a delimiter, read a byte range of it and read it back byte for byte, over plaintext
+and through an nginx TLS terminator, and what they upload survives the process being killed.
 
 Built so far: the key as a byte string with its own order, SigV4 verified in both forms, all four
 body framings including `aws-chunked` with the signature chain, an HTTP/1.1 server on a selector,
-routing, errors, and storage — an object is a file under a UUID, the key lives only in the index,
-the index is a log with a checksum per record, and the write order is the one whose worst outcome
-is an orphan rather than a key pointing at nothing. Not built: listing with `delimiter` and
-pagination, multipart, `Range`, zero-copy reads. [BACKLOG.md](BACKLOG.md) says which milestone each of those is, and every
-closed one ends with what came out differently than planned.
+the object operations with `Range`, metadata and checksums, listing in both versions of the
+operation with `delimiter` and pagination, multipart upload, and storage — an object is a file
+under a UUID, the key lives only in the index, the index is a log with a checksum per record, the
+write order is the one whose worst outcome is an orphan rather than a key pointing at nothing, and
+a `GET` is `transferTo` from that file straight into the socket.
+
+Not built: index compaction, the published ceiling on object count, and delivery — a distribution,
+an image and published artifacts. [BACKLOG.md](BACKLOG.md) says which milestone each of those is,
+and every closed one ends with what came out differently than planned.
 
 Anything below describing behaviour bochka does not have says so — that is the project's first
 rule, `main` describes what exists.
+
+## Measured, not assumed
+
+The whole read path exists for one property, and identical bytes come out either way — so it is
+measured rather than believed. On ext4, median of seven runs of two gibibytes each, with the
+spread printed beside every number ([docs/measurements.md](docs/measurements.md)):
+
+> **Reading into the heap costs 5.3× the processor per byte that `transferTo` does.**
+
+Two of the three measurements came out against the plan, which is the more useful half. The
+buffer the upload path uses turns out not to matter — size and kind are both inside the noise, so
+nothing was changed — and `splice(2)` through FFM is not being introduced, because the most it
+could remove is a quarter of a core at the rate a single disk sustains.
 
 What the research produced before any of it was a list of things that are true and counter-intuitive, each verified
 against a source rather than remembered. They are the reason the design looks the way it does:
