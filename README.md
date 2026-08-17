@@ -31,9 +31,9 @@ under a UUID, the key lives only in the index, the index is a log with a checksu
 write order is the one whose worst outcome is an orphan rather than a key pointing at nothing, and
 a `GET` is `transferTo` from that file straight into the socket.
 
-Not built: index compaction, the published ceiling on object count, and delivery — a distribution,
-an image and published artifacts. [BACKLOG.md](BACKLOG.md) says which milestone each of those is,
-and every closed one ends with what came out differently than planned.
+Not built: delivery — a distribution, an image and published artifacts.
+[BACKLOG.md](BACKLOG.md) says which milestone that is, and every closed one ends with what came
+out differently than planned.
 
 Anything below describing behaviour bochka does not have says so — that is the project's first
 rule, `main` describes what exists.
@@ -50,6 +50,28 @@ Two of the three measurements came out against the plan, which is the more usefu
 buffer the upload path uses turns out not to matter — size and kind are both inside the noise, so
 nothing was changed — and `splice(2)` through FFM is not being introduced, because the most it
 could remove is a quarter of a core at the rate a single disk sustains.
+
+## How many objects, stated rather than discovered
+
+Every key lives in memory, so the number of objects is bounded by the heap whether anybody says so
+or not. Measured at **650 bytes of index per object** (586 for a forty-byte key, 647 for a
+hundred-byte one — the larger is what the code uses), with half the heap allowed to be index:
+
+| `-Xmx` | Objects |
+|---|---|
+| 64 MiB, the development profile | ~51 600 |
+| **512 MiB, what ships** | **~413 000** |
+| 4 GiB | ~3 300 000 |
+
+Going over it is a **refusal to start**, not a slide into swap. A process that comes up and then
+thrashes looks like a slow disk to everybody who did not write the index; a process that will not
+start says what is wrong. A new key is refused the same way once the ceiling is reached — an
+overwrite is not, because a full store has to be able to make itself smaller.
+
+That ceiling is also why the index log is compacted. Recovery is proportional to the **log**, not
+to what is still live in it: half a million objects written three times each open in 3.5 seconds,
+and in 0.76 after a compaction. Unread log is not disk space, it is time the server is not
+answering.
 
 What the research produced before any of it was a list of things that are true and counter-intuitive, each verified
 against a source rather than remembered. They are the reason the design looks the way it does:

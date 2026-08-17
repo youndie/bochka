@@ -263,4 +263,18 @@ enum class S3Error(
         "Couldn't parse the specified URI.",
         400,
     ),
+
+    /**
+     * `507`, and the one entry here that is **not** from anybody's error table.
+     *
+     * The S3 model has no code for "this store will not manage more objects", because the service
+     * it describes does not have that limit. bochka does and publishes it (Р1), so it needs an
+     * answer, and the honest one is the HTTP status that means exactly this. `503` was the
+     * alternative and is worse: it tells the client to retry a condition that will not change.
+     */
+    INSUFFICIENT_STORAGE(
+        "InsufficientStorage",
+        "This store is at its published ceiling on the number of objects it manages.",
+        507,
+    ),
 }

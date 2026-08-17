@@ -62,8 +62,60 @@ object Main {
             )
         }
         println("access keys: ${credentials.ids.sorted().joinToString(", ")}")
+        println("object ceiling: ${store.maxObjects} (${ObjectStore.BYTES_PER_OBJECT} bytes of index each)")
+
+        startHousekeeping(store)
         Runtime.getRuntime().addShutdownHook(Thread { server.close() })
         Thread.currentThread().join()
+    }
+
+    /**
+     * The three things nobody asks for and that nothing else will ever do.
+     *
+     * Compaction (M-63), because recovery is proportional to the log and not to what is in it —
+     * measured at 3.5 seconds against 0.76 for the same half-million objects. Orphan collection
+     * (Р12), because the write order's one bad outcome is a file nobody points at. Abandoned
+     * uploads (M-57), because a client that stops calling says nothing, and its parts stay.
+     *
+     * A daemon thread on a plain interval rather than a scheduler: there is one job, it is allowed
+     * to be late, and a thread that dies with the process is the correct lifetime for it. Failures
+     * are printed and the loop continues — housekeeping that could take the server down with it
+     * would be a worse trade than housekeeping that skipped a round.
+     */
+    private fun startHousekeeping(store: ObjectStore) {
+        val minutes = env("BOCHKA_HOUSEKEEPING_MINUTES")?.toLongOrNull() ?: 60
+        if (minutes <= 0) {
+            println("housekeeping: disabled")
+            return
+        }
+        println("housekeeping: every $minutes min")
+
+        // Once at startup, so a store that was killed mid-life does not carry the mess until the
+        // first interval elapses.
+        housekeep(store)
+        Thread {
+            while (true) {
+                Thread.sleep(minutes * 60_000)
+                housekeep(store)
+            }
+        }.apply {
+            isDaemon = true
+            name = "bochka-housekeeping"
+            start()
+        }
+    }
+
+    private fun housekeep(store: ObjectStore) {
+        runCatching {
+            store.compactIfWorthwhile()?.let {
+                println("compacted the index: ${it.bytesBefore} -> ${it.bytesAfter} bytes, ${it.records} records")
+            }
+            val orphans = store.sweepOrphans()
+            val abandoned = store.sweepUploads()
+            if (orphans > 0 || abandoned > 0) {
+                println("swept $orphans orphaned files and $abandoned abandoned uploads")
+            }
+        }.onFailure { println("housekeeping failed: $it") }
     }
 
     private fun env(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() }

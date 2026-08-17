@@ -1,5 +1,10 @@
 package io.github.youndie.bochka.benchmark
 
+import io.github.youndie.bochka.core.IndexRecord
+import io.github.youndie.bochka.core.Metadata
+import io.github.youndie.bochka.core.ObjectKey
+import io.github.youndie.bochka.core.ObjectStore
+import io.github.youndie.bochka.core.RecordLog
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
@@ -62,16 +67,24 @@ object Measurements {
                     assemble(dir, bytes)
                 }
 
+                "index" -> {
+                    index(dir)
+                }
+
                 else -> {
                     serve(dir, bytes)
                     println()
                     write(dir, bytes)
                     println()
                     assemble(dir, bytes)
+                    println()
+                    index(dir)
                 }
             }
         } finally {
-            Files.list(dir).use { list -> list.forEach { runCatching { Files.deleteIfExists(it) } } }
+            Files.walk(dir).use { walk ->
+                walk.sorted(Comparator.reverseOrder()).forEach { runCatching { Files.deleteIfExists(it) } }
+            }
         }
     }
 
@@ -271,6 +284,103 @@ object Measurements {
         if (perRead > 0) {
             println("  so joining pays for itself after %.0f reads".format(joining.median.cpuSecondsPerGiB / perRead))
         }
+    }
+
+    /**
+     * M-64 and M-66: what the index costs in memory, and what it costs to open.
+     *
+     * The ceiling this project publishes is a **count of objects**, not a volume of data, because
+     * that is what the bitcask shape makes it (Р1) — so the number that has to exist is bytes of
+     * heap per key in the index. It is measured through the log rather than by uploading: recovery
+     * populates exactly the structure being measured and touches no object files, so the figure is
+     * about the index and nothing else.
+     *
+     * Reported for two key lengths, because "bytes per object" is not a constant and publishing it
+     * as one would be the misleading half of a true statement.
+     *
+     * Needs a heap: `-Pbochka.jvmArgs="-Xmx4G -XX:+UseSerialGC"`.
+     */
+    private fun index(dir: Path) {
+        println("== M-64/M-66: what the index costs ==")
+        val counts = System.getenv("BOCHKA_MEASURE_KEYS")?.toIntOrNull() ?: 500_000
+        // Every key written more than once, because a log with no dead records compacts to its own
+        // size and a demonstration of that says nothing about compaction. Three generations is what
+        // an object overwritten twice leaves behind.
+        val generations = System.getenv("BOCHKA_MEASURE_GENERATIONS")?.toIntOrNull() ?: 3
+
+        for (keyLength in listOf(40, 100)) {
+            val home = Files.createDirectories(dir.resolve("index-$keyLength"))
+            val log = home.resolve("index.log")
+            Files.deleteIfExists(log)
+
+            RecordLog(log).use { fresh ->
+                fresh.recover { }
+                fresh.append(IndexRecord.encode(IndexRecord.BucketCreated("photos")))
+                repeat(generations) { generation ->
+                    for (i in 0 until counts) {
+                        val key = "photos/%0${keyLength - 17}d/img.jpg".format(i)
+                        fresh.append(
+                            IndexRecord.encode(
+                                IndexRecord.Put(
+                                    bucket = "photos",
+                                    key = ObjectKey.of(key),
+                                    fileId = "0e2b9c34-6a1f-4a7d-9b8e-2f5c1d0a7e3$generation",
+                                    size = 4096,
+                                    eTag = "\"d41d8cd98f00b204e9800998ecf8427e\"",
+                                    lastModifiedMillis = 1_755_400_000_000L,
+                                    metadata = Metadata(contentType = "image/jpeg"),
+                                ),
+                            ),
+                        )
+                    }
+                }
+                fresh.force()
+            }
+
+            val logBytes = Files.size(log)
+            val before = usedHeap()
+            val startedAt = System.nanoTime()
+            val store = ObjectStore(home, ObjectStore.Durability.NONE)
+            val openNanos = System.nanoTime() - startedAt
+            val after = usedHeap()
+            val perObject = (after - before).toDouble() / store.objectCount
+
+            println(
+                "  %3d-byte keys  %,d objects  log %,.1f MiB  open %6.3f s  heap %,.1f MiB  %6.0f bytes/object".format(
+                    keyLength,
+                    store.objectCount,
+                    logBytes / (1024.0 * 1024),
+                    openNanos / 1e9,
+                    (after - before) / (1024.0 * 1024),
+                    perObject,
+                ),
+            )
+
+            // M-66: a compaction writes exactly the live set, so opening does not get slower with
+            // the number of compactions. Shown rather than argued.
+            val compacted = store.compact()
+            val reopenedAt = System.nanoTime()
+            val reopened = ObjectStore(home, ObjectStore.Durability.NONE)
+            println(
+                "                 after compaction: log %,.1f MiB (was %,.1f), open %6.3f s, %,d objects".format(
+                    compacted.bytesAfter / (1024.0 * 1024),
+                    compacted.bytesBefore / (1024.0 * 1024),
+                    (System.nanoTime() - reopenedAt) / 1e9,
+                    reopened.objectCount,
+                ),
+            )
+            reopened.close()
+            store.close()
+        }
+    }
+
+    private fun usedHeap(): Long {
+        repeat(3) {
+            System.gc()
+            Thread.sleep(120)
+        }
+        val runtime = Runtime.getRuntime()
+        return runtime.totalMemory() - runtime.freeMemory()
     }
 
     // --- plumbing ---------------------------------------------------------------------------

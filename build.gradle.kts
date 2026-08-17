@@ -20,8 +20,8 @@ plugins {
  * * **how many objects fit** — a property of the index, published as a number once it has been
  *   measured (M-64), and deliberately absent from this file until then.
  *
- * So this figure is provisional in one direction only: it bounds development, and the shipped
- * default is the measured one. Whoever closes M-64 changes this line and says so in the backlog.
+ * So this figure bounds **development**. What ships is [shippedJvmArgs], which differs in exactly
+ * one line and for exactly one measured reason (M-64).
  */
 val defaultJvmArgs =
     listOf(
@@ -32,6 +32,20 @@ val defaultJvmArgs =
         "-XX:MaxMetaspaceSize=80M",
         "-Xmx64M",
     )
+
+/**
+ * What the distribution runs under.
+ *
+ * The same profile with a different heap, and the difference is the whole of M-64. The index holds
+ * every key in memory, measured at 650 bytes each (`docs/measurements.md`), and half the heap is
+ * what it may use — so 64 MiB would ship a store that refuses its 51 601st object. 512 MiB is
+ * about 413 000 objects, which is a number worth publishing rather than a number that happens.
+ *
+ * Development stays at 64 MiB because it is enforcing something else there: that the hot path
+ * does not allocate. Two numbers because they are two requirements, not one requirement measured
+ * twice.
+ */
+val shippedJvmArgs = defaultJvmArgs.map { if (it == "-Xmx64M") "-Xmx512M" else it }
 
 /**
  * `-Pbochka.jvmArgs="-Xmx4G -XX:+UseG1GC"` replaces the whole list for one invocation.
@@ -54,6 +68,7 @@ val footprintOverridden = project.hasProperty("bochka.jvmArgs")
 
 extra["bochkaJvmArgs"] =
     if (footprintOverridden) jvmArgs + "-Dbochka.footprintOverridden=true" else jvmArgs
+extra["bochkaShippedJvmArgs"] = if (footprintOverridden) jvmArgs else shippedJvmArgs
 
 allprojects {
     // `io.github.<login>` — coordinates whose ownership is proved by owning the GitHub account.

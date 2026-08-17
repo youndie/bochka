@@ -46,6 +46,18 @@ import kotlin.concurrent.withLock
 class ObjectStore(
     private val root: Path,
     private val durability: Durability = Durability.FSYNC,
+    /**
+     * The published ceiling: how many objects this store will manage.
+     *
+     * Not a limit invented to be safe — a consequence of the shape. Every key lives in memory
+     * (Р1), so the number of objects is bounded by the heap whether anybody says so or not, and
+     * the only question is whether it is a stated characteristic or a slow slide into swap that
+     * looks like the disk being slow. It is stated, and it is enforced twice: the store refuses to
+     * **open** a log that is already over it, and refuses a new key once it is reached.
+     *
+     * The default comes from the measurement in `docs/measurements.md`, not from taste.
+     */
+    val maxObjects: Int = ceilingForHeap(),
 ) : Closeable {
     /**
      * Whether a write is on the disk before it is acknowledged.
@@ -98,7 +110,11 @@ class ObjectStore(
     // try to create its file in a directory that does not exist yet. Every test had one already,
     // which is why only starting the server for real found it.
     private val data = root.resolve("data").also { Files.createDirectories(it) }
-    private val log = RecordLog(root.resolve("index.log"))
+    private val logPath = root.resolve("index.log")
+
+    // Reassigned by [compact], which is why it is not a `val`: the log the store appends to after
+    // a compaction is a different file, and the old one is gone by then.
+    private var log = RecordLog(logPath)
 
     // Ordered, because a listing is defined by that order (§1.5) and rebuilding it per request
     // would make every listing a sort of the whole bucket.
@@ -111,6 +127,16 @@ class ObjectStore(
     // Declared here rather than beside the rest of the multipart code because property
     // initialisers run in declaration order and `init` replays the log into this one.
     private val uploads = ConcurrentHashMap<String, UploadState>()
+
+    /**
+     * Records appended since the log last held only live ones. Drives [compactIfWorthwhile].
+     *
+     * Up here for the same reason as [uploads]: `init` sets it from what recovery read, and a
+     * property declared after `init` does not exist yet when `init` runs.
+     */
+    private val recordsSinceCompaction =
+        java.util.concurrent.atomic
+            .AtomicLong()
 
     /** What the log said when it was opened. Worth printing at startup rather than discarding. */
     val recovery: RecordLog.Recovery
@@ -175,6 +201,21 @@ class ObjectStore(
                     }
                 }
             }
+
+        // A refusal at startup rather than degradation into swap (Risk 7). A store that opens and
+        // then thrashes looks like a slow disk, and the person looking at it has no reason to
+        // suspect the index; a store that will not open says exactly what is wrong.
+        recordsSinceCompaction.set(recovery.records)
+
+        if (objects.size > maxObjects) {
+            throw CeilingExceeded(
+                objects.size,
+                maxObjects,
+                "the index holds ${objects.size} objects and this heap allows $maxObjects " +
+                    "($BYTES_PER_OBJECT bytes each, half of ${heapMiB()} MiB). " +
+                    "Start with a larger -Xmx, or move objects off this node.",
+            )
+        }
     }
 
     val objectCount: Int get() = objects.size
@@ -272,8 +313,19 @@ class ObjectStore(
                 metadata = metadata,
             )
 
+        // The ceiling is checked against a key that is not already there: overwriting an object
+        // costs no index entry, and refusing it would make a full store unable to shrink.
+        val located = Located(bucket, key)
+        if (objects.size >= maxObjects && !objects.containsKey(located)) {
+            throw CeilingExceeded(
+                objects.size,
+                maxObjects,
+                "the index is at its ceiling of $maxObjects objects",
+            )
+        }
+
         // Only now does the object exist as far as anybody asking is concerned.
-        val previous = objects.put(Located(bucket, key), stored)
+        val previous = objects.put(located, stored)
         write(
             IndexRecord.Put(
                 bucket = bucket,
@@ -683,6 +735,156 @@ class ObjectStore(
     private fun unhex(text: String): ByteArray =
         ByteArray(text.length / 2) { ((text[it * 2].digitToInt(16) shl 4) or text[it * 2 + 1].digitToInt(16)).toByte() }
 
+    // --- compaction (M9) ----------------------------------------------------------------------
+
+    /** How large the log is right now, and how much of it is worth keeping. */
+    val logSizeBytes: Long get() = log.sizeBytes
+
+    /** What one compaction would leave: one record per bucket, object and upload with its parts. */
+    private fun liveRecords(): Long = buckets.size.toLong() + objects.size + uploads.values.sumOf { 1L + it.parts.size }
+
+    /**
+     * Compacts when the log has grown to [factor] times what it needs to be, and not before.
+     *
+     * A store that compacted on every write would spend its life rewriting the index; one that
+     * never compacted would take longer to start every day — measured, and it is not subtle:
+     * three generations of half a million keys open in 3.5 seconds against 0.76 after compaction,
+     * because recovery is proportional to the **log**, not to the live set.
+     *
+     * The floor exists so an empty store does not compact on every housekeeping tick, where the
+     * ratio between one record and two is infinite and meaningless.
+     */
+    fun compactIfWorthwhile(
+        factor: Double = 3.0,
+        floor: Long = 1000,
+    ): Compaction? {
+        val live = liveRecords()
+        val written = recordsSinceCompaction.get()
+        if (written < floor || written < live * factor) return null
+        return compact()
+    }
+
+    /**
+     * Rewrites the log as the shortest one that would recover to the state it is in now.
+     *
+     * A log of mutations grows for ever otherwise: every overwrite leaves the record it replaced,
+     * every delete leaves both the put and the tombstone. Compaction writes one record per living
+     * thing — a bucket, an object, an upload in flight — and drops the rest.
+     *
+     * ## Why it is bounded by keys and not by data
+     *
+     * The bitcask shape (Р1): the log holds index records, not object bytes, so a compaction is
+     * proportional to how many keys exist, never to how many gigabytes they point at. A terabyte
+     * of objects under a thousand keys compacts in the time it takes to write a thousand records.
+     * That is also the reason the published ceiling is a count and not a volume.
+     *
+     * ## Why the whole thing is under the writer's lock
+     *
+     * A compaction that ran alongside writers would have to catch up with whatever they appended
+     * while it worked, and there is no point at which "caught up" is true without stopping them.
+     * Holding the lock makes the pause the length of writing one record per key, which is the
+     * cost the design already accepts everywhere else. A pause bounded by the key count is a
+     * property to publish; a race in a store's index is not a trade at all.
+     *
+     * ## What a crash leaves
+     *
+     * The new log is built under another name and renamed over the old one, which is atomic. A
+     * kill before the rename leaves the old log untouched and a stray file for the next start to
+     * ignore; a kill after it leaves the new log, complete and `fsync`ed. There is no moment at
+     * which the store's own state is half of each (M-65).
+     */
+    fun compact(): Compaction =
+        writing.withLock {
+            val before = log.sizeBytes
+            val temp = root.resolve("index.log.compacting")
+            Files.deleteIfExists(temp)
+
+            var records = 0L
+            RecordLog(temp).use { fresh ->
+                for (bucket in buckets) {
+                    fresh.append(IndexRecord.encode(IndexRecord.BucketCreated(bucket)))
+                    records++
+                }
+                for ((located, stored) in objects) {
+                    fresh.append(
+                        IndexRecord.encode(
+                            IndexRecord.Put(
+                                bucket = located.bucket,
+                                key = located.key,
+                                fileId = stored.fileId,
+                                size = stored.size,
+                                eTag = stored.eTag,
+                                lastModifiedMillis = stored.lastModified.toEpochMilli(),
+                                metadata = stored.metadata,
+                            ),
+                        ),
+                    )
+                    records++
+                }
+                // Uploads in flight are state too, and a compaction that dropped them would lose
+                // parts a client has already been told were accepted.
+                for (state in uploads.values) {
+                    fresh.append(
+                        IndexRecord.encode(
+                            IndexRecord.UploadStarted(
+                                bucket = state.upload.bucket,
+                                key = state.upload.key,
+                                uploadId = state.upload.id,
+                                startedAtMillis = state.upload.startedAt.toEpochMilli(),
+                                metadata = state.upload.metadata,
+                            ),
+                        ),
+                    )
+                    records++
+                    for (part in state.parts.values) {
+                        fresh.append(
+                            IndexRecord.encode(
+                                IndexRecord.UploadPart(
+                                    bucket = state.upload.bucket,
+                                    uploadId = state.upload.id,
+                                    number = part.number,
+                                    fileId = part.fileId,
+                                    size = part.size,
+                                    eTag = part.eTag,
+                                    lastModifiedMillis = part.lastModified.toEpochMilli(),
+                                ),
+                            ),
+                        )
+                        records++
+                    }
+                }
+                fresh.force()
+            }
+
+            val after = Files.size(temp)
+            log.close()
+            Files.move(temp, logPath, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+            syncDirectory()
+            log = RecordLog(logPath).also { it.recover { } }
+            recordsSinceCompaction.set(records)
+            Compaction(before, after, records)
+        }
+
+    data class Compaction(
+        val bytesBefore: Long,
+        val bytesAfter: Long,
+        val records: Long,
+    )
+
+    /**
+     * `fsync` on the directory, which is what makes the rename itself durable.
+     *
+     * The file's contents being on the disk is not the same as the name pointing at them: a
+     * rename lives in the directory, and a directory that was not synced can come back after a
+     * power cut still naming the old inode. Best-effort because opening a directory as a channel
+     * is a POSIX thing and this project is also edited on a Mac; the run that matters is Linux.
+     */
+    private fun syncDirectory() {
+        runCatching {
+            FileChannel.open(root, StandardOpenOption.READ).use { it.force(true) }
+        }
+    }
+
     /**
      * Deletes object files nobody points at.
      *
@@ -715,6 +917,7 @@ class ObjectStore(
         writing.withLock {
             log.append(IndexRecord.encode(record))
             if (durability == Durability.FSYNC) log.force()
+            recordsSinceCompaction.incrementAndGet()
         }
     }
 
@@ -727,13 +930,45 @@ class ObjectStore(
     private fun pathOf(fileId: String): Path =
         data.resolve(fileId.substring(0, 2)).resolve(fileId.substring(2, 4)).resolve(fileId)
 
-    private companion object {
+    /** Refused because the index is full — at startup, or at the write that would overflow it. */
+    class CeilingExceeded(
+        val objects: Int,
+        val ceiling: Int,
+        override val message: String,
+    ) : RuntimeException(message)
+
+    companion object {
         /**
          * The floor on every part but the last, from the AWS documentation's own table
          * ("Amazon S3 multipart upload limits"). Closed by a live request in a neighbouring
          * project: two parts of one megabyte each answered `EntityTooSmall`.
          */
-        const val MIN_PART_SIZE = 5 * 1024 * 1024L
+        private const val MIN_PART_SIZE = 5 * 1024 * 1024L
+
+        /**
+         * Measured, not guessed: 584 bytes for a forty-byte key and 646 for a hundred-byte one,
+         * half a million objects at a time on ext4 (`docs/measurements.md`, M-64). The larger of
+         * the two is taken, because a ceiling derived from the cheaper case is a ceiling that is
+         * wrong for the customer who has long keys.
+         */
+        const val BYTES_PER_OBJECT = 650
+
+        /**
+         * How much of the heap the index is allowed to be.
+         *
+         * Half, and the other half is not spare: it is the request paths, the buffers and the
+         * headroom a collector needs to not spend the process's life collecting. A store sized so
+         * that the index alone fits works right up to the moment it has traffic.
+         */
+        const val INDEX_HEAP_FRACTION = 0.5
+
+        fun heapMiB(): Long = Runtime.getRuntime().maxMemory() / (1024 * 1024)
+
+        fun ceilingForHeap(heapBytes: Long = Runtime.getRuntime().maxMemory()): Int =
+            (heapBytes * INDEX_HEAP_FRACTION / BYTES_PER_OBJECT)
+                .toLong()
+                .coerceAtMost(Int.MAX_VALUE.toLong())
+                .toInt()
     }
 
     private fun ByteArray.startsWith(prefix: ByteArray): Boolean {

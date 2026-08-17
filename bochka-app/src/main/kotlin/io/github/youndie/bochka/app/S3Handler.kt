@@ -286,6 +286,8 @@ class S3Handler(
             )
         } catch (e: ObjectStore.CompletionRefused) {
             error(head, refusalOf(e.reason), detail = e.message, key = route.key, bucket = route.bucket)
+        } catch (e: ObjectStore.CeilingExceeded) {
+            error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = route.key, bucket = route.bucket)
         }
     }
 
@@ -524,6 +526,8 @@ class S3Handler(
             HttpResponse(200, "OK", headers = checksumHeaders(metadata) + ("ETag" to stored.eTag))
         } catch (e: AwsChunkedDecoder.MalformedBody) {
             error(head, e.error, detail = e.message)
+        } catch (e: ObjectStore.CeilingExceeded) {
+            error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = route.key, bucket = route.bucket)
         } finally {
             // Anything still staged at this point is a body that was written and refused.
             staged?.let(store::discard)

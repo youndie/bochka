@@ -13,9 +13,10 @@ dependencies {
 
 application {
     mainClass.set("io.github.youndie.bochka.app.Main")
-    // The runtime profile the tests and benchmarks run under, so what ships is the process that was
-    // measured. The distribution itself, its configuration and the image are M11 — what this line
-    // does today is let a live client be pointed at a real socket.
+    // The shipped profile, which is the development one with a larger heap: the index holds every
+    // key, so the heap is the published ceiling on the number of objects (M-64). Everything else
+    // about it — the collector, the code cache, the direct memory — is what the tests and the
+    // benchmarks run under, so what ships is the process that was measured.
     @Suppress("UNCHECKED_CAST")
-    applicationDefaultJvmArgs = rootProject.extra["bochkaJvmArgs"] as List<String>
+    applicationDefaultJvmArgs = rootProject.extra["bochkaShippedJvmArgs"] as List<String>
 }
