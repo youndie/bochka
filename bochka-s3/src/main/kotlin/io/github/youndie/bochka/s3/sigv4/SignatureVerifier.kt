@@ -73,9 +73,11 @@ class SignatureVerifier(
     }
 
     private fun verifyHeader(request: CanonicalRequest.Request): Result {
+        // No header at all is an anonymous request, and that is not a malformed one: this store
+        // has no public objects, so the answer is "not yours" rather than "your request is wrong".
         val header =
             request.header("authorization")
-                ?: return Result.Failure(S3Error.AUTHORIZATION_HEADER_MALFORMED, "no Authorization header")
+                ?: return Result.Failure(S3Error.ACCESS_DENIED, "no credentials on the request")
 
         val authorization =
             try {

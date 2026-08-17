@@ -28,6 +28,11 @@ import kotlin.test.assertTrue
 class HttpServerConcurrencyTest {
     /** Answers with the path it was asked about, so a mismatched answer is visible rather than plausible. */
     private class Echo : HttpHandler {
+        override fun failed(
+            head: HttpRequestParser.Head,
+            cause: Throwable,
+        ): HttpResponse = HttpResponse(500, "Error", body = (cause.message ?: "boom").toByteArray())
+
         override fun screen(head: HttpRequestParser.Head): HttpResponse? = null
 
         override suspend fun handle(

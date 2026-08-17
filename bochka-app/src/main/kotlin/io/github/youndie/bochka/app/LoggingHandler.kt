@@ -20,6 +20,16 @@ class LoggingHandler(
     private val delegate: HttpHandler,
     private val enabled: Boolean,
 ) : HttpHandler {
+    override fun failed(
+        head: HttpRequestParser.Head,
+        cause: Throwable,
+    ): HttpResponse {
+        // Always printed, whatever the log flag says: this is the server admitting a bug, and it
+        // is the one line whose absence would leave nothing to look at.
+        println("bochka failed ${head.method} ${head.path}: $cause")
+        return delegate.failed(head, cause)
+    }
+
     override fun screen(head: HttpRequestParser.Head): HttpResponse? {
         val response = delegate.screen(head)
         if (enabled && response != null) log(head, response.status, "screened")

@@ -30,13 +30,16 @@ class UriCodecTest {
     }
 
     @Test
-    fun `a listing encodes space as plus and the path encodes it as percent twenty`() {
-        // The single most confusable pair in this class, and the reason it is one class with two
-        // functions rather than two files nobody compares.
+    fun `a space is percent twenty in both encoders, and the two still differ`() {
+        // This assertion said `my+dir/file.txt` for the listing until `ceph/s3-tests` disagreed
+        // (`test_bucket_list_encoding_basic`): botocore decodes a listing with `unquote`, which
+        // leaves a `+` as a `+`, so a key with a space came back as a key with a plus. The `+`
+        // was a guess, and it was consistent with itself in both directions — which is exactly
+        // the kind of wrong that only somebody else's client can find.
         val key = "my dir/file.txt".toByteArray()
 
         assertEquals("my%20dir/file.txt", UriCodec.encodePath(key))
-        assertEquals("my+dir/file.txt", UriCodec.encodeForListing(key))
+        assertEquals("my%20dir/file.txt", UriCodec.encodeForListing(key))
     }
 
     @Test

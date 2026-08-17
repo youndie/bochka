@@ -95,6 +95,7 @@ object S3Documents {
         continuationToken: String? = null,
         nextContinuationToken: String? = null,
         startAfter: ByteArray? = null,
+        owner: String? = null,
     ): ByteArray =
         XmlWriter(1024 + contents.size * 128).document("ListBucketResult") {
             text("Name", bucket)
@@ -115,6 +116,14 @@ object S3Documents {
                     text("ETag", entry.eTag)
                     text("Size", entry.size)
                     text("StorageClass", entry.storageClass)
+                    // Only when `fetch-owner=true` asked for it: `shapes.ListObjectsV2Request`
+                    // has the parameter precisely because the owner is not sent by default.
+                    if (owner != null) {
+                        element("Owner") {
+                            text("ID", owner)
+                            text("DisplayName", owner)
+                        }
+                    }
                 }
             }
             for (commonPrefix in commonPrefixes) {
@@ -196,6 +205,23 @@ object S3Documents {
                     }
                 }
             }
+        }
+
+    /**
+     * `<CopyObjectResult>` — the answer to a copy, and the second document that carries a result
+     * inside a `200` for a reason.
+     *
+     * A copy of a large object takes time, so S3 defined this response to start before the copy
+     * finishes, with the outcome in the body. bochka copies before answering, so the status is
+     * always the true one — the same choice as `CompleteMultipartUpload` and for the same reason.
+     */
+    fun copyObjectResult(
+        eTag: String,
+        lastModified: String,
+    ): ByteArray =
+        XmlWriter(256).document("CopyObjectResult") {
+            text("LastModified", lastModified)
+            text("ETag", eTag)
         }
 
     fun initiateMultipartUploadResult(
@@ -304,10 +330,13 @@ object S3Documents {
      * Found by the compatibility suite, whose cleanup fixture calls this before every single test.
      * A `501` here errored 837 of 838 tests without any of them reaching the thing they check.
      */
+    @Suppress("LongParameterList")
     fun listVersionsResult(
         bucket: String,
         prefix: ByteArray?,
         delimiter: ByteArray?,
+        keyMarker: ByteArray?,
+        nextKeyMarker: ByteArray?,
         maxKeys: Int,
         isTruncated: Boolean,
         contents: List<ObjectEntry>,
@@ -318,6 +347,17 @@ object S3Documents {
             text("Name", bucket)
             encodedText("Prefix", prefix ?: ByteArray(0), encoding)
             if (delimiter != null) encodedText("Delimiter", delimiter, encoding)
+            // The markers travel even when they are empty, and this is the cheapest field in the
+            // whole protocol to get wrong: botocore's paginator reads `NextKeyMarker` out of the
+            // response and puts it straight into the next request. Absent, it sends `None`, which
+            // its own parameter validation then rejects — inside `nuke_prefixed_buckets`, which
+            // the compatibility suite runs as a fixture around **every** test. Dozens of cases
+            // that had nothing to do with versioning failed in their teardown and passed when run
+            // alone, which is exactly the shape of failure that gets blamed on the harness.
+            encodedText("KeyMarker", keyMarker ?: ByteArray(0), encoding)
+            encodedText("NextKeyMarker", nextKeyMarker ?: ByteArray(0), encoding)
+            text("VersionIdMarker", "")
+            text("NextVersionIdMarker", "")
             text("MaxKeys", maxKeys.toLong())
             text("IsTruncated", isTruncated)
             if (encoding == KeyEncoding.URL) text("EncodingType", "url")

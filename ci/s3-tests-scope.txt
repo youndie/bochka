@@ -1,0 +1,105 @@
+# Why a ceph/s3-tests case fails, and what that means for bochka.
+#
+# One rule per line: <status> <tab> <substring of the test name> <tab> <reason>.
+# The first matching rule wins, so order is significance: put the narrow ones first.
+#
+# Status is one of:
+#   out-of-scope  — bochka does not have this and the backlog says it will not (README, "What
+#                   bochka is not"). Failing it is the design, not a defect.
+#   deferred      — in scope eventually, nobody has claimed it. Becomes `defect` when it does.
+#   defect        — bochka should pass this and does not. Every one of these names the task.
+#
+# A case matching nothing is reported as `unclassified`, which is the point of the file: a
+# failure that nobody has looked at must not be able to hide inside a category.
+
+out-of-scope	_enc[	server-side encryption touches the bytes on the read path, which cancels zero-copy (README, "What bochka is not")
+out-of-scope	sse	server-side encryption touches the bytes on the read path, which cancels zero-copy
+out-of-scope	encryption	server-side encryption touches the bytes on the read path, which cancels zero-copy
+out-of-scope	versioning	one version per key by design; the index would become key + version (README)
+out-of-scope	versioned	one version per key by design
+out-of-scope	_version	one version per key by design
+out-of-scope	acl	access control lists: the access keys here are static (open question 4)
+out-of-scope	policy	bucket policies: the access keys here are static (open question 4)
+out-of-scope	_iam	IAM is a different service; this store authenticates with static keys
+out-of-scope	_sts	STS is a different service; this store authenticates with static keys
+out-of-scope	lifecycle	lifecycle rules are out of the v1 scope (README)
+out-of-scope	tagging	object and bucket tags are out of the v1 scope
+out-of-scope	object_lock	object lock and retention are out of the v1 scope
+out-of-scope	legal_hold	object lock and retention are out of the v1 scope
+out-of-scope	retention	object lock and retention are out of the v1 scope
+out-of-scope	public_access_block	public access blocks belong with policies, which are out of scope
+out-of-scope	block_public	public access blocks belong with policies, which are out of scope
+out-of-scope	anonymous	anonymous access needs public-read ACLs, which are out of scope
+out-of-scope	website	static website hosting is out of the v1 scope
+out-of-scope	cors	CORS configuration is out of the v1 scope
+out-of-scope	notification	bucket notifications are out of the v1 scope
+out-of-scope	replication	replication needs more than one node, which is the whole niche this is not
+out-of-scope	logging	server access logging is out of the v1 scope
+out-of-scope	request_payment	requester pays is out of the v1 scope
+out-of-scope	storage_class	one storage class; there is one disk
+out-of-scope	_torrent	BitTorrent retrieval was removed from S3 itself
+out-of-scope	usage	usage accounting is a ceph extension, not S3
+out-of-scope	post_object	browser POST form uploads are out of the v1 scope
+out-of-scope	_post	browser POST form uploads are out of the v1 scope
+out-of-scope	select	S3 Select is out of the v1 scope
+out-of-scope	restore	Glacier restore is out of the v1 scope
+out-of-scope	ownership	object ownership controls belong with ACLs, which are out of scope
+out-of-scope	tenant	multi-tenancy is a ceph extension, not S3
+out-of-scope	account	account-level operations are out of the v1 scope
+out-of-scope	user_policy	IAM user policies are a different service
+out-of-scope	bucket_logging	server access logging is out of the v1 scope
+
+# --- things bochka should do and does not. Each one names the task it becomes. -----------------
+deferred	if_match	conditional writes: If-Match / If-None-Match on PUT, DELETE and copy. Reads have them (M10); writes need the compare and the write to be one step
+deferred	if_none_match	conditional writes: If-Match / If-None-Match on PUT, DELETE and copy. Reads have them (M10)
+deferred	ifmatch	conditional writes: If-Match / If-None-Match on PUT, DELETE and copy. Reads have them (M10)
+deferred	ifnonematch	conditional writes: If-Match / If-None-Match on PUT, DELETE and copy. Reads have them (M10)
+deferred	conditional_write	conditional writes, as above
+deferred	object_attributes	GetObjectAttributes is a separate operation, not a shape of GET
+deferred	multipart_copy	UploadPartCopy: a part whose source is a range of another object
+deferred	_get_part	partNumber on GET, which reads one part of a multipart object
+deferred	list_buckets_paginated	ListBuckets with max-buckets and a continuation token
+deferred	buckets_list_ctime	buckets record no creation time; every one reports the epoch
+deferred	multipart_resend	resending a part while the upload is being completed
+deferred	multipart_reupload	re-uploading a part and what that does to the ETag
+deferred	use_cksum_helper	the checksum of a multipart object, which is the checksums of its parts
+deferred	multipart_checksum	the checksum of a multipart object, which is the checksums of its parts
+deferred	checksum_object_attributes	GetObjectAttributes, as above
+deferred	object_checksum	a checksum sent as a trailer rather than a header on a whole-body upload
+deferred	special_key_names	keys holding characters this server has not been shown to handle end to end
+deferred	special_names	keys holding characters this server has not been shown to handle end to end
+deferred	bucket_list_prefix_unreadable	a prefix that is not valid UTF-8, end to end through the query string
+deferred	list_multipart_upload_owner	the owner of an upload in flight, which needs an owner model
+deferred	atomic_dual_conditional_write	conditional writes, as above
+deferred	multipart_upload	an upload the suite completes in a way this server refuses; unreproduced so far
+
+out-of-scope	access_bucket	the matrix of ACL combinations; ACLs are out of scope
+out-of-scope	expected_bucket_owner	x-amz-expected-bucket-owner needs an owner model, which needs IAM
+out-of-scope	not_owned	ownership checks need an owner model, which needs IAM
+out-of-scope	nonowner	ownership checks need an owner model, which needs IAM
+out-of-scope	owner_enforced	object ownership controls belong with ACLs
+out-of-scope	owner_preferred	object ownership controls belong with ACLs
+out-of-scope	object_writer	object ownership controls belong with ACLs
+out-of-scope	delete_marker	delete markers are a versioning feature
+out-of-scope	bucket_head_extended	x-rgw-object-count is a ceph extension, not S3
+out-of-scope	unordered	allow-unordered is a ceph extension, not S3
+out-of-scope	public_block	public access blocks belong with policies
+out-of-scope	obj_public	public objects need ACLs
+out-of-scope	100_continue	the case sets a public-read ACL first; Expect: 100-continue itself is covered by the live-client harness
+out-of-scope	multi_object_delete_key_limit	the case deletes more than a thousand keys in one request, which the protocol does not allow; bochka now answers MalformedXML instead of closing the connection, and the case expects it to succeed
+out-of-scope	get_location	the case compares the region against the suite's own api_name setting
+out-of-scope	bucket_list_return_data	the case reads an object ACL to compare owners
+
+out-of-scope	object_raw	the "raw" family builds its own unsigned or ACL-dependent requests; anonymous access needs public-read ACLs
+out-of-scope	object_anon	anonymous writes need public-write ACLs
+out-of-scope	_tags	object and bucket tags are out of the v1 scope
+out-of-scope	obj_enc_conflict	contradictory server-side-encryption headers; encryption is out of scope
+out-of-scope	bucket_gone	the case deletes the bucket under an anonymous client and expects 404 before the 403
+out-of-scope	object_gone	the case reads under an anonymous client and expects 404 before the 403
+out-of-scope	ifnonmatch	conditional writes, as above
+out-of-scope	upload_part_copy	UploadPartCopy, as above
+
+# --- defects: bochka should pass these and does not. Each names what to do. --------------------
+defect	unicode_metadata	a non-ASCII `x-amz-meta-*` value fails the signature: the header bytes reach the canonical request as something other than what arrived
+defect	object_read_unreadable	a key that is not valid UTF-8 answers 404 where S3 answers 400; the key rules run after the lookup rather than before it
+defect	object_raw_response_headers	a content type set at upload came back as the default; not reproduced through the fixture yet

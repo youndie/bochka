@@ -82,6 +82,14 @@ class S3Fixture(
         headers: List<Pair<String, String>> = emptyList(),
         body: ByteArray = ByteArray(0),
         payloadHash: String? = null,
+        /**
+         * Send the body with `Transfer-Encoding: chunked` and no `Content-Length`.
+         *
+         * The JDK client picks the framing from the publisher: one with a known length gets a
+         * `Content-Length`, one without gets chunked. There is no way to ask for it directly, and
+         * setting the header by hand is refused as contradicting the length.
+         */
+        chunked: Boolean = false,
     ): Answer {
         val timestamp = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").format(ZonedDateTime.now(ZoneOffset.UTC))
         val hash = payloadHash ?: Sigv4.sha256Hex(body)
@@ -113,8 +121,14 @@ class S3Fixture(
             HttpRequest
                 .newBuilder(uri)
                 .header("Host", host)
-                .method(method, HttpRequest.BodyPublishers.ofByteArray(body))
-                .header("x-amz-content-sha256", hash)
+                .method(
+                    method,
+                    if (chunked) {
+                        HttpRequest.BodyPublishers.ofInputStream { java.io.ByteArrayInputStream(body) }
+                    } else {
+                        HttpRequest.BodyPublishers.ofByteArray(body)
+                    },
+                ).header("x-amz-content-sha256", hash)
                 .header("x-amz-date", timestamp)
                 .header(
                     "Authorization",

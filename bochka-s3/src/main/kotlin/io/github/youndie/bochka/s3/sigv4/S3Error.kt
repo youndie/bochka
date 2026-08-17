@@ -39,6 +39,19 @@ enum class S3Error(
         403,
     ),
 
+    /**
+     * `:599` — a request with no credentials at all, which is a different thing from bad ones.
+     *
+     * Anonymous access to a private bucket is `403 AccessDenied`, not `400`: the request is
+     * well-formed, it is just nobody's. Answering `400` told a client its request was broken and
+     * that retrying with credentials would not help.
+     */
+    ACCESS_DENIED(
+        "AccessDenied",
+        "Access Denied.",
+        403,
+    ),
+
     /** `:749`. */
     AUTHORIZATION_HEADER_MALFORMED(
         "AuthorizationHeaderMalformed",
@@ -201,6 +214,27 @@ enum class S3Error(
         "MalformedXML",
         "The XML you provided was not well-formed or did not validate against our published schema.",
         400,
+    ),
+
+    /**
+     * `:764` — a conditional read whose condition did not hold.
+     *
+     * It carries a body like every other error, and that is the part worth writing down: a `412`
+     * answered with headers and nothing else made botocore fail inside its own response parser
+     * rather than raise the `ClientError` the caller was waiting for. An error status without an
+     * error document is not a smaller error, it is a different failure.
+     */
+    PRECONDITION_FAILED(
+        "PreconditionFailed",
+        "At least one of the preconditions you specified did not hold.",
+        412,
+    ),
+
+    /** `:579` — this server has a bug, said in a way a client can act on. */
+    INTERNAL_ERROR(
+        "InternalError",
+        "We encountered an internal error. Please try again.",
+        500,
     ),
 
     /** `:654`. */

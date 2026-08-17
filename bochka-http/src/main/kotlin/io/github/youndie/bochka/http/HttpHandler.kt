@@ -28,6 +28,23 @@ interface HttpHandler {
     ): HttpResponse
 
     /**
+     * What to answer when [handle] threw something nobody expected.
+     *
+     * There has to be an answer. The alternative — letting the exception out and closing the
+     * connection — reaches the client as "the server hung up", which is the least actionable
+     * failure a server can produce: it is indistinguishable from a network fault, and every SDK
+     * retries it. A batch delete of more than a thousand keys arrived here first, and what the
+     * suite saw was `ConnectionClosedError`.
+     *
+     * The handler answers rather than the server because the shape of an error is the protocol's
+     * business, and this layer does not know what one looks like.
+     */
+    fun failed(
+        head: HttpRequestParser.Head,
+        cause: Throwable,
+    ): HttpResponse
+
+    /**
      * The body, handed over as it arrives rather than as one array: an object can be five
      * gigabytes, and the point of the whole design is never to hold one.
      */

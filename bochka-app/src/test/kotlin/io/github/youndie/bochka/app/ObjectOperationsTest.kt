@@ -26,6 +26,32 @@ class ObjectOperationsTest {
     }
 
     @Test
+    fun `an object with no content type still answers with one`() {
+        // `s3-service-2.json`, `GetObjectOutput.members.ContentType`. A client that reads the
+        // header unconditionally gets an error rather than a default of its own.
+        val b = bucket()
+        s3.put(b, "a.bin", "x")
+        assertEquals("binary/octet-stream", s3.get(b, "a.bin").header("Content-Type"))
+    }
+
+    @Test
+    fun `a body framed by chunked transfer encoding states its own length`() {
+        // The rule is that a body whose length is stated **nowhere** cannot be stored. A chunked
+        // body states it, chunk by chunk — refusing it was over-reading the rule, and
+        // `test_object_write_with_chunked_transfer_encoding` is what said so.
+        val b = bucket()
+        val chunked =
+            s3.send(
+                "PUT",
+                "/$b/chunked.txt",
+                body = "framed by the transfer encoding".toByteArray(),
+                chunked = true,
+            )
+        assertEquals(200, chunked.status, chunked.text)
+        assertEquals("framed by the transfer encoding", s3.get(b, "chunked.txt").text)
+    }
+
+    @Test
     fun `an object goes in and comes back`() {
         val b = bucket()
         val put = s3.put(b, "a.txt", "hello")
@@ -225,6 +251,14 @@ class ObjectOperationsTest {
         assertNull(s3.get(b, "a.txt").header("x-amz-checksum-crc32c"))
         val asked = s3.get(b, "a.txt", headers = listOf("x-amz-checksum-mode" to "ENABLED"))
         assertEquals("nekaYA==", asked.header("x-amz-checksum-crc32c"))
+
+        // Not with a range. The stored value describes the whole object, and sending it beside a
+        // slice of one says something false about the bytes that arrived — botocore checks it,
+        // finds a different value, and reports the server as corrupt.
+        val ranged =
+            s3.get(b, "a.txt", headers = listOf("x-amz-checksum-mode" to "ENABLED", "Range" to "bytes=0-3"))
+        assertEquals(206, ranged.status)
+        assertNull(ranged.header("x-amz-checksum-crc32c"))
     }
 
     @Test

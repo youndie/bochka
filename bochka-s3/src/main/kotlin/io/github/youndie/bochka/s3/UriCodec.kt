@@ -90,13 +90,18 @@ object UriCodec {
     /**
      * Bytes to the form a listing uses when the caller asked for `encoding-type=url`.
      *
-     * Space becomes `+`, not `%20`, and `~` gets escaped — neither is what the path does. This
-     * matches the reference implementation and, through it, AWS: the official client decodes these
-     * fields with `unquote_plus` (`botocore/compat.py`), so `+` is what it expects to see. There is
-     * no ambiguity in the other direction either, because a literal `+` in a key comes back as
-     * `%2B`.
+     * A space is `%20` and `~` is escaped; the first is the same as the path encoder and the
+     * second is not. **This said `+` for a space until `ceph/s3-tests` disagreed** — the reasoning
+     * was that botocore decodes these fields with `unquote_plus`, and it does not: `decode_*` in
+     * `botocore/handlers.py` uses `unquote_str`, which is plain `unquote` and leaves a `+` as a
+     * `+`. So a key holding a space came back holding a plus, and `test_bucket_list_encoding_basic`
+     * is what said so.
+     *
+     * Worth keeping as a note rather than a silent fix: the wrong version was self-consistent —
+     * this codec encoded and decoded `+` the same way, so every test written against it passed.
+     * Only a client that did not share the mistake could find it.
      */
-    fun encodeForListing(bytes: ByteArray): String = encode(bytes, spaceAsPlus = true, ::unreservedInListing)
+    fun encodeForListing(bytes: ByteArray): String = encode(bytes, spaceAsPlus = false, ::unreservedInListing)
 
     /**
      * Bytes to a query component, for canonicalising a request before checking its signature.

@@ -78,7 +78,7 @@ class S3DocumentsTest {
     }
 
     @Test
-    fun `with encoding-type=url a space becomes a plus`() {
+    fun `with encoding-type=url a space becomes percent twenty`() {
         val listing =
             S3Documents
                 .listBucketResult(
@@ -93,9 +93,9 @@ class S3DocumentsTest {
                     encoding = S3Documents.KeyEncoding.URL,
                 ).asText()
 
-        assertTrue(listing.contains("<Key>my+dir/file.txt</Key>"), listing)
-        assertTrue(listing.contains("<Prefix>my+dir/</Prefix>"), listing)
-        assertTrue(listing.contains("<CommonPrefixes><Prefix>my+dir/sub/</Prefix></CommonPrefixes>"), listing)
+        assertTrue(listing.contains("<Key>my%20dir/file.txt</Key>"), listing)
+        assertTrue(listing.contains("<Prefix>my%20dir/</Prefix>"), listing)
+        assertTrue(listing.contains("<CommonPrefixes><Prefix>my%20dir/sub/</Prefix></CommonPrefixes>"), listing)
         assertTrue(listing.contains("<EncodingType>url</EncodingType>"), listing)
     }
 

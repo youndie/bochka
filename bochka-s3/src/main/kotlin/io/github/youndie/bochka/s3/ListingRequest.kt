@@ -34,9 +34,22 @@ class ListingRequest(
     val encodeKeys: Boolean,
     /** The token exactly as it arrived, so it can be echoed back in `ContinuationToken`. */
     val continuationToken: String?,
+    /**
+     * `""` when the client sent `continuation-token=` with nothing after it, `null` when it sent
+     * no such parameter at all.
+     *
+     * The difference is visible to a client: S3 echoes `<ContinuationToken></ContinuationToken>`
+     * for the first, and omits the element for the second. Folding the two together makes a page
+     * that says nothing about where it started.
+     */
+    val emptyContinuationToken: String?,
     /** `start-after` as it arrived; `StartAfter` is echoed even when a token overrode it. */
     val startAfterParameter: ByteArray?,
     val marker: ByteArray?,
+    /** `key-marker`, which is what `ListObjectVersions` calls the same position. */
+    val keyMarker: ByteArray?,
+    /** `fetch-owner=true`: the owner is not in a listing unless it was asked for. */
+    val fetchOwner: Boolean,
 ) {
     class Malformed(
         val error: S3Error,
@@ -61,11 +74,12 @@ class ListingRequest(
             val token = params["continuation-token"]?.let(::String)?.takeIf { it.isNotEmpty() }
             val startAfterParameter = params["start-after"]?.takeIf { it.isNotEmpty() }
             val marker = params["marker"]?.takeIf { it.isNotEmpty() }
+            val keyMarker = params["key-marker"]?.takeIf { it.isNotEmpty() }
 
             // A token wins over start-after: the client is continuing a walk it began, and the
             // parameter it sent on the first request is still on the query string of every later
             // one because that is how the SDKs build them.
-            val startAfter = token?.let(::decodeToken) ?: startAfterParameter ?: marker
+            val startAfter = token?.let(::decodeToken) ?: startAfterParameter ?: marker ?: keyMarker
 
             return ListingRequest(
                 prefix = params["prefix"] ?: ByteArray(0),
@@ -75,8 +89,11 @@ class ListingRequest(
                 startAfter = startAfter,
                 encodeKeys = params["encoding-type"]?.let { String(it) }.equals("url", ignoreCase = true),
                 continuationToken = token,
+                emptyContinuationToken = if (token == null && params.containsKey("continuation-token")) "" else null,
                 startAfterParameter = startAfterParameter,
                 marker = marker,
+                keyMarker = keyMarker,
+                fetchOwner = params["fetch-owner"]?.let { String(it) }.equals("true", ignoreCase = true),
             )
         }
 

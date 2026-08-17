@@ -61,12 +61,23 @@ for section, key, secret in (
     cfg.set(section, "access_key", key)
     cfg.set(section, "secret_key", secret)
     cfg.set(section, "user_id", key)
+    # The suite asks the server for a bucket's location and compares it with this. It is the name
+    # of the region the deployment runs in, not a constant, so it has to agree with BOCHKA_REGION.
+    # Set per section rather than in DEFAULT: the sample sets it inside the sections, and a value
+    # there wins over the default, so a DEFAULT-only version of this line changed nothing.
+    cfg.set(section, "api_name", "us-east-1")
 with open("/work/s3tests.conf", "w") as out:
     cfg.write(out)
 PYCONF
 
 echo "running ceph/s3-tests (this pulls the suite and takes a few minutes)"
-docker run --rm --network host -v "$work:/work" "$IMAGE" bash -c '
+# `BOCHKA_S3TESTS_K` narrows the run to a `-k` expression and turns tracebacks on, which is how a
+# handful of failures get looked at without waiting three minutes for the other seven hundred.
+docker run --rm --network host -v "$work:/work" \
+  -e SELECT="${BOCHKA_S3TESTS_K:-}" \
+  -e TRACEBACK="$([ -n "${BOCHKA_S3TESTS_K:-}" ] && echo short || echo no)" \
+  -e TAIL="$([ -n "${BOCHKA_S3TESTS_K:-}" ] && echo 120 || echo 5)" \
+  "$IMAGE" bash -c '
   set -e
   apt-get update -qq >/dev/null 2>&1 && apt-get install -qq -y git >/dev/null 2>&1
   git clone -q --depth 1 https://github.com/ceph/s3-tests.git /s3-tests
@@ -85,11 +96,12 @@ docker run --rm --network host -v "$work:/work" "$IMAGE" bash -c '
   git rev-parse --short HEAD > /work/suite-revision
   python /work/make-conf.py '"$PORT"'
   S3TEST_CONF=/work/s3tests.conf timeout 5400 python -m pytest s3tests/functional/test_s3.py \
-    -p no:cacheprovider -q --no-header -rN --tb=no --continue-on-collection-errors \
-    --timeout=20 --timeout-method=signal \
+    -p no:cacheprovider -q --no-header -rN --continue-on-collection-errors \
+    --timeout=20 --timeout-method=signal --junit-xml=/work/results.xml \
+    ${SELECT:+-k} ${SELECT:+"$SELECT"} --tb=${TRACEBACK} \
     > /work/pytest.out 2>&1 || true
-  tail -5 /work/pytest.out
-' 2>&1 | tail -6
+  tail -${TAIL} /work/pytest.out
+' 2>&1 | tail -"$([ -n "${BOCHKA_S3TESTS_K:-}" ] && echo 130 || echo 6)"
 
 echo
 echo "suite revision: $(cat "$work/suite-revision" 2>/dev/null || echo unknown)"
@@ -121,3 +133,13 @@ fi
 printf 'ceph/s3-tests: %d of %d passed (%d%%), %d failed, %d errored\n' \
   "$passed" "$ran" $((passed * 100 / ran)) "$failed" "$errors"
 echo "the count of tests that ran is part of the number: a rising score and a shrinking suite look the same"
+
+# Why the rest fail, grouped. A bare percentage says how far there is to go and nothing about what
+# the distance is made of — and the difference between "does not have versioning" and "has a defect"
+# is the whole of it (M-67, Risk 2). The rules live in ci/s3-tests-scope.txt so that a failure
+# nobody has classified shows up as `unclassified` rather than quietly joining a bucket.
+if [ -f "$work/results.xml" ]; then
+  echo
+  python3 "$root/ci/s3_tests_scope.py" "$work/results.xml" "$root/ci/s3-tests-scope.txt" \
+    "${BOCHKA_FAILED_OUT:-}"
+fi

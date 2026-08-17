@@ -59,8 +59,13 @@ class S3Handler(
         // decided from the head. `Content-Length` for an ordinary body, `X-Amz-Decoded-Content-Length`
         // for a streaming one; a chunked upload with neither could only be stored at whatever length
         // happened to arrive.
+        // `Transfer-Encoding: chunked` counts as a stated length: the framing carries it, chunk by
+        // chunk, and the body ends where it says it ends. Refusing it was over-reading the rule —
+        // the rule is that a body whose length is stated **nowhere** cannot be stored, and a
+        // chunked body states it.
         if ((route is S3Router.Route.PutObject || route is S3Router.Route.UploadPart) &&
             head.contentLength == null &&
+            !head.isChunked &&
             head.header("x-amz-decoded-content-length") == null
         ) {
             return error(head, S3Error.MISSING_CONTENT_LENGTH, key = keyOf(route), bucket = bucketOf(route))
@@ -145,10 +150,11 @@ class S3Handler(
             is S3Router.Route.ListObjects -> listObjectsV1(head, route.bucket)
             is S3Router.Route.ListObjectVersions -> listVersions(head, route.bucket)
             is S3Router.Route.PutObject -> putObject(head, route, verification, body)
+            is S3Router.Route.CopyObject -> copyObject(head, route)
             is S3Router.Route.GetObject -> getObject(head, route.bucket, route.key)
             is S3Router.Route.HeadObject -> getObject(head, route.bucket, route.key, withBody = false)
             is S3Router.Route.DeleteObject -> deleteObject(route.bucket, route.key)
-            is S3Router.Route.DeleteObjects -> deleteObjects(route.bucket, body)
+            is S3Router.Route.DeleteObjects -> deleteObjects(head, route.bucket, body)
             is S3Router.Route.CreateMultipartUpload -> createUpload(head, route)
             is S3Router.Route.UploadPart -> uploadPart(head, route, verification, body)
             is S3Router.Route.ListParts -> listParts(head, route)
@@ -157,6 +163,46 @@ class S3Handler(
             is S3Router.Route.ListMultipartUploads -> listUploads(head, route.bucket)
             else -> error(head, S3Error.NOT_IMPLEMENTED, detail = "not implemented: $route")
         }
+    }
+
+    /**
+     * `PUT` with `x-amz-copy-source` — the same object, under another key, without leaving the
+     * server.
+     *
+     * `x-amz-metadata-directive` decides whose metadata the copy carries: `COPY` (the default)
+     * keeps the source's, `REPLACE` takes the request's. The one refusal that reads as arbitrary
+     * is a copy of an object onto itself with `COPY` — S3 rejects it because the request asks for
+     * nothing, and a client that meant to rewrite metadata and forgot the directive would
+     * otherwise be told it worked.
+     */
+    private fun copyObject(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.CopyObject,
+    ): HttpResponse {
+        if (!store.hasBucket(route.sourceBucket)) {
+            return error(head, S3Error.NO_SUCH_BUCKET, bucket = route.sourceBucket)
+        }
+        val source =
+            store.get(route.sourceBucket, route.sourceKey)
+                ?: return error(head, S3Error.NO_SUCH_KEY, key = route.sourceKey, bucket = route.sourceBucket)
+
+        val replacing = head.header("x-amz-metadata-directive").equals("REPLACE", ignoreCase = true)
+        val sameObject = route.sourceBucket == route.bucket && route.sourceKey == route.key
+        if (sameObject && !replacing) {
+            return error(
+                head,
+                S3Error.INVALID_REQUEST,
+                detail = "copying an object onto itself needs x-amz-metadata-directive: REPLACE",
+                key = route.key,
+                bucket = route.bucket,
+            )
+        }
+
+        val metadata = if (replacing) ObjectHeaders.read(head.headers) else source.metadata
+        val stored = store.copy(source, route.bucket, route.key, metadata)
+        return xml(
+            S3Documents.copyObjectResult(stored.eTag, timestamp(stored.lastModified)),
+        )
     }
 
     // --- multipart upload (M7) ----------------------------------------------------------------
@@ -330,6 +376,18 @@ class S3Handler(
     private fun ByteArray.startsWith(prefix: ByteArray): Boolean =
         prefix.size <= size && prefix.indices.all { this[it] == prefix[it] }
 
+    /**
+     * The answer to a bug in this server, which is a `500` with an error document like any other.
+     *
+     * `InternalError` is in the model and clients retry on it, which is the right behaviour for a
+     * failure that might not repeat. The detail travels in the body deliberately: this is a store
+     * somebody runs themselves, and the person reading the response is the person who can fix it.
+     */
+    override fun failed(
+        head: HttpRequestParser.Head,
+        cause: Throwable,
+    ): HttpResponse = error(head, S3Error.INTERNAL_ERROR, detail = "${cause::class.simpleName}: ${cause.message}")
+
     private fun listBuckets(): HttpResponse =
         xml(
             S3Documents.listAllMyBucketsResult(
@@ -387,9 +445,10 @@ class S3Handler(
                 contents = page.entries(),
                 commonPrefixes = page.commonPrefixes,
                 encoding = request.encoding(),
-                continuationToken = request.continuationToken,
+                continuationToken = request.continuationToken ?: request.emptyContinuationToken,
                 nextContinuationToken = page.nextAfter?.let(ListingRequest::encodeToken),
                 startAfter = request.startAfterParameter,
+                owner = if (request.fetchOwner) OWNER else null,
             )
         }
 
@@ -431,6 +490,8 @@ class S3Handler(
                 bucket = bucket,
                 prefix = request.prefix,
                 delimiter = request.delimiter,
+                keyMarker = request.keyMarker,
+                nextKeyMarker = page.nextAfter,
                 maxKeys = request.requestedMaxKeys,
                 isTruncated = page.isTruncated,
                 contents = page.entries(),
@@ -606,10 +667,24 @@ class S3Handler(
                 add("Last-Modified" to httpDate(stored.lastModified))
                 add("Accept-Ranges" to "bytes")
                 addAll(ObjectHeaders.write(stored.metadata))
-                if (head.header("x-amz-checksum-mode").equals("ENABLED", ignoreCase = true)) {
-                    addAll(checksumHeaders(stored.metadata))
-                }
+                // S3 answers with a content type whether or not one was given: `binary/octet-stream`
+                // is the model's own default, and a client that reads the header unconditionally
+                // gets an error rather than a default of its own.
+                if (stored.metadata.contentType == null) add("Content-Type" to DEFAULT_CONTENT_TYPE)
             }
+
+        conditional(head, stored)?.let { status ->
+            // `304` is the one status in this server that carries no body, because HTTP says a
+            // `304` has none. `412` is an error like any other and carries the error document —
+            // without it botocore fails inside its own parser instead of raising the error the
+            // caller is waiting for, which looks to the caller like a broken connection rather
+            // than a refusal.
+            return if (status == 304) {
+                HttpResponse(304, "Not Modified", headers, contentLength = 0)
+            } else {
+                error(head, S3Error.PRECONDITION_FAILED, key = key, bucket = bucket)
+            }
+        }
 
         return when (val range = ByteRanges.resolve(head.header("range"), stored.size)) {
             is ByteRanges.Resolved.Unsatisfiable -> {
@@ -627,7 +702,7 @@ class S3Handler(
                 HttpResponse(
                     200,
                     "OK",
-                    headers = headers,
+                    headers = headers + checksumIfAsked(head, stored),
                     file = HttpResponse.FileSlice(path, 0, stored.size),
                     // HEAD announces the length of the body it is not sending. Answering 0 made
                     // rclone treat a perfectly good upload as corrupted and delete it — and only
@@ -648,9 +723,82 @@ class S3Handler(
         }.let { if (withBody) it else it.copy(file = null) }
     }
 
+    /**
+     * The conditional headers of a `GET` or `HEAD`, resolved against what is stored.
+     *
+     * `s3-service-2.json`, `GetObjectRequest.members`: `IfMatch`, `IfNoneMatch`, `IfModifiedSince`,
+     * `IfUnmodifiedSince`. The statuses are HTTP's (RFC 9110 §13.2.2) and the precedence is too —
+     * the `Match` conditions are evaluated before the date ones, and a failed `If-None-Match` on a
+     * read is `304`, not an error.
+     *
+     * Returns the status to answer with, or `null` to carry on and serve the object.
+     */
+    private fun conditional(
+        head: HttpRequestParser.Head,
+        stored: ObjectStore.Stored,
+    ): Int? {
+        val eTag = stored.eTag
+        head.header("if-match")?.let { condition ->
+            if (!matches(condition, eTag)) return 412
+        }
+        head.header("if-none-match")?.let { condition ->
+            if (matches(condition, eTag)) return 304
+        }
+        // Whole seconds: `Last-Modified` has no sub-second precision, so comparing against a
+        // timestamp that does would make an object modified in the same second look newer than a
+        // copy the client already has.
+        val modified = stored.lastModified.epochSecond
+        if (head.header("if-none-match") == null) {
+            head.header("if-modified-since")?.let { since ->
+                httpDateSeconds(since)?.let { if (modified <= it) return 304 }
+            }
+        }
+        if (head.header("if-match") == null) {
+            head.header("if-unmodified-since")?.let { since ->
+                httpDateSeconds(since)?.let { if (modified > it) return 412 }
+            }
+        }
+        return null
+    }
+
+    /** `*` matches anything that exists; otherwise any of the comma-separated tags, quotes and all. */
+    private fun matches(
+        condition: String,
+        eTag: String,
+    ): Boolean {
+        val wanted = condition.trim()
+        if (wanted == "*") return true
+        return wanted.split(',').any { it.trim().removePrefix("W/").trim('"') == eTag.trim('"') }
+    }
+
+    private fun httpDateSeconds(value: String): Long? =
+        runCatching {
+            java.time.ZonedDateTime
+                .parse(value.trim(), HTTP_DATE)
+                .toEpochSecond()
+        }.getOrNull()
+
     /** `x-amz-checksum-<algorithm>`, echoed back exactly as the client stated it on upload. */
     private fun checksumHeaders(metadata: Metadata): List<Pair<String, String>> =
         metadata.checksum?.let { listOf("x-amz-checksum-${it.algorithm}" to it.value) } ?: emptyList()
+
+    /**
+     * The checksum, but only with the whole object.
+     *
+     * The stored value describes every byte of the object, so answering with it beside a `206`
+     * tells the client something false about the bytes it actually received — botocore checksums
+     * what arrived, finds a different value and reports the server as corrupt, for correctly
+     * answering the question it was asked.
+     */
+    private fun checksumIfAsked(
+        head: HttpRequestParser.Head,
+        stored: ObjectStore.Stored,
+    ): List<Pair<String, String>> =
+        if (head.header("x-amz-checksum-mode").equals("ENABLED", ignoreCase = true)) {
+            checksumHeaders(stored.metadata)
+        } else {
+            emptyList()
+        }
 
     /**
      * `POST /<bucket>?delete` — the batch delete, and the operation whose absence is felt long
@@ -659,12 +807,22 @@ class S3Handler(
      * and the compatibility suite errors every test after the first in its own teardown.
      */
     private suspend fun deleteObjects(
+        head: HttpRequestParser.Head,
         bucket: String,
         body: HttpHandler.RequestBody,
     ): HttpResponse {
         val collected = ByteArrayOutputStream()
         body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
-        val request = S3Requests.parseDelete(collected.toByteArray())
+        val request =
+            try {
+                S3Requests.parseDelete(collected.toByteArray())
+            } catch (e: XmlReader.MalformedXmlException) {
+                // A list of more than a thousand keys lands here, and so does a body that is not
+                // XML at all. Both have to be an answer: an exception escaping the handler closes
+                // the connection, and the client sees "the server hung up" rather than "your
+                // request was too large" — the least actionable failure a server can produce.
+                return error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = bucket)
+            }
 
         val deleted = mutableListOf<S3Documents.DeletedEntry>()
         for (key in request.keys) {
@@ -687,7 +845,13 @@ class S3Handler(
     }
 
     private fun route(head: HttpRequestParser.Head): S3Router.Route =
-        router.route(head.method, head.header("host") ?: "", head.path, head.query)
+        router.route(
+            head.method,
+            head.header("host") ?: "",
+            head.path,
+            head.query,
+            head.header("x-amz-copy-source"),
+        )
 
     private fun bucketOf(route: S3Router.Route): String? =
         when (route) {
@@ -703,6 +867,7 @@ class S3Handler(
             is S3Router.Route.GetObject -> route.bucket
             is S3Router.Route.HeadObject -> route.bucket
             is S3Router.Route.DeleteObject -> route.bucket
+            is S3Router.Route.CopyObject -> route.bucket
             is S3Router.Route.CreateMultipartUpload -> route.bucket
             is S3Router.Route.UploadPart -> route.bucket
             is S3Router.Route.CompleteMultipartUpload -> route.bucket
@@ -728,6 +893,7 @@ class S3Handler(
             is S3Router.Route.GetObject -> route.key
             is S3Router.Route.HeadObject -> route.key
             is S3Router.Route.DeleteObject -> route.key
+            is S3Router.Route.CopyObject -> route.key
             is S3Router.Route.CreateMultipartUpload -> route.key
             is S3Router.Route.UploadPart -> route.key
             is S3Router.Route.CompleteMultipartUpload -> route.key
@@ -793,6 +959,9 @@ class S3Handler(
 
     private companion object {
         const val OWNER = "bochka"
+
+        /** `s3-service-2.json`, `GetObjectOutput.members.ContentType`: what S3 says when nobody said. */
+        const val DEFAULT_CONTENT_TYPE = "binary/octet-stream"
 
         val ISO: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)

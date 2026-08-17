@@ -354,6 +354,49 @@ class ObjectStore(
         key: ObjectKey,
     ): Stored? = objects[Located(bucket, key)]
 
+    /**
+     * Copies an object inside the store, without the bytes leaving it.
+     *
+     * The bytes are copied rather than shared, and the alternative is worth naming: two keys could
+     * point at one file, which costs nothing until the first delete and then needs a reference
+     * count on every object for ever. A count that is wrong loses data silently — the file goes
+     * while a key still names it — and this store's whole write order exists to make that
+     * impossible. A copy costs a copy and is always right.
+     *
+     * `transferFrom` between two files, which is the direction of it that takes the fast path
+     * (§1.6.2): the source is a real `FileChannelImpl` here, which is exactly what it is not on
+     * the upload path.
+     */
+    fun copy(
+        source: Stored,
+        bucket: String,
+        key: ObjectKey,
+        metadata: Metadata,
+    ): Stored {
+        val fileId = UUID.randomUUID().toString()
+        val target = pathOf(fileId)
+        Files.createDirectories(target.parent)
+        val partial = target.resolveSibling("${target.fileName}.partial")
+
+        FileChannel.open(partial, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { out ->
+            FileChannel.open(pathOf(source.fileId), StandardOpenOption.READ).use { from ->
+                var moved = 0L
+                while (moved < source.size) {
+                    val n = out.transferFrom(from, moved, source.size - moved)
+                    if (n <= 0) throw java.io.EOFException("the source ended ${source.size - moved} bytes early")
+                    moved += n
+                }
+            }
+            if (durability == Durability.FSYNC) out.force(true)
+        }
+        Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE)
+
+        // The ETag comes across rather than being recomputed: it describes the bytes, the bytes are
+        // the same bytes, and recomputing an MD5 of five gigabytes to learn what is already known
+        // would be the expensive way to get the same string.
+        return commit(bucket, key, metadata, Staged(fileId, source.size, source.eTag))
+    }
+
     /** Where the bytes are, for a reader that wants the file rather than a copy of it (M-59). */
     fun pathOf(stored: Stored): Path = pathOf(stored.fileId)
 

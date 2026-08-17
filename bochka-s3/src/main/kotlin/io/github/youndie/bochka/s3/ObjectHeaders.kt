@@ -51,7 +51,16 @@ object ObjectHeaders {
             contentType = one("content-type"),
             cacheControl = one("cache-control"),
             contentDisposition = one("content-disposition"),
-            contentEncoding = one("content-encoding"),
+            // `aws-chunked` describes how this one request framed its body, not how the object is
+            // encoded, so it is dropped rather than stored — otherwise an object uploaded by
+            // aws-cli comes back claiming an encoding no client can undo.
+            contentEncoding =
+                one("content-encoding")
+                    ?.split(',')
+                    ?.map { it.trim() }
+                    ?.filter { it.isNotEmpty() && !it.equals("aws-chunked", ignoreCase = true) }
+                    ?.joinToString(", ")
+                    ?.takeIf { it.isNotEmpty() },
             contentLanguage = one("content-language"),
             expires = one("expires"),
             user = user,

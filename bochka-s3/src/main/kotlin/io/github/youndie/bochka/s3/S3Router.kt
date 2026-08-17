@@ -71,6 +71,22 @@ class S3Router(
             val key: ObjectKey,
         ) : Route
 
+        /**
+         * `PUT /<bucket>/<key>` with `x-amz-copy-source` — the same request line as a `PutObject`
+         * and a different operation.
+         *
+         * The one route decided by a header rather than by the method, the path or the query, and
+         * it is why [route] takes the copy source at all. Missing it does not produce a wrong
+         * answer, it produces a `PutObject` with an empty body: the object is created, it is zero
+         * bytes long, and the client is told it succeeded.
+         */
+        data class CopyObject(
+            val bucket: String,
+            val key: ObjectKey,
+            val sourceBucket: String,
+            val sourceKey: ObjectKey,
+        ) : Route
+
         data class GetObject(
             val bucket: String,
             val key: ObjectKey,
@@ -139,6 +155,7 @@ class S3Router(
         host: String,
         path: String,
         query: String,
+        copySource: String? = null,
     ): Route {
         val params = parseQuery(query)
         val bucketFromHost = bucketFromHost(host)
@@ -161,8 +178,26 @@ class S3Router(
         return if (rawKey.isEmpty()) {
             bucketRoute(method, bucket, params)
         } else {
-            objectRoute(method, bucket, rawKey, params)
+            objectRoute(method, bucket, rawKey, params, copySource)
         }
+    }
+
+    /**
+     * `x-amz-copy-source` is `/<bucket>/<key>` or `<bucket>/<key>`, percent-encoded, and may carry
+     * `?versionId=`.
+     *
+     * Decoded here and not by the caller because the split is positional: the first segment is the
+     * bucket and **everything after it** is the key, slashes and all. Splitting a decoded string
+     * would put a key containing `%2F` in the wrong place.
+     */
+    private fun parseCopySource(value: String): Pair<String, ObjectKey>? {
+        val withoutVersion = value.substringBefore('?')
+        val trimmed = withoutVersion.removePrefix("/")
+        val slash = trimmed.indexOf('/')
+        if (slash <= 0 || slash == trimmed.length - 1) return null
+        val bucket = String(UriCodec.decode(trimmed.substring(0, slash)))
+        val key = ObjectKey(UriCodec.decode(trimmed.substring(slash + 1)))
+        return bucket to key
     }
 
     private fun bucketRoute(
@@ -236,6 +271,7 @@ class S3Router(
         bucket: String,
         rawKey: String,
         params: Map<String, String>,
+        copySource: String?,
     ): Route {
         val key = ObjectKey(UriCodec.decode(rawKey))
         val uploadId = params["uploadId"]
@@ -254,6 +290,15 @@ class S3Router(
 
                     params.keys.any { it in OBJECT_SUBRESOURCES } -> {
                         Route.NotImplemented("PUT object sub-resource")
+                    }
+
+                    copySource != null -> {
+                        val source = parseCopySource(copySource)
+                        if (source == null) {
+                            Route.NotImplemented("x-amz-copy-source: $copySource")
+                        } else {
+                            Route.CopyObject(bucket, key, source.first, source.second)
+                        }
                     }
 
                     else -> {

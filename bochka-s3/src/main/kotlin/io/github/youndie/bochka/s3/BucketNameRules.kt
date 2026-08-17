@@ -24,6 +24,7 @@ object BucketNameRules {
         BAD_CHARACTER("bucket names may hold only lowercase letters, digits, hyphens and periods"),
         BAD_EDGE("bucket names must begin and end with a letter or a digit"),
         ADJACENT_PERIODS("bucket names may not hold two adjacent periods"),
+        PERIOD_BESIDE_HYPHEN("bucket names may not hold a period next to a hyphen"),
         LOOKS_LIKE_AN_ADDRESS("bucket names may not be formatted as an IP address"),
         RESERVED_PREFIX("bucket names may not begin with xn-- or sthree-"),
         RESERVED_SUFFIX("bucket names may not end with -s3alias or --ol-s3"),
@@ -32,13 +33,25 @@ object BucketNameRules {
     fun check(name: String): Rejection? =
         when {
             name.length < 3 -> Rejection.TOO_SHORT
+
             name.length > 63 -> Rejection.TOO_LONG
+
             name.any { it !in 'a'..'z' && it !in '0'..'9' && it != '-' && it != '.' } -> Rejection.BAD_CHARACTER
+
             !name.first().isLetterOrDigit() || !name.last().isLetterOrDigit() -> Rejection.BAD_EDGE
+
             ".." in name -> Rejection.ADJACENT_PERIODS
+
+            // The DNS rules again: a label may not begin or end with a hyphen, and a period is
+            // where one label ends and the next begins.
+            "-." in name || ".-" in name -> Rejection.PERIOD_BESIDE_HYPHEN
+
             looksLikeAnAddress(name) -> Rejection.LOOKS_LIKE_AN_ADDRESS
+
             RESERVED_PREFIXES.any { name.startsWith(it) } -> Rejection.RESERVED_PREFIX
+
             RESERVED_SUFFIXES.any { name.endsWith(it) } -> Rejection.RESERVED_SUFFIX
+
             else -> null
         }
 

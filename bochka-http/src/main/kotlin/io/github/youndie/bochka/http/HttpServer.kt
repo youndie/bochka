@@ -118,7 +118,17 @@ class HttpServer(
             }
 
             val body = SocketBody(connection, request, leftover, readBufferBytes)
-            val response = handler.handle(request, body)
+            val response =
+                try {
+                    handler.handle(request, body)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    // The connection is closed afterwards regardless, because the body may be
+                    // half-read and what is left on the socket belongs to a request that is over.
+                    // What matters is that the client is told something first.
+                    handler.failed(request, e).copy(close = true)
+                }
             if (!body.isDrained) {
                 respond(connection, request, response.copy(close = true))
                 return

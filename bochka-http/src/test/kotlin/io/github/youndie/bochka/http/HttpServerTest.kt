@@ -26,6 +26,11 @@ class HttpServerTest {
         val bodySeen = AtomicReference(ByteArray(0))
         val handleCalled = AtomicBoolean(false)
 
+        override fun failed(
+            head: HttpRequestParser.Head,
+            cause: Throwable,
+        ): HttpResponse = HttpResponse(500, "Error", body = (cause.message ?: "boom").toByteArray())
+
         override fun screen(head: HttpRequestParser.Head): HttpResponse? = screenWith(head)
 
         override suspend fun handle(
