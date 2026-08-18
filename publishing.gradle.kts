@@ -22,12 +22,28 @@ configure<PublishingExtension> {
     repositories {
         maven {
             name = "bochkaRepo"
-            url =
-                uri(
-                    providers.gradleProperty("BOCHKA_REPO_URL").orNull
-                        ?: System.getenv("BOCHKA_REPO_URL")
-                        ?: "https://reposilite.kotlin.website/snapshots",
-                )
+            /*
+             * The address, and it must be an absolute URL or the build stops.
+             *
+             * Gradle's `uri()` accepts anything: a value that is not absolute becomes a **relative
+             * file path**, the repository quietly turns into a `file:` one, and the publish either
+             * writes into the build directory or fails with "Authentication scheme 'all' is not
+             * supported by protocol 'file'" — a message about authentication, for a problem that
+             * is a wrong address.
+             *
+             * That is not hypothetical. `gh secret set --body -` sets the secret to the literal
+             * string `-` rather than reading standard input, and the fallback below never fires,
+             * because an empty-by-mistake value is not the same as an absent one.
+             */
+            val configured =
+                providers.gradleProperty("BOCHKA_REPO_URL").orNull
+                    ?: System.getenv("BOCHKA_REPO_URL")
+                    ?: "https://reposilite.kotlin.website/snapshots"
+            require(configured.startsWith("http://") || configured.startsWith("https://")) {
+                "BOCHKA_REPO_URL must be an absolute http(s) URL; got '$configured'. " +
+                    "Anything else becomes a file: repository and publishes nowhere anybody can resolve from."
+            }
+            url = uri(configured)
             credentials {
                 username =
                     providers.gradleProperty("BOCHKA_REPO_USER").orNull
