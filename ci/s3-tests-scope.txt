@@ -100,6 +100,6 @@ out-of-scope	ifnonmatch	conditional writes, as above
 out-of-scope	upload_part_copy	UploadPartCopy, as above
 
 # --- defects: bochka should pass these and does not. Each names what to do. --------------------
-defect	unicode_metadata	a non-ASCII `x-amz-meta-*` value fails the signature: the header bytes reach the canonical request as something other than what arrived
+deferred	unicode_metadata	the signature half of this was a defect and is fixed (the canonical request is hashed as bytes now); what is left is the value round trip, and current botocore refuses to send non-ASCII metadata at all, so what to match is not established
 defect	object_read_unreadable	a key that is not valid UTF-8 answers 404 where S3 answers 400; the key rules run after the lookup rather than before it
 defect	object_raw_response_headers	a content type set at upload came back as the default; not reproduced through the fixture yet

@@ -297,12 +297,55 @@ class ObjectStore(
         )
     }
 
+    /**
+     * What has to be true of the key for a write to happen at all.
+     *
+     * `If-Match` and `If-None-Match` on a write, and the reason they live down here rather than in
+     * the request layer: a handler that reads the object, compares the tag and then writes has a
+     * window between the three, and two clients using the header to not overwrite each other both
+     * pass their check and one loses. The comparison and the write are one step or the header is
+     * a race with a promise attached.
+     */
+    sealed interface Precondition {
+        data object None : Precondition
+
+        /** The object must exist, and its `ETag` must be one of these. `*` means "must exist". */
+        data class IfMatch(
+            val eTags: List<String>,
+        ) : Precondition
+
+        /** `*` means "must not exist"; a tag means "must not be this one". */
+        data class IfNoneMatch(
+            val eTags: List<String>,
+        ) : Precondition
+    }
+
+    class PreconditionFailed(
+        override val message: String,
+    ) : RuntimeException(message)
+
+    private fun Precondition.holdsFor(existing: Stored?): Boolean =
+        when (this) {
+            is Precondition.None -> {
+                true
+            }
+
+            is Precondition.IfMatch -> {
+                existing != null && ("*" in eTags || eTags.any { it.trim('"') == existing.eTag.trim('"') })
+            }
+
+            is Precondition.IfNoneMatch -> {
+                existing == null || ("*" !in eTags && eTags.none { it.trim('"') == existing.eTag.trim('"') })
+            }
+        }
+
     /** Makes [staged] the object at [key]. Everything before this point is invisible. */
     fun commit(
         bucket: String,
         key: ObjectKey,
         metadata: Metadata,
         staged: Staged,
+        precondition: Precondition = Precondition.None,
     ): Stored {
         val stored =
             Stored(
@@ -324,8 +367,25 @@ class ObjectStore(
             )
         }
 
-        // Only now does the object exist as far as anybody asking is concerned.
-        val previous = objects.put(located, stored)
+        // Only now does the object exist as far as anybody asking is concerned. `compute` and not
+        // `put`, because that is what makes the precondition and the write one step: the map holds
+        // the key while the check runs, so two writers with `If-None-Match: *` cannot both pass.
+        //
+        // The replaced value is captured **inside** the lambda: `compute` returns the new value,
+        // and deriving the old one from the return is how the file of a replaced object quietly
+        // stopped being deleted. Only a test that looked at the disk noticed.
+        var refused: String? = null
+        var previous: Stored? = null
+        objects.compute(located) { _, existing ->
+            if (!precondition.holdsFor(existing)) {
+                refused = "the object is ${existing?.eTag ?: "absent"}"
+                existing
+            } else {
+                previous = existing
+                stored
+            }
+        }
+        refused?.let { throw PreconditionFailed(it) }
         write(
             IndexRecord.Put(
                 bucket = bucket,
@@ -340,7 +400,7 @@ class ObjectStore(
 
         // The replaced file goes after the index stops pointing at it, and a reader that opened it
         // before that keeps reading — the descriptor outlives the name (Р2, M-44).
-        if (previous != null) Files.deleteIfExists(pathOf(previous.fileId))
+        previous?.let { Files.deleteIfExists(pathOf(it.fileId)) }
         return stored
     }
 
@@ -403,10 +463,31 @@ class ObjectStore(
     fun delete(
         bucket: String,
         key: ObjectKey,
+        precondition: Precondition = Precondition.None,
     ): Boolean {
-        val removed = objects.remove(Located(bucket, key)) ?: return false
+        var refused: String? = null
+        var removed: Stored? = null
+        objects.compute(Located(bucket, key)) { _, existing ->
+            when {
+                existing == null -> {
+                    null
+                }
+
+                !precondition.holdsFor(existing) -> {
+                    refused = "the object is ${existing.eTag}"
+                    existing
+                }
+
+                else -> {
+                    removed = existing
+                    null
+                }
+            }
+        }
+        refused?.let { throw PreconditionFailed(it) }
+        val gone = removed ?: return false
         write(IndexRecord.Deleted(bucket, key))
-        Files.deleteIfExists(pathOf(removed.fileId))
+        Files.deleteIfExists(pathOf(gone.fileId))
         return true
     }
 

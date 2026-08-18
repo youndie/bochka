@@ -43,8 +43,24 @@ object Sigv4 {
             append(ALGORITHM).append('\n')
             append(timestamp).append('\n')
             append(scope).append('\n')
-            append(sha256Hex(canonicalRequest))
+            append(sha256HexOfBytes(canonicalRequest))
         }
+
+    /**
+     * The hash of a canonical request, which is a **byte string** and not text.
+     *
+     * Every character in it came from a byte on the wire, widened one-to-one (`HttpRequestParser`
+     * reads the head as ISO-8859-1 so that no byte is lost). Encoding it back with ISO-8859-1
+     * therefore reproduces exactly what arrived; encoding it as UTF-8 turns every byte above 0x7F
+     * into two, and the signature no longer describes the request.
+     *
+     * That only shows up when a header or a path holds a non-ASCII byte, which is why it survived
+     * 34 official vectors, both signing modes and four live clients: everything they sign is
+     * ASCII. `ceph/s3-tests` found it with a single `x-amz-meta-` value in Cyrillic
+     * (`test_object_set_get_unicode_metadata`), where the client signed the bytes it sent and this
+     * server signed twice as many.
+     */
+    fun sha256HexOfBytes(text: String): String = sha256Hex(text.toByteArray(StandardCharsets.ISO_8859_1))
 
     /** `HMAC(HMAC(HMAC(HMAC("AWS4"+secret, date), region), service), "aws4_request")`, `:417`. */
     fun signingKey(

@@ -153,7 +153,7 @@ class S3Handler(
             is S3Router.Route.CopyObject -> copyObject(head, route)
             is S3Router.Route.GetObject -> getObject(head, route.bucket, route.key)
             is S3Router.Route.HeadObject -> getObject(head, route.bucket, route.key, withBody = false)
-            is S3Router.Route.DeleteObject -> deleteObject(route.bucket, route.key)
+            is S3Router.Route.DeleteObject -> deleteObject(head, route.bucket, route.key)
             is S3Router.Route.DeleteObjects -> deleteObjects(head, route.bucket, body)
             is S3Router.Route.CreateMultipartUpload -> createUpload(head, route)
             is S3Router.Route.UploadPart -> uploadPart(head, route, verification, body)
@@ -185,6 +185,20 @@ class S3Handler(
         val source =
             store.get(route.sourceBucket, route.sourceKey)
                 ?: return error(head, S3Error.NO_SUCH_KEY, key = route.sourceKey, bucket = route.sourceBucket)
+
+        // The conditions on a copy are about the **source**, and they have their own header names
+        // for that reason: `If-Match` on this request would be a condition on the target, which is
+        // a different question and one S3 answers separately.
+        head.header("x-amz-copy-source-if-match")?.let { condition ->
+            if (!matches(condition, source.eTag)) {
+                return error(head, S3Error.PRECONDITION_FAILED, key = route.sourceKey, bucket = route.sourceBucket)
+            }
+        }
+        head.header("x-amz-copy-source-if-none-match")?.let { condition ->
+            if (matches(condition, source.eTag)) {
+                return error(head, S3Error.PRECONDITION_FAILED, key = route.sourceKey, bucket = route.sourceBucket)
+            }
+        }
 
         val replacing = head.header("x-amz-metadata-directive").equals("REPLACE", ignoreCase = true)
         val sameObject = route.sourceBucket == route.bucket && route.sourceKey == route.key
@@ -582,18 +596,37 @@ class S3Handler(
                 return error(head, rejection.error, detail = rejection.detail, key = route.key, bucket = route.bucket)
             }
 
-            val stored = store.commit(route.bucket, route.key, metadata, staged)
+            val stored = store.commit(route.bucket, route.key, metadata, staged, writePrecondition(head))
             staged = null
             HttpResponse(200, "OK", headers = checksumHeaders(metadata) + ("ETag" to stored.eTag))
         } catch (e: AwsChunkedDecoder.MalformedBody) {
             error(head, e.error, detail = e.message)
         } catch (e: ObjectStore.CeilingExceeded) {
             error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = route.key, bucket = route.bucket)
+        } catch (e: ObjectStore.PreconditionFailed) {
+            error(head, S3Error.PRECONDITION_FAILED, detail = e.message, key = route.key, bucket = route.bucket)
         } finally {
             // Anything still staged at this point is a body that was written and refused.
             staged?.let(store::discard)
         }
     }
+
+    /**
+     * `If-Match` and `If-None-Match` on a write.
+     *
+     * The same two headers as a conditional read and a different meaning: on a read they say "do
+     * not send me what I have", on a write they say "do not overwrite what I did not see".
+     * `If-None-Match: *` is how a client creates a key only if nobody else got there first, and it
+     * is only worth anything if the check and the write cannot be separated — which is why this
+     * ends up in [ObjectStore.commit] rather than being decided here.
+     */
+    private fun writePrecondition(head: HttpRequestParser.Head): ObjectStore.Precondition {
+        head.header("if-match")?.let { return ObjectStore.Precondition.IfMatch(tags(it)) }
+        head.header("if-none-match")?.let { return ObjectStore.Precondition.IfNoneMatch(tags(it)) }
+        return ObjectStore.Precondition.None
+    }
+
+    private fun tags(condition: String): List<String> = condition.split(',').map { it.trim().removePrefix("W/").trim() }
 
     private suspend fun stageStreaming(
         head: HttpRequestParser.Head,
@@ -835,14 +868,18 @@ class S3Handler(
     }
 
     private fun deleteObject(
+        head: HttpRequestParser.Head,
         bucket: String,
         key: ObjectKey,
-    ): HttpResponse {
-        // Deleting what is not there is a success in S3, and the test for that lives in the
-        // contract because intuition says otherwise.
-        store.delete(bucket, key)
-        return HttpResponse(204, "No Content")
-    }
+    ): HttpResponse =
+        try {
+            // Deleting what is not there is a success in S3, and the test for that lives in the
+            // contract because intuition says otherwise.
+            store.delete(bucket, key, writePrecondition(head))
+            HttpResponse(204, "No Content")
+        } catch (e: ObjectStore.PreconditionFailed) {
+            error(head, S3Error.PRECONDITION_FAILED, detail = e.message, key = key, bucket = bucket)
+        }
 
     private fun route(head: HttpRequestParser.Head): S3Router.Route =
         router.route(

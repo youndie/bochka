@@ -250,6 +250,16 @@ sealed interface IndexRecord {
             write(value)
         }
 
+        /**
+         * Metadata, and every string in it is a **byte string** rather than text.
+         *
+         * These came off the wire as HTTP header values, which the parser widens one byte to one
+         * char, and they go back out the same way. So they are written with ISO-8859-1, which is
+         * that widening in reverse and loses nothing. Writing them as UTF-8 would double every
+         * byte above 0x7F on the way in, and the object would come back with a value it was never
+         * given — `Hello WorldÃ©` for `Hello Worldé`, which is the shape of every mojibake anybody
+         * has ever debugged.
+         */
         private fun ByteArrayOutputStream.putMetadata(metadata: Metadata) {
             with(metadata) {
                 putText(contentType)
@@ -262,8 +272,8 @@ sealed interface IndexRecord {
                 putText(checksum?.value)
                 putInt64(user.size.toLong())
                 for ((name, value) in user) {
-                    putField(name.toByteArray(StandardCharsets.UTF_8))
-                    putField(value.toByteArray(StandardCharsets.UTF_8))
+                    putField(name.toByteArray(StandardCharsets.ISO_8859_1))
+                    putField(value.toByteArray(StandardCharsets.ISO_8859_1))
                 }
             }
         }
@@ -285,7 +295,7 @@ sealed interface IndexRecord {
             val userCount = long
             require(userCount in 0..MAX_USER_METADATA) { "index record claims $userCount metadata entries" }
             val user = LinkedHashMap<String, String>()
-            repeat(userCount.toInt()) { user[text()] = text() }
+            repeat(userCount.toInt()) { user[latin1()] = latin1() }
             return Metadata(
                 contentType = contentType,
                 cacheControl = cacheControl,
@@ -310,11 +320,14 @@ sealed interface IndexRecord {
                 write(0)
             } else {
                 write(1)
-                putField(value.toByteArray(StandardCharsets.UTF_8))
+                putField(value.toByteArray(StandardCharsets.ISO_8859_1))
             }
         }
 
-        private fun ByteBuffer.optionalText(): String? = if (get().toInt() == 0) null else text()
+        private fun ByteBuffer.optionalText(): String? = if (get().toInt() == 0) null else latin1()
+
+        /** The byte-preserving read, for fields that were header values rather than text. */
+        private fun ByteBuffer.latin1(): String = String(bytes(), StandardCharsets.ISO_8859_1)
 
         private fun ByteArrayOutputStream.putInt64(value: Long) {
             write(
