@@ -74,6 +74,10 @@ object Measurements {
                     index(dir)
                 }
 
+                "small" -> {
+                    small(dir)
+                }
+
                 // Two halves of one measurement that needs two machines. `serve-network` is the
                 // sender and holds the numbers; `drain` is the other end of the wire and prints
                 // nothing worth reading.
@@ -93,6 +97,8 @@ object Measurements {
                     assemble(dir, bytes)
                     println()
                     index(dir)
+                    println()
+                    small(dir)
                 }
             }
         } finally {
@@ -154,6 +160,95 @@ object Measurements {
         println(throughHeap)
         println("  ${Measurement.compare(zeroCopy.median, throughHeap.median)}")
     }
+
+    /**
+     * Открытый вопрос 2: чего на самом деле стоит мелкий объект, если он — отдельный файл.
+     *
+     * Р2 объявляет «мелкие объекты не оптимизируются» и называет цену прозой: инода на объект
+     * и минимальный блок файловой системы. Это её половина вопроса, и она измерима точно —
+     * без всяких предположений о том, что люди хранят.
+     *
+     * Меряется **занятое место, а не размер**: `st_blocks` из `unix:blocks`, умноженное на 512.
+     * Логический размер файла в 1 байт равен одному байту и не говорит ничего; занятое — целый
+     * блок. Разница между ними и есть предмет вопроса.
+     *
+     * Объекты кладутся через настоящий [ObjectStore], а не `Files.write`: раскладка по двум
+     * уровням каталогов — часть цены, каталоги тоже занимают блоки.
+     */
+    private fun small(dir: Path) {
+        println("== Открытый вопрос 2: что стоит мелкий объект ==")
+        val counts = System.getenv("BOCHKA_MEASURE_SMALL_COUNT")?.toIntOrNull() ?: 20_000
+
+        println("  %-12s %12s %12s %12s %10s".format("размер", "логически", "на диске", "накладные", "во сколько"))
+        for (size in listOf(1, 512, 4 * KIB.toInt(), 64 * KIB.toInt())) {
+            val home = Files.createDirectories(dir.resolve("small-$size"))
+            ObjectStore(home, ObjectStore.Durability.NONE).use { store ->
+                store.createBucket("photos")
+                val payload = ByteArray(size)
+                // `runBlocking`, потому что путь записи suspend: он кормится из сокета там, где
+                // он настоящий. Здесь сокета нет, и это ровно тот случай, для которого `runBlocking`
+                // и существует — граница между измеряющим кодом и тем, что он измеряет.
+                kotlinx.coroutines.runBlocking {
+                    for (i in 0 until counts) {
+                        val staged = store.stage { sink -> sink.write(payload, 0, payload.size) }
+                        store.commit("photos", ObjectKey.of("img-%07d.bin".format(i)), Metadata.EMPTY, staged)
+                    }
+                }
+            }
+
+            val logical = counts.toLong() * size
+            val onDisk = allocatedBytes(home.resolve("data"))
+            println(
+                "  %-12s %12s %12s %12s %9.1fx".format(
+                    "$size B",
+                    gib(logical),
+                    gib(onDisk),
+                    gib(onDisk - logical),
+                    onDisk.toDouble() / logical,
+                ),
+            )
+        }
+
+        // Потолок — вторая половина ответа, и он от распределения размеров не зависит вовсе.
+        val ceiling = ObjectStore.ceilingForHeap()
+        println()
+        println("  потолок этой кучи: $ceiling объектов")
+        println("  то есть вся мыслимая экономия от упаковки ограничена сверху этим числом,")
+        println("  сколько бы мелких объектов ни хранил потребитель")
+    }
+
+    /**
+     * Сколько **занято**, а не сколько записано.
+     *
+     * Файл в один байт имеет размер один байт и занимает целый блок; вопрос 2 ровно про эту
+     * разницу, и `Files.size` на неё не отвечает. Каталоги считаются тоже — раскладка по двум
+     * уровням это часть цены.
+     *
+     * Через `du`, а не через NIO: у JDK в наборе `unix:` **нет** атрибута `blocks`
+     * (`IllegalArgumentException: 'blocks' not recognized`), то есть занятое место из
+     * `Files.readAttributes` не достать вовсе. `du` считает именно это, а замер и так имеет смысл
+     * только на Linux с той файловой системой, про которую вопрос.
+     */
+    private fun allocatedBytes(root: Path): Long {
+        val process =
+            ProcessBuilder("du", "-s", "--block-size=1", root.toString())
+                .redirectErrorStream(true)
+                .start()
+        val output =
+            process.inputStream
+                .bufferedReader()
+                .readText()
+                .trim()
+        check(process.waitFor() == 0) { "du отказался считать $root: $output" }
+        return output.split(Regex("\\s+")).first().toLong()
+    }
+
+    private fun gib(bytes: Long): String =
+        when {
+            bytes >= GIB -> "%.2f GiB".format(bytes / GIB.toDouble())
+            bytes >= MIB -> "%.1f MiB".format(bytes / MIB.toDouble())
+            else -> "%.1f KiB".format(bytes / KIB.toDouble())
+        }
 
     /**
      * M-61 again, with a network card in the path.
