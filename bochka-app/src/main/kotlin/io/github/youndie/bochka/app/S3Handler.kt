@@ -1421,7 +1421,15 @@ class S3Handler(
                                     .toString(),
                         )
                     }
-                    if (stored.legalHold) add("x-amz-object-lock-legal-hold-status" to "ON")
+                    // Always, not only when it is on: in a bucket with object lock every object
+                    // has a legal-hold status, and `OFF` is one of its two values. Emitting it
+                    // only for `ON` turns "the hold was lost" into a missing key, and a client
+                    // reading `response['ObjectLockLegalHoldStatus']` raises `KeyError` — which
+                    // says nothing about what went wrong and, in the one case that matters, kills
+                    // the test before it can clean up after itself.
+                    if (store.objectLock(bucket) != null) {
+                        add("x-amz-object-lock-legal-hold-status" to if (stored.legalHold) "ON" else "OFF")
+                    }
                     add("Accept-Ranges" to "bytes")
                     addAll(ObjectHeaders.write(stored.metadata))
                     // Сколько тегов, а не какие: список отдаёт `?tagging`, а здесь клиенту нужно
