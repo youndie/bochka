@@ -54,12 +54,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: gradle/actions/setup-gradle@v4
-      - name: Publish bochka-embedded
+      # Every module, not just `:bochka-embedded:`. Its POM names the other four, and a publish
+      # that pushes one of five is indistinguishable from a good one on this side — the artefact
+      # is there, the task is green, and the failure is a consumer's `Could not find
+      # io.github.youndie.bochka:bochka-core`. Which is exactly what the `consume` job below said
+      # the first time this ran, and the reason it exists.
+      - name: Publish every module a consumer has to resolve
         env:
           BOCHKA_REPO_URL: ${{ secrets.BOCHKA_REPO_URL }}
           BOCHKA_REPO_USER: ${{ secrets.BOCHKA_REPO_USER }}
           BOCHKA_REPO_SECRET: ${{ secrets.BOCHKA_REPO_SECRET }}
-        run: ./gradlew -PVERSION=${GITHUB_REF_NAME#v} :bochka-embedded:publishAllPublicationsToBochkaRepoRepository
+        run: ./gradlew -PVERSION=${GITHUB_REF_NAME#v} publishAllPublicationsToBochkaRepoRepository
 
   consume:
     # The check that matters, and the one a publish job cannot make about itself: build something
