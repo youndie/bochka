@@ -16,6 +16,8 @@ include(":bochka-s3")
 include(":bochka-http")
 include(":bochka-app")
 include(":bochka-embedded")
+// Отдельным модулем, чтобы `bochka-embedded` не тащил JUnit тем, кто им не пользуется.
+include(":bochka-junit")
 include(":bochka-benchmark")
 
 dependencyResolutionManagement {

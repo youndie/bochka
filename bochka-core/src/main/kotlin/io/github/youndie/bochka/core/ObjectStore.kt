@@ -348,6 +348,36 @@ class ObjectStore(
         return true
     }
 
+    /**
+     * Забывает всё: бакеты, объекты, настройки, загрузки в полёте — и **удаляет их файлы**.
+     *
+     * Для тестового двойника это операция между тестами: перезапуск стоит нового стора, нового
+     * сокета и нового журнала, а сброс — очистки структур и одного обхода каталога. Тысяча
+     * раундов без удаления файлов заполнила бы диск тем, на что никто не смотрит.
+     *
+     * Журнал при этом **пишется заново с нуля**, а не дополняется надгробиями: смысл сброса в том,
+     * что состояния больше нет, а журнал из миллиона удалений — это состояние, которое придётся
+     * переигрывать при следующем открытии.
+     */
+    fun reset() {
+        writing.withLock {
+            for (stored in objects.values) runCatching { Files.deleteIfExists(pathOf(stored.fileId)) }
+            for (state in uploads.values) {
+                for (part in state.parts.values) runCatching { Files.deleteIfExists(pathOf(part.fileId)) }
+            }
+            objects.clear()
+            buckets.clear()
+            subresources.clear()
+            uploads.clear()
+            completions.clear()
+            completionOrder.clear()
+            log.close()
+            Files.deleteIfExists(logPath)
+            log = RecordLog(logPath).also { it.recover { } }
+            recordsSinceCompaction.set(0)
+        }
+    }
+
     /** Документ настройки, или `null`, если её не клали или сняли. */
     fun bucketSubresource(
         bucket: String,

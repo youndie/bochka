@@ -2,6 +2,8 @@ package io.github.youndie.bochka.embedded
 
 import io.github.youndie.bochka.app.LoggingHandler
 import io.github.youndie.bochka.app.S3Handler
+import io.github.youndie.bochka.core.Metadata
+import io.github.youndie.bochka.core.ObjectKey
 import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.http.HttpServer
 import io.github.youndie.bochka.s3.S3Router
@@ -39,6 +41,7 @@ import java.nio.file.Path
 class Bochka private constructor(
     private val store: ObjectStore,
     private val server: HttpServer,
+    private val failures: InjectedFailures,
     private val root: Path,
     private val ownsRoot: Boolean,
     val accessKeyId: String,
@@ -55,6 +58,60 @@ class Bochka private constructor(
 
     /** How many objects exist right now, without listing anything. */
     val objectCount: Int get() = store.objectCount
+
+    /**
+     * Какие бакеты есть — для утверждения в тесте, а не для работы.
+     *
+     * Через `ListBuckets` то же самое стоит подписанного запроса и разбора XML, то есть проверка
+     * начинает зависеть от двух вещей вместо одной. Тест, упавший на подписи, ничего не говорит
+     * про бакеты.
+     */
+    val bucketNames: List<String> get() = store.bucketNames()
+
+    /**
+     * Забывает всё, не перезапуская сервер: порт, эндпоинт и ключи остаются теми же.
+     *
+     * То, что зовут между тестами. Перезапуск стоит нового стора и нового сокета, а значит
+     * и нового эндпоинта, который придётся куда-то передать; сброс не стоит ничего из этого.
+     * Заготовленные отказы снимаются тоже — иначе отказ, заведённый в одном тесте, срабатывает
+     * в следующем, и ищут его там, где не заводили.
+     */
+    fun reset() {
+        store.reset()
+        failures.clear()
+    }
+
+    /**
+     * Кладёт объект напрямую, минуя HTTP: заготовка для теста, который начинается **с состояния**.
+     *
+     * Не «удобная обёртка над SDK»: тут нет ни подписи, ни сокета, ни разбора. Тест, которому
+     * нужно, чтобы объект просто был, иначе платит за это десятком вызовов клиента и своей
+     * первой минутой чтения.
+     */
+    @JvmOverloads
+    fun put(
+        bucket: String,
+        key: String,
+        content: ByteArray,
+        contentType: String? = null,
+    ) {
+        store.createBucket(bucket)
+        val staged = kotlinx.coroutines.runBlocking { store.stage { sink -> sink.write(content, 0, content.size) } }
+        store.commit(bucket, ObjectKey.of(key), Metadata(contentType = contentType), staged)
+    }
+
+    /**
+     * Ответить [status] на следующие [times] запросов — что бы клиент ни спросил.
+     *
+     * Единственное, чего настоящее хранилище не умеет и что от тестового двойника нужно всерьёз:
+     * заставить клиентский код пережить отказ. Снимается само, когда счётчик кончится, и целиком
+     * при [reset].
+     */
+    @JvmOverloads
+    fun failNext(
+        status: Int = 503,
+        times: Int = 1,
+    ) = failures.failNext(status, times)
 
     override fun close() {
         server.close()
@@ -99,8 +156,9 @@ class Bochka private constructor(
                     verifier = SignatureVerifier(Credentials(mapOf(accessKeyId to secretKey)), region = region),
                     router = S3Router(),
                 )
-            val server = HttpServer(LoggingHandler(handler, enabled = log), bindAddress = "127.0.0.1", port = port)
-            return Bochka(store, server, root, ownsRoot = directory == null, accessKeyId, secretKey, region)
+            val failures = InjectedFailures(handler)
+            val server = HttpServer(LoggingHandler(failures, enabled = log), bindAddress = "127.0.0.1", port = port)
+            return Bochka(store, server, failures, root, ownsRoot = directory == null, accessKeyId, secretKey, region)
         }
     }
 }

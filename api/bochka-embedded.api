@@ -3,13 +3,22 @@ public final class io/github/youndie/bochka/embedded/Bochka : java/io/Closeable 
 	public static final field DEFAULT_ACCESS_KEY_ID Ljava/lang/String;
 	public static final field DEFAULT_SECRET_KEY Ljava/lang/String;
 	public fun close ()V
+	public final fun failNext ()V
+	public final fun failNext (I)V
+	public final fun failNext (II)V
+	public static synthetic fun failNext$default (Lio/github/youndie/bochka/embedded/Bochka;IIILjava/lang/Object;)V
 	public final fun getAccessKeyId ()Ljava/lang/String;
+	public final fun getBucketNames ()Ljava/util/List;
 	public final fun getDataDirectory ()Ljava/nio/file/Path;
 	public final fun getEndpoint ()Ljava/lang/String;
 	public final fun getObjectCount ()I
 	public final fun getPort ()I
 	public final fun getRegion ()Ljava/lang/String;
 	public final fun getSecretKey ()Ljava/lang/String;
+	public final fun put (Ljava/lang/String;Ljava/lang/String;[B)V
+	public final fun put (Ljava/lang/String;Ljava/lang/String;[BLjava/lang/String;)V
+	public static synthetic fun put$default (Lio/github/youndie/bochka/embedded/Bochka;Ljava/lang/String;Ljava/lang/String;[BLjava/lang/String;ILjava/lang/Object;)V
+	public final fun reset ()V
 	public static final fun start ()Lio/github/youndie/bochka/embedded/Bochka;
 	public static final fun start (I)Lio/github/youndie/bochka/embedded/Bochka;
 	public static final fun start (ILjava/nio/file/Path;)Lio/github/youndie/bochka/embedded/Bochka;
