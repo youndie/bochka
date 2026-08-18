@@ -229,6 +229,31 @@ same signature verification, same four body framings, same storage.
 ```kotlin
 repositories { maven("https://reposilite.kotlin.website/snapshots") }
 dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:0.1.1") }
+
+A store per test class, reset between tests — what is expensive is the start, not the state:
+
+```kotlin
+class ReportsTest {
+    companion object {
+        @JvmField @RegisterExtension val bochka = BochkaExtension()   // io.github.youndie.bochka:bochka-junit
+    }
+
+    @Test fun `retries a 503`() {
+        bochka.bochka.put("reports", "seed.csv", "id,name\n".toByteArray())  // start from a state
+        bochka.bochka.failNext(503)                                            // make the client survive one
+        // …point your SDK at bochka.endpoint and assert your own retry logic
+    }
+}
+```
+
+`failNext` is the one thing a real store cannot do and a test double should: client code nobody can
+knock over is client code whose retries are untested. It goes back to answering normally by itself,
+and `reset()` clears any that are left.
+
+**No TLS inside the process, and that is a decision rather than a gap.** Terminating TLS here means
+wrapping the socket, and a wrapper silently removes the `transferTo` path this whole server is built
+around — there is a test guarding exactly that. A test that needs TLS puts a terminator in front, the
+way the deployment does.
 ```
 
 ```kotlin
