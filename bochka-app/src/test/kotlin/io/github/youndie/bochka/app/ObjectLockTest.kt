@@ -274,7 +274,7 @@ class ObjectLockTest {
 
             val head = s3.send("HEAD", "/photos/file1")
             assertEquals("GOVERNANCE", head.header("x-amz-object-lock-mode"))
-            assertEquals("ON", head.header("x-amz-object-lock-legal-hold-status"))
+            assertEquals("ON", head.header("x-amz-object-lock-legal-hold"))
             val version = head.header("x-amz-version-id")
 
             s3.send(

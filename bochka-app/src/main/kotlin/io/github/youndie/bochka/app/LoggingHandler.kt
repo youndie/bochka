@@ -119,7 +119,7 @@ class LoggingHandler(
             setOf(
                 "x-amz-object-lock-mode",
                 "x-amz-object-lock-retain-until-date",
-                "x-amz-object-lock-legal-hold-status",
+                "x-amz-object-lock-legal-hold",
                 "x-amz-version-id",
             )
 
@@ -129,7 +129,7 @@ class LoggingHandler(
                 "x-amz-bypass-governance-retention",
                 "x-amz-object-lock-mode",
                 "x-amz-object-lock-retain-until-date",
-                "x-amz-object-lock-legal-hold-status",
+                "x-amz-object-lock-legal-hold",
                 "x-amz-bucket-object-lock-enabled",
             )
 

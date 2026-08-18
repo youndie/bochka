@@ -1428,7 +1428,7 @@ class S3Handler(
                     // says nothing about what went wrong and, in the one case that matters, kills
                     // the test before it can clean up after itself.
                     if (store.objectLock(bucket) != null) {
-                        add("x-amz-object-lock-legal-hold-status" to if (stored.legalHold) "ON" else "OFF")
+                        add("x-amz-object-lock-legal-hold" to if (stored.legalHold) "ON" else "OFF")
                     }
                     add("Accept-Ranges" to "bytes")
                     addAll(ObjectHeaders.write(stored.metadata))
@@ -2227,7 +2227,12 @@ class S3Handler(
         // `OFF` is a statement and `absent` is not, which is where this went wrong: an upload
         // carrying only `ObjectLockLegalHoldStatus: OFF` used to arrive here as "no retention
         // either" and strip one that was already in force.
-        val legalHold = stated("x-amz-object-lock-legal-hold-status")?.equals("ON", ignoreCase = true)
+        // `x-amz-object-lock-legal-hold`, and the name is the whole of a day's confusion: the
+        // **field** is `ObjectLockLegalHoldStatus` in every SDK, and the **header** has no
+        // `-status` on it — on the request and on the response alike. Emitting the field's name
+        // means a client reads its own key and finds nothing, which surfaces as `KeyError` rather
+        // than as a mismatch and says nothing about the cause.
+        val legalHold = stated("x-amz-object-lock-legal-hold")?.equals("ON", ignoreCase = true)
         val retention =
             if (mode != null && until != null) {
                 runCatching {
