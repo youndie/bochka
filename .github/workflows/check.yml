@@ -16,9 +16,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # No setup-java step: the build fetches its own JDK 25 toolchain (settings.gradle.kts), so
-      # the runner's Java is not part of the answer. A green build here means green on a machine
-      # with no JDK at all.
+      # No setup-java step in *this* job: the build fetches its own JDK 25 toolchain
+      # (settings.gradle.kts), so the runner's Java is not part of the answer. A green build here
+      # means green on a machine with no JDK at all.
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew check
 
@@ -26,6 +26,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # The toolchain compiles with 25; this **runs** the distribution, and the start script uses
+      # whatever `java` is on PATH. On this runner that is 17, and the failure is
+      # `UnsupportedClassVersionError: class file version 69.0` — which reads as a build problem
+      # and is a runtime one. The image does not need this line because it ships its own JRE.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
       - uses: gradle/actions/setup-gradle@v4
       # The metric this project is measured by is other people's clients, not its own tests (Р6).
       - run: ./ci/live-clients.sh
@@ -34,18 +42,25 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
       - uses: gradle/actions/setup-gradle@v4
-      # `ceph/s3-tests` never fails the build: the score is a number to publish and watch, and a
-      # threshold on it would be a threshold on somebody else's suite changing. What is printed is
-      # the score, the count of tests that ran, and why the rest fail — including how many nobody
-      # has classified, which is the one number that should be zero.
-      - run: ./ci/s3-tests.sh || true
+      # No `|| true`, and that was a real bug rather than a tidy-up. The script already exits zero
+      # for **any** score — a threshold on somebody else's suite would be a threshold on their
+      # release schedule — and non-zero only when the run itself is broken: nothing ran, the build
+      # failed, the server never came up. `|| true` swallowed exactly those, and this job reported
+      # a green tick for a run in which the server would not start at all.
+      - run: ./ci/s3-tests.sh
 
   image:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: gradle/actions/setup-gradle@v4
+      # No setup-java: the whole point of the image is that it carries its own runtime, and a job
+      # that installed one would stop testing that.
       # Everything about the image that the gate cannot see: the user, the volume, the runtime
       # profile surviving JAVA_OPTS, a misspelt setting stopping the process.
       - run: ./ci/docker-smoke.sh

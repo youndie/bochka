@@ -42,6 +42,20 @@ docker run -d --name bochka-tls --network host \
 чьей-то машине. Каталог с другим владельцем придётся `chown` вручную; проверяется это
 в [`ci/docker-smoke.sh`](../ci/docker-smoke.sh).
 
+## Чем это запускать
+
+Образ несёт свою JRE 25 и ничего не требует. **Дистрибутив — требует:** стартовый скрипт берёт
+`java` из `JAVA_HOME` или `PATH`, а собран он под байткод JVM 25, так что на машине с более старой
+Java падает так:
+
+```
+UnsupportedClassVersionError: ... class file version 69.0, this version of the
+Java Runtime only recognizes class file versions up to 61.0
+```
+
+Читается как поломка сборки, а это поломка запуска. Поймано на раннере GitHub, где `java` по
+умолчанию 17; на своей машине этого не видно ровно до тех пор, пока там стоит 25.
+
 ## Настройки
 
 Их список — единственный, и он живёт в
