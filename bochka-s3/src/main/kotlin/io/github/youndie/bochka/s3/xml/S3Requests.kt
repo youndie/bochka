@@ -1,6 +1,7 @@
 package io.github.youndie.bochka.s3.xml
 
 import io.github.youndie.bochka.core.ObjectKey
+import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.s3.CorsRules
 import io.github.youndie.bochka.s3.UriCodec
 import java.nio.charset.StandardCharsets
@@ -94,6 +95,27 @@ object S3Requests {
     }
 
     private fun decode(value: String): String = String(UriCodec.decode(value, plusIsSpace = true))
+
+    /**
+     * `<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>`.
+     *
+     * Only two values are accepted, and `Disabled` is not one of them: S3 has no way back to
+     * "never configured" once versioning has been switched on, so a request asking for it is asking
+     * for something no server does. Accepting it and storing nothing would leave the client
+     * believing its versions had stopped being kept.
+     */
+    fun parseVersioning(body: ByteArray): ObjectStore.Versioning {
+        var status: String? = null
+        val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
+        reader.root("VersioningConfiguration") { name ->
+            if (name == "Status") status = reader.textOf(name).trim()
+        }
+        return when (status) {
+            "Enabled" -> ObjectStore.Versioning.ENABLED
+            "Suspended" -> ObjectStore.Versioning.SUSPENDED
+            else -> throw XmlReader.MalformedXmlException("Status must be Enabled or Suspended, not '$status'")
+        }
+    }
 
     /** `<CORSConfiguration><CORSRule>…` — `s3-service-2.json:2241`, `:2253`. */
     fun parseCors(body: ByteArray): CorsRules {

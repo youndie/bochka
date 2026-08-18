@@ -72,11 +72,48 @@ sealed interface IndexRecord {
         val metadata: Metadata,
         /** Empty for an ordinary upload; the seams of an assembled one (M-82, M-83). */
         val parts: List<ObjectStore.PartSummary> = emptyList(),
+        /**
+         * Where this version sits in the order of writes (M-104).
+         *
+         * Written down rather than re-derived on replay because it **is** the order: two versions
+         * of one key differ by nothing else, and recovering them in the order the log happens to
+         * be read would put history back together wrong on the first compaction.
+         */
+        val sequence: Long = 0,
+        val versionId: String = ObjectStore.NULL_VERSION,
+        val deleteMarker: Boolean = false,
     ) : IndexRecord
 
+    /** Every version of a key goes. Written by a bucket that has no versioning, and by old logs. */
     data class Deleted(
         override val bucket: String,
         val key: ObjectKey,
+    ) : IndexRecord
+
+    /**
+     * One version goes, named by its place in the order rather than by its id.
+     *
+     * By sequence because that is what the index is keyed on: a removal that had to be resolved
+     * through the version id would need the version still present to find it, which is the one
+     * thing replay cannot count on.
+     */
+    data class DeletedVersion(
+        override val bucket: String,
+        val key: ObjectKey,
+        val sequence: Long,
+    ) : IndexRecord
+
+    /**
+     * Versioning state of a bucket.
+     *
+     * Typed rather than the XML document that carried it, unlike every other bucket sub-resource.
+     * The reason is that this one changes what writing does: a store that had to parse XML to
+     * learn whether a `PUT` makes a version would need an XML parser in the layer that has none,
+     * and the state would live twice — once as bytes and once as behaviour.
+     */
+    data class BucketVersioning(
+        override val bucket: String,
+        val state: ObjectStore.Versioning,
     ) : IndexRecord
 
     /**
@@ -184,6 +221,17 @@ sealed interface IndexRecord {
         private const val KIND_PUT_WITH_TAGS: Byte = 14
         private const val KIND_UPLOAD_STARTED_WITH_TAGS: Byte = 15
 
+        /** Versioning of a bucket, as a state and not as the document that set it (M-103). */
+        private const val KIND_BUCKET_VERSIONING: Byte = 16
+
+        /**
+         * A version rather than an object: [KIND_PUT_WITH_TAGS] plus where it sits, what it is
+         * called and whether it is a tombstone (M-104). The older kinds keep decoding to what they
+         * meant — one entry per key, called `null`, holding bytes.
+         */
+        private const val KIND_PUT_VERSIONED: Byte = 17
+        private const val KIND_DELETED_VERSION: Byte = 18
+
         /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
         private const val MAX_PARTS = 10_000L
 
@@ -256,8 +304,21 @@ sealed interface IndexRecord {
                     out.putField(record.uploadId.toByteArray(StandardCharsets.US_ASCII))
                 }
 
+                is BucketVersioning -> {
+                    out.write(KIND_BUCKET_VERSIONING.toInt())
+                    out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
+                    out.write(record.state.ordinal)
+                }
+
+                is DeletedVersion -> {
+                    out.write(KIND_DELETED_VERSION.toInt())
+                    out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
+                    out.putField(record.key.toByteArray())
+                    out.putInt64(record.sequence)
+                }
+
                 is Put -> {
-                    out.write(KIND_PUT_WITH_TAGS.toInt())
+                    out.write(KIND_PUT_VERSIONED.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.key.toByteArray())
                     out.putField(record.fileId.toByteArray(StandardCharsets.US_ASCII))
@@ -273,6 +334,9 @@ sealed interface IndexRecord {
                         out.putText(part.checksum?.algorithm)
                         out.putText(part.checksum?.value)
                     }
+                    out.putInt64(record.sequence)
+                    out.putField(record.versionId.toByteArray(StandardCharsets.US_ASCII))
+                    out.write(if (record.deleteMarker) 1 else 0)
                 }
             }
             return out.toByteArray()
@@ -293,6 +357,11 @@ sealed interface IndexRecord {
                     val bucket = buffer.text()
                     val name = buffer.text()
                     BucketSubresource(bucket, name, if (buffer.get().toInt() == 1) buffer.bytes() else null)
+                }
+
+                KIND_BUCKET_VERSIONING -> {
+                    val bucket = buffer.text()
+                    BucketVersioning(bucket, ObjectStore.Versioning.entries[buffer.get().toInt()])
                 }
 
                 KIND_BUCKET_DELETED -> {
@@ -373,16 +442,21 @@ sealed interface IndexRecord {
                     UploadEnded(buffer.text(), buffer.text())
                 }
 
-                KIND_PUT, KIND_PUT_WITH_PARTS, KIND_PUT_WITH_TAGS -> {
+                KIND_PUT, KIND_PUT_WITH_PARTS, KIND_PUT_WITH_TAGS, KIND_PUT_VERSIONED -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
                     val fileId = buffer.text()
                     val size = buffer.long
                     val lastModified = buffer.long
                     val eTag = buffer.text()
-                    val metadata = buffer.metadata(withTags = kind == KIND_PUT_WITH_TAGS)
-                    val parts =
-                        if (kind == KIND_PUT_WITH_PARTS || kind == KIND_PUT_WITH_TAGS) buffer.parts() else emptyList()
+                    val withTags = kind == KIND_PUT_WITH_TAGS || kind == KIND_PUT_VERSIONED
+                    val metadata = buffer.metadata(withTags = withTags)
+                    val parts = if (kind == KIND_PUT_WITH_PARTS || withTags) buffer.parts() else emptyList()
+                    // The older kinds carry no version at all, and decode to what they meant: the
+                    // one entry a key had, called `null`, holding bytes. The store recognises that
+                    // by [ObjectStore.NULL_VERSION] and replaces it on the next write, which is
+                    // exactly the behaviour those logs were written under.
+                    val versioned = kind == KIND_PUT_VERSIONED
                     Put(
                         bucket = bucket,
                         key = key,
@@ -392,7 +466,16 @@ sealed interface IndexRecord {
                         eTag = eTag,
                         metadata = metadata,
                         parts = parts,
+                        sequence = if (versioned) buffer.long else 0,
+                        versionId = if (versioned) buffer.text() else ObjectStore.NULL_VERSION,
+                        deleteMarker = versioned && buffer.get().toInt() == 1,
                     )
+                }
+
+                KIND_DELETED_VERSION -> {
+                    val bucket = buffer.text()
+                    val key = ObjectKey(buffer.bytes())
+                    DeletedVersion(bucket, key, buffer.long)
                 }
 
                 else -> {

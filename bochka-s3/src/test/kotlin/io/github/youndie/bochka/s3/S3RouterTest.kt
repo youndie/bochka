@@ -135,7 +135,7 @@ class S3RouterTest {
         // The important half. `GET /photos?versions` answered with an empty listing tells the
         // client there are no versions, which is a lie shaped exactly like an answer.
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos", "acl"))
-        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "versioning"))
+        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos", "lifecycle"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos/a.txt", "acl"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PATCH", "h", "/photos/a.txt", ""))
     }
@@ -148,6 +148,11 @@ class S3RouterTest {
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "tagging"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "cors"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("DELETE", "h", "/photos", "cors"))
+        // `?versioning` moved across this line in M-103: it was refused by name, and now it is
+        // answered — a bucket nobody configured has a defined empty configuration, and that is not
+        // the same as a feature the server does not have.
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "versioning"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "versioning"))
     }
 
     @Test

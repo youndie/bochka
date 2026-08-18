@@ -13,6 +13,7 @@ import java.util.Arrays
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentSkipListMap
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
 
@@ -86,6 +87,23 @@ class ObjectStore(
          * the checksum of its parts' checksums rather than of its bytes.
          */
         val parts: List<PartSummary> = emptyList(),
+        /**
+         * The version id a client sees, or [NULL_VERSION] for anything written to a bucket that is
+         * not versioning.
+         *
+         * The literal string `null` is S3's, not an absence: a bucket that was never versioned
+         * answers `versionId=null` for its objects, and a client may pass it back. Modelling it as
+         * a Kotlin `null` would make "no version" and "the version called null" the same thing, and
+         * they are not — the second one can be deleted by name.
+         */
+        val versionId: String = NULL_VERSION,
+        /**
+         * A tombstone: a version that says the key is gone without saying anything about bytes.
+         *
+         * It has no file, and every read that lands on it answers `404` with
+         * `x-amz-delete-marker: true`. Deleting it by version id is how a key comes back.
+         */
+        val deleteMarker: Boolean = false,
     )
 
     /**
@@ -119,15 +137,42 @@ class ObjectStore(
         )
     }
 
+    /**
+     * Where an object lives in the index: a bucket, a key, and **which version**.
+     *
+     * The order of the three is the order a listing is defined in, and the third component is
+     * ordered **backwards** on purpose. Versions of one key come out newest first — that is what
+     * `ListObjectVersions` returns and what "the current version" means — and a structure that had
+     * to reverse a range could not paginate it: a page would have to know where the range ends
+     * before it could emit its beginning.
+     *
+     * [sequence] and not a timestamp. Two versions written in the same millisecond are two
+     * versions, and a clock that steps backwards would reorder history.
+     */
     private data class Located(
         val bucket: String,
         val key: ObjectKey,
+        val sequence: Long,
     ) : Comparable<Located> {
         override fun compareTo(other: Located): Int {
             val byBucket = bucket.compareTo(other.bucket)
-            return if (byBucket != 0) byBucket else key.compareTo(other.key)
+            if (byBucket != 0) return byBucket
+            val byKey = key.compareTo(other.key)
+            if (byKey != 0) return byKey
+            return other.sequence.compareTo(sequence)
         }
     }
+
+    /**
+     * The greatest [Located] of a key, which sorts **first** among its versions.
+     *
+     * `ceilingEntry` of this is the current version of [key], or — when the key has none — the
+     * first entry of whatever key comes next. Both walks in this file want exactly that.
+     */
+    private fun headOf(
+        bucket: String,
+        key: ObjectKey,
+    ) = Located(bucket, key, Long.MAX_VALUE)
 
     // The directory is made here rather than in `init`, and the order is load-bearing: property
     // initialisers run in declaration order, before any `init` block, so a log opened first would
@@ -162,6 +207,16 @@ class ObjectStore(
      * удаление бакета уносило настройки одним движением.
      */
     private val subresources = ConcurrentHashMap<String, ConcurrentHashMap<String, ByteArray>>()
+
+    // Beside [subresources] and not beside [setVersioning], for the reason [uploads] gives below:
+    // the log is replayed into this map by a property initialiser, and initialisers run in
+    // declaration order. Declared after that one, it is still null when recovery reaches it.
+    private val versioningStates = ConcurrentHashMap<String, Versioning>()
+
+    // Beside the maps for the reason given above: recovery runs in a property initialiser, and
+    // initialisers run in declaration order. This one is raised to one past the highest sequence
+    // the log holds, so version order survives a restart.
+    private val sequences = AtomicLong(0)
 
     /** One writer at a time on the log: its records must land in the order they were decided. */
     private val writing = ReentrantLock()
@@ -221,19 +276,31 @@ class ObjectStore(
                         }
                     }
 
+                    is IndexRecord.BucketVersioning -> {
+                        versioningStates[record.bucket] = record.state
+                    }
+
                     is IndexRecord.BucketDeleted -> {
                         buckets.remove(record.bucket)
                         // Настройки уходят вместе с бакетом: иначе бакет, созданный заново под тем
                         // же именем, унаследовал бы чужие теги и CORS, и узнали бы об этом не сразу.
                         subresources.remove(record.bucket)
+                        versioningStates.remove(record.bucket)
                     }
 
                     is IndexRecord.Deleted -> {
-                        objects.remove(Located(record.bucket, record.key))
+                        // Every version of the key, because that is what this record has always
+                        // meant: it was written when a key had exactly one entry, and it is still
+                        // written by a bucket that is not versioning.
+                        for (located in locatedVersions(record.bucket, record.key)) objects.remove(located)
+                    }
+
+                    is IndexRecord.DeletedVersion -> {
+                        objects.remove(Located(record.bucket, record.key, record.sequence))
                     }
 
                     is IndexRecord.Put -> {
-                        objects[Located(record.bucket, record.key)] =
+                        val stored =
                             Stored(
                                 fileId = record.fileId,
                                 size = record.size,
@@ -241,7 +308,22 @@ class ObjectStore(
                                 lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
                                 metadata = record.metadata,
                                 parts = record.parts,
+                                versionId = record.versionId,
+                                deleteMarker = record.deleteMarker,
                             )
+                        // A record from before versions carries sequence 0 and the `null` version,
+                        // and every write of that key carried the same pair. Replayed as an insert
+                        // they would pile up as versions of a key that never had any; replaced,
+                        // they reproduce exactly the one entry the log was written to mean.
+                        if (record.versionId == NULL_VERSION) {
+                            for (located in locatedVersions(record.bucket, record.key)) {
+                                if (objects[located]?.versionId == NULL_VERSION) objects.remove(located)
+                            }
+                        }
+                        objects[Located(record.bucket, record.key, record.sequence)] = stored
+                        // One past the highest sequence seen, so a restart does not hand out an id
+                        // that sorts underneath history.
+                        sequences.updateAndGet { maxOf(it, record.sequence + 1) }
                     }
 
                     is IndexRecord.UploadStarted -> {
@@ -328,23 +410,13 @@ class ObjectStore(
         key: ObjectKey,
         tags: Map<String, String>,
     ): Boolean {
-        var updated: Stored? = null
-        objects.computeIfPresent(Located(bucket, key)) { _, existing ->
-            existing.copy(metadata = existing.metadata.copy(tags = tags)).also { updated = it }
-        }
-        val stored = updated ?: return false
-        write(
-            IndexRecord.Put(
-                bucket = bucket,
-                key = key,
-                fileId = stored.fileId,
-                size = stored.size,
-                eTag = stored.eTag,
-                lastModifiedMillis = stored.lastModified.toEpochMilli(),
-                metadata = stored.metadata,
-                parts = stored.parts,
-            ),
-        )
+        val entry = currentEntry(bucket, key)?.takeIf { !it.value.deleteMarker } ?: return false
+        val stored = entry.value.copy(metadata = entry.value.metadata.copy(tags = tags))
+        objects[entry.key] = stored
+        // Rewritten at its own sequence, not at a new one: tagging changes what a version says
+        // about itself, not which version is current. A new sequence would make `PutObjectTagging`
+        // quietly promote an old version over a newer one.
+        write(putRecord(bucket, key, entry.key.sequence, stored))
         return true
     }
 
@@ -365,6 +437,8 @@ class ObjectStore(
             for (state in uploads.values) {
                 for (part in state.parts.values) runCatching { Files.deleteIfExists(pathOf(part.fileId)) }
             }
+            versioningStates.clear()
+            sequences.set(0)
             objects.clear()
             buckets.clear()
             subresources.clear()
@@ -403,6 +477,47 @@ class ObjectStore(
         write(IndexRecord.BucketSubresource(bucket, name, document))
     }
 
+    /**
+     * Whether a bucket keeps versions, and it has **three** states rather than two.
+     *
+     * [NONE] is not [SUSPENDED]: a bucket that was never configured answers `GetBucketVersioning`
+     * with an empty document, while a suspended one answers `Suspended` — and the difference is
+     * load-bearing, because a suspended bucket may still hold versions made while it was enabled.
+     * S3 has no way back to [NONE] once versioning has been switched on, and neither has this.
+     */
+    enum class Versioning {
+        NONE,
+        ENABLED,
+        SUSPENDED,
+    }
+
+    fun versioning(bucket: String): Versioning = versioningStates[bucket] ?: Versioning.NONE
+
+    /**
+     * A fresh version id: opaque to the client, unique to this store.
+     *
+     * Derived from a random UUID rather than from [sequences], and deliberately: a client that
+     * could read the order of writes out of a version id would be reading how much traffic the
+     * store has seen. The order lives in the index, where it is nobody's business but ours.
+     */
+    private fun mintVersionId(): String = UUID.randomUUID().toString().replace("-", "")
+
+    /**
+     * Switches versioning on or off for a bucket.
+     *
+     * [Versioning.NONE] is refused rather than accepted and ignored: S3 offers no way back to
+     * "never configured", and a store that pretended otherwise would answer an empty document for
+     * a bucket that still holds versions.
+     */
+    fun setVersioning(
+        bucket: String,
+        state: Versioning,
+    ) {
+        require(state != Versioning.NONE) { "versioning cannot be switched back off, only suspended" }
+        versioningStates[bucket] = state
+        write(IndexRecord.BucketVersioning(bucket, state))
+    }
+
     /** Every bucket, in name order — which is the order `ListBuckets` pages through. */
     fun bucketList(): List<Bucket> = buckets.entries.map { Bucket(it.key, it.value) }.sortedBy { it.name }
 
@@ -412,6 +527,7 @@ class ObjectStore(
         if (firstKeyOf(name) != null) return false
         if (buckets.remove(name) == null) return false
         subresources.remove(name)
+        versioningStates.remove(name)
         write(IndexRecord.BucketDeleted(name))
         return true
     }
@@ -549,7 +665,18 @@ class ObjectStore(
         return if (matches) Outcome.HELD else Outcome.MISMATCH
     }
 
-    /** Makes [staged] the object at [key]. Everything before this point is invisible. */
+    /**
+     * Publishes staged bytes as a version of a key.
+     *
+     * ## Why this holds a lock and the previous one did not
+     *
+     * It used to be a single `compute` on the map, which made the precondition and the write one
+     * step for free: the map held the slot while the check ran. With versions there is no slot —
+     * the condition is about the **newest** version and the write adds a different entry — so the
+     * two would come apart, and `If-None-Match: *` would stop meaning what it exists to mean.
+     * The lock is on index mutation only: the bytes are already on disk by the time this is
+     * called, so what it serialises is a map insert and a journal append.
+     */
     fun commit(
         bucket: String,
         key: ObjectKey,
@@ -557,87 +684,180 @@ class ObjectStore(
         staged: Staged,
         precondition: Precondition = Precondition.NONE,
         parts: List<PartSummary> = emptyList(),
-    ): Stored {
-        val stored =
-            Stored(
-                fileId = staged.fileId,
-                size = staged.size,
-                eTag = staged.eTag,
-                lastModified = Instant.now(),
-                metadata = metadata,
-                parts = parts,
-            )
-
-        // The ceiling is checked against a key that is not already there: overwriting an object
-        // costs no index entry, and refusing it would make a full store unable to shrink.
-        val located = Located(bucket, key)
-        if (objects.size >= maxObjects && !objects.containsKey(located)) {
-            throw CeilingExceeded(
-                objects.size,
-                maxObjects,
-                "the index is at its ceiling of $maxObjects objects",
-            )
-        }
-
-        // Only now does the object exist as far as anybody asking is concerned. `compute` and not
-        // `put`, because that is what makes the precondition and the write one step: the map holds
-        // the key while the check runs, so two writers with `If-None-Match: *` cannot both pass.
-        //
-        // The replaced value is captured **inside** the lambda: `compute` returns the new value,
-        // and deriving the old one from the return is how the file of a replaced object quietly
-        // stopped being deleted. Only a test that looked at the disk noticed.
-        var refused: Outcome? = null
-        var previous: Stored? = null
-        objects.compute(located) { _, existing ->
-            val outcome = precondition.holdsFor(existing)
-            if (outcome == Outcome.HELD) {
-                previous = existing
-                stored
-            } else {
-                refused = outcome
-                existing
+    ): Stored =
+        writing.withLock {
+            val state = versioning(bucket)
+            val outcome = precondition.holdsFor(get(bucket, key))
+            if (outcome != Outcome.HELD) {
+                throw PreconditionFailed(
+                    outcome,
+                    if (outcome == Outcome.ABSENT) {
+                        "there is no object at this key"
+                    } else {
+                        "the object is not the one described"
+                    },
+                )
             }
-        }
-        refused?.let { outcome ->
-            throw PreconditionFailed(
-                outcome,
-                if (outcome ==
-                    Outcome.ABSENT
-                ) {
-                    "there is no object at this key"
-                } else {
-                    "the object is not the one described"
-                },
-            )
-        }
-        write(
-            IndexRecord.Put(
-                bucket = bucket,
-                key = key,
-                fileId = stored.fileId,
-                size = stored.size,
-                eTag = stored.eTag,
-                lastModifiedMillis = stored.lastModified.toEpochMilli(),
-                metadata = metadata,
-                parts = parts,
-            ),
-        )
 
-        // The replaced file goes after the index stops pointing at it, and a reader that opened it
-        // before that keeps reading — the descriptor outlives the name (Р2, M-44).
-        previous?.let { Files.deleteIfExists(pathOf(it.fileId)) }
-        return stored
+            // The ceiling counts entries, and only a write that adds one is refused: overwriting
+            // costs nothing, and refusing it would make a full store unable to shrink. A
+            // versioning bucket always adds one, which is exactly why the published number is a
+            // number of versions now (M-105).
+            val addsEntry = state == Versioning.ENABLED || currentEntry(bucket, key) == null
+            if (objects.size >= maxObjects && addsEntry) {
+                throw CeilingExceeded(
+                    objects.size,
+                    maxObjects,
+                    "the index is at its ceiling of $maxObjects versions",
+                )
+            }
+
+            val sequence = sequences.getAndIncrement()
+            val stored =
+                Stored(
+                    fileId = staged.fileId,
+                    size = staged.size,
+                    eTag = staged.eTag,
+                    lastModified = Instant.now(),
+                    metadata = metadata,
+                    parts = parts,
+                    versionId = if (state == Versioning.ENABLED) mintVersionId() else NULL_VERSION,
+                )
+
+            // Not versioning means the write **replaces** the null version rather than joining it,
+            // and suspended means the same thing: S3 keeps at most one version called `null`, and
+            // versions made while the bucket was enabled survive beside it.
+            val replaced = if (state == Versioning.ENABLED) emptyList() else dropNullVersions(bucket, key)
+
+            objects[Located(bucket, key, sequence)] = stored
+            write(putRecord(bucket, key, sequence, stored))
+
+            // The replaced file goes after the index stops pointing at it, and a reader that opened
+            // it before that keeps reading — the descriptor outlives the name (Р2, M-44).
+            for (gone in replaced) Files.deleteIfExists(pathOf(gone.fileId))
+            stored
+        }
+
+    /**
+     * Removes every version of [key] called `null`, journalling each removal.
+     *
+     * Called under [writing]. There is at most one in practice; the loop is here because "at most
+     * one" is an invariant of the code above rather than of the map, and a leak of one entry per
+     * write is not the kind of thing that shows up in a test.
+     */
+    private fun dropNullVersions(
+        bucket: String,
+        key: ObjectKey,
+    ): List<Stored> {
+        val doomed =
+            objects
+                .tailMap(headOf(bucket, key), true)
+                .asSequence()
+                .takeWhile { it.key.bucket == bucket && it.key.key == key }
+                .filter { it.value.versionId == NULL_VERSION }
+                .map { it.key to it.value }
+                .toList()
+        for ((located, _) in doomed) {
+            objects.remove(located)
+            write(IndexRecord.DeletedVersion(bucket, key, located.sequence))
+        }
+        // A tombstone has no file, so there is nothing for the caller to unlink.
+        return doomed.map { it.second }.filter { !it.deleteMarker }
     }
+
+    private fun putRecord(
+        bucket: String,
+        key: ObjectKey,
+        sequence: Long,
+        stored: Stored,
+    ) = IndexRecord.Put(
+        bucket = bucket,
+        key = key,
+        fileId = stored.fileId,
+        size = stored.size,
+        eTag = stored.eTag,
+        lastModifiedMillis = stored.lastModified.toEpochMilli(),
+        metadata = stored.metadata,
+        parts = stored.parts,
+        sequence = sequence,
+        versionId = stored.versionId,
+        deleteMarker = stored.deleteMarker,
+    )
 
     /** Throws away bytes that were written and turned out not to be wanted. */
     fun discard(staged: Staged) {
         Files.deleteIfExists(pathOf(staged.fileId))
     }
 
+    /**
+     * The current version of a key, delete marker included.
+     *
+     * Callers that want "the object" want [get], which answers `null` for a tombstone. This one is
+     * for the two places that need to know a tombstone is there: a read that must say
+     * `x-amz-delete-marker`, and a write that must know what it is replacing.
+     */
+    private fun currentEntry(
+        bucket: String,
+        key: ObjectKey,
+    ): Map.Entry<Located, Stored>? {
+        val entry = objects.ceilingEntry(headOf(bucket, key)) ?: return null
+        return if (entry.key.bucket == bucket && entry.key.key == key) entry else null
+    }
+
+    /** The index keys of every version of one key, newest first. Callers under [writing]. */
+    private fun locatedVersions(
+        bucket: String,
+        key: ObjectKey,
+    ): List<Located> =
+        objects
+            .tailMap(headOf(bucket, key), true)
+            .asSequence()
+            .takeWhile { it.key.bucket == bucket && it.key.key == key }
+            .map { it.key }
+            .toList()
+
+    /** Every version of a key, newest first — the order `ListObjectVersions` is defined in. */
+    fun versions(
+        bucket: String,
+        key: ObjectKey,
+    ): List<Stored> =
+        objects
+            .tailMap(headOf(bucket, key), true)
+            .asSequence()
+            .takeWhile { it.key.bucket == bucket && it.key.key == key }
+            .map { it.value }
+            .toList()
+
+    /**
+     * The current version of a key, or `null` when there is none **or** when it is a tombstone.
+     *
+     * A delete marker answering `null` here is the point of it: every caller that asks for an
+     * object and gets nothing already knows what to do, and a caller that has to remember to check
+     * a flag is a caller that will forget once.
+     */
     fun get(
         bucket: String,
         key: ObjectKey,
-    ): Stored? = objects[Located(bucket, key)]
+    ): Stored? = currentEntry(bucket, key)?.value?.takeIf { !it.deleteMarker }
+
+    /** The current version whether or not it is a tombstone — for the answer that says so. */
+    fun currentVersion(
+        bucket: String,
+        key: ObjectKey,
+    ): Stored? = currentEntry(bucket, key)?.value
+
+    /**
+     * One named version, tombstone included.
+     *
+     * A linear walk of the key's versions rather than an index on the id: version ids are opaque
+     * and a second index would have to be kept true through every write and every compaction, to
+     * make a lookup faster that is bounded by how many versions one key has.
+     */
+    fun get(
+        bucket: String,
+        key: ObjectKey,
+        versionId: String,
+    ): Stored? = versions(bucket, key).firstOrNull { it.versionId == versionId }
 
     /**
      * Copies an object inside the store, without the bytes leaving it.
@@ -741,39 +961,95 @@ class ObjectStore(
      */
     val dataRoot: Path get() = data
 
+    /**
+     * What a `DELETE` did, which in a versioning bucket is not what the word suggests.
+     *
+     * [existed] answers the batch delete, which reports per key. [marker] is the tombstone that was
+     * laid down, and it is `null` in a bucket without versioning — there the bytes really are gone.
+     */
+    data class Deletion(
+        val existed: Boolean,
+        val marker: Stored? = null,
+    )
+
+    /**
+     * Deletes a key, or says it is deleted, depending on the bucket.
+     *
+     * Without versioning the entry and its file go. With versioning nothing goes: a delete marker
+     * becomes the newest version, reads answer `404`, and every version underneath is still there
+     * to be named. Suspended sits between the two — a marker is laid down, but it is the `null`
+     * version, so it replaces the previous `null` one instead of stacking.
+     */
     fun delete(
         bucket: String,
         key: ObjectKey,
         precondition: Precondition = Precondition.NONE,
-    ): Boolean {
-        var refused: String? = null
-        var removed: Stored? = null
-        objects.compute(Located(bucket, key)) { _, existing ->
-            when {
-                // Nothing to protect, so nothing the condition can be wrong about: deleting a key
-                // that is not there is already a success, and `s3-service-2.json` says the
-                // conditional form answers `204` too. This is why the outcome has three values.
-                existing == null -> {
-                    null
-                }
-
-                precondition.holdsFor(existing) != Outcome.HELD -> {
-                    refused = "the object is ${existing.eTag} and ${existing.size} bytes"
-                    existing
-                }
-
-                else -> {
-                    removed = existing
-                    null
-                }
+    ): Deletion =
+        writing.withLock {
+            val current = get(bucket, key)
+            // Nothing to protect, so nothing the condition can be wrong about: deleting a key that
+            // is not there is already a success, and `s3-service-2.json` says the conditional form
+            // answers `204` too. This is why the outcome has three values.
+            if (current != null && precondition.holdsFor(current) != Outcome.HELD) {
+                throw PreconditionFailed(
+                    Outcome.MISMATCH,
+                    "the object is ${current.eTag} and ${current.size} bytes",
+                )
             }
+
+            val state = versioning(bucket)
+            if (state == Versioning.NONE) {
+                val entry = currentEntry(bucket, key) ?: return@withLock Deletion(existed = false)
+                objects.remove(entry.key)
+                write(IndexRecord.Deleted(bucket, key))
+                Files.deleteIfExists(pathOf(entry.value.fileId))
+                return@withLock Deletion(existed = true)
+            }
+
+            val existed = current != null
+            val sequence = sequences.getAndIncrement()
+            val marker =
+                Stored(
+                    fileId = "",
+                    size = 0,
+                    eTag = "",
+                    lastModified = Instant.now(),
+                    metadata = Metadata(),
+                    versionId = if (state == Versioning.ENABLED) mintVersionId() else NULL_VERSION,
+                    deleteMarker = true,
+                )
+            if (state == Versioning.SUSPENDED) dropNullVersions(bucket, key)
+            objects[Located(bucket, key, sequence)] = marker
+            write(putRecord(bucket, key, sequence, marker))
+            Deletion(existed, marker)
         }
-        refused?.let { throw PreconditionFailed(Outcome.MISMATCH, it) }
-        val gone = removed ?: return false
-        write(IndexRecord.Deleted(bucket, key))
-        Files.deleteIfExists(pathOf(gone.fileId))
-        return true
-    }
+
+    /**
+     * Deletes one named version, for good.
+     *
+     * The only operation in this store that loses data on purpose, and the only one a versioning
+     * bucket has for it. Deleting a delete marker by id is how a key is brought back: the version
+     * underneath becomes current again.
+     */
+    fun deleteVersion(
+        bucket: String,
+        key: ObjectKey,
+        versionId: String,
+    ): Stored? =
+        writing.withLock {
+            val entry =
+                objects
+                    .tailMap(headOf(bucket, key), true)
+                    .asSequence()
+                    .takeWhile { it.key.bucket == bucket && it.key.key == key }
+                    .firstOrNull { it.value.versionId == versionId }
+                    ?: return@withLock null
+
+            objects.remove(entry.key)
+            write(IndexRecord.DeletedVersion(bucket, key, entry.key.sequence))
+            if (!entry.value.deleteMarker) Files.deleteIfExists(pathOf(entry.value.fileId))
+            entry.value
+        }
 
     /**
      * One page of a listing.
@@ -838,11 +1114,19 @@ class ObjectStore(
         var cursor: ByteArray = startAfter?.let(::justAfter) ?: prefix
 
         while (true) {
-            val entry = objects.ceilingEntry(Located(bucket, ObjectKey(cursor))) ?: break
+            val entry = objects.ceilingEntry(headOf(bucket, ObjectKey(cursor))) ?: break
             read++
             if (entry.key.bucket != bucket) break
             val bytes = entry.key.key.toByteArray()
             if (!bytes.startsWith(prefix)) break
+
+            // A key whose current version is a tombstone is not in this listing at all. The cursor
+            // steps past the **key**, not past the entry: its older versions are still in the map,
+            // and stepping one entry would walk into them and list a deleted object as present.
+            if (entry.value.deleteMarker) {
+                cursor = justAfter(bytes)
+                continue
+            }
 
             val group = delimiter?.let { groupOf(bytes, prefix.size, it) }
             if (group != null) {
@@ -1491,7 +1775,7 @@ class ObjectStore(
     }
 
     private fun firstKeyOf(bucket: String): ObjectKey? {
-        val entry = objects.ceilingEntry(Located(bucket, ObjectKey(ByteArray(0)))) ?: return null
+        val entry = objects.ceilingEntry(headOf(bucket, ObjectKey(ByteArray(0)))) ?: return null
         return if (entry.key.bucket == bucket) entry.key.key else null
     }
 
@@ -1507,6 +1791,15 @@ class ObjectStore(
     ) : RuntimeException(message)
 
     companion object {
+        /**
+         * The version id of anything written to a bucket that is not versioning.
+         *
+         * The literal four letters, not an absence: S3 answers `versionId=null` for such objects,
+         * clients pass it back, and `?versionId=null` deletes it permanently. A sentinel that
+         * looked like a Kotlin `null` would collapse "has no version" into "has no value".
+         */
+        const val NULL_VERSION: String = "null"
+
         /**
          * The floor on every part but the last, from the AWS documentation's own table
          * ("Amazon S3 multipart upload limits"). Closed by a live request in a neighbouring

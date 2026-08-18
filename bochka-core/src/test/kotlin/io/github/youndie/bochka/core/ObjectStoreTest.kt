@@ -115,10 +115,10 @@ class ObjectStoreTest {
                 s.createBucket("b")
                 val stored = s.put("b", "k", "bye")
 
-                assertTrue(s.delete("b", ObjectKey.of("k")))
+                assertTrue(s.delete("b", ObjectKey.of("k")).existed)
                 assertNull(s.get("b", ObjectKey.of("k")))
                 assertFalse(Files.exists(s.pathOf(stored)))
-                assertFalse(s.delete("b", ObjectKey.of("k")), "deleting twice reports nothing removed")
+                assertFalse(s.delete("b", ObjectKey.of("k")).existed, "deleting twice reports nothing removed")
             }
 
             store().use { s -> assertNull(s.get("b", ObjectKey.of("k"))) }

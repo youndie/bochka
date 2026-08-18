@@ -515,7 +515,7 @@ class S3Router(
          * умеем, должно перехватываться до общего отказа, и добавление новой настройки — это
          * строчка здесь, а не правка трёх ветвей маршрутизации.
          */
-        val CONFIGURABLE_SUBRESOURCES = setOf("tagging", "cors")
+        val CONFIGURABLE_SUBRESOURCES = setOf("tagging", "cors", "versioning")
 
         /** Sub-resources of a bucket that exist in S3 and not here. Listed so they can be refused by name. */
         val BUCKET_SUBRESOURCES =

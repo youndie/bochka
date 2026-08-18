@@ -1,6 +1,7 @@
 package io.github.youndie.bochka.s3.xml
 
 import io.github.youndie.bochka.core.ObjectKey
+import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.s3.UriCodec
 
 /**
@@ -284,6 +285,22 @@ object S3Documents {
                     for (header in rule.exposeHeaders) text("ExposeHeader", header)
                     rule.maxAgeSeconds?.let { text("MaxAgeSeconds", it.toLong()) }
                 }
+            }
+        }
+
+    /**
+     * `<VersioningConfiguration>` — and the empty one is an answer, not a refusal.
+     *
+     * A bucket nobody configured answers with the element and nothing inside it. That is what S3
+     * does, and it is the difference this repository has already paid for once: `NotImplemented`
+     * reads to a client as "the server is broken", and it cost 837 cases on `?versions` in M3.
+     */
+    fun versioningResult(state: ObjectStore.Versioning): ByteArray =
+        XmlWriter(128).document("VersioningConfiguration") {
+            when (state) {
+                ObjectStore.Versioning.ENABLED -> text("Status", "Enabled")
+                ObjectStore.Versioning.SUSPENDED -> text("Status", "Suspended")
+                ObjectStore.Versioning.NONE -> Unit
             }
         }
 

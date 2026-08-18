@@ -1577,6 +1577,39 @@ class S3Handler(
     }
 
     /**
+     * `?versioning` — the one bucket sub-resource that changes what writing does.
+     *
+     * Kept as store state rather than as the document that carried it, so the answer is rendered
+     * from the state and cannot drift from the behaviour. `DELETE` is not a method S3 offers here:
+     * versioning is switched on and suspended, never taken back off.
+     */
+    private suspend fun bucketVersioning(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.BucketSubresource,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse =
+        when (route.method) {
+            "GET" -> {
+                xml(S3Documents.versioningResult(store.versioning(route.bucket)))
+            }
+
+            "PUT" -> {
+                val collected = ByteArrayOutputStream()
+                body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+                try {
+                    store.setVersioning(route.bucket, S3Requests.parseVersioning(collected.toByteArray()))
+                    HttpResponse(200, "OK")
+                } catch (e: XmlReader.MalformedXmlException) {
+                    error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
+                }
+            }
+
+            else -> {
+                error(head, S3Error.NOT_IMPLEMENTED, detail = "${route.method} ?versioning", bucket = route.bucket)
+            }
+        }
+
+    /**
      * `?tagging` и `?cors` у бакета: положить, прочитать, снять.
      *
      * Документ разбирается **до** записи и хранится перерисованным, а не как пришёл: то, что
@@ -1588,6 +1621,11 @@ class S3Handler(
         route: S3Router.Route.BucketSubresource,
         body: HttpHandler.RequestBody,
     ): HttpResponse {
+        // `versioning` is answered even when nobody set it, and that is why it leaves this branch
+        // early: "no configuration" has a defined document, while "no tag set" and "no CORS rules"
+        // are refusals with codes of their own. Three sub-resources, two different right answers.
+        if (route.name == "versioning") return bucketVersioning(head, route, body)
+
         val absent = if (route.name == "tagging") S3Error.NO_SUCH_TAG_SET else S3Error.NO_SUCH_CORS_CONFIGURATION
         return when (route.method) {
             "GET" -> {
@@ -1830,8 +1868,16 @@ class S3Handler(
             // contract because intuition says otherwise. It carries over to the conditional form:
             // a precondition against a key that is not there cannot fail, because there is nothing
             // for it to protect (`s3-service-2.json`, `DeleteObjectRequest.members.IfMatchSize`).
-            store.delete(bucket, key, writePrecondition(head))
-            HttpResponse(204, "No Content")
+            val deletion = store.delete(bucket, key, writePrecondition(head))
+            // A versioning bucket answers with the tombstone it just laid down, and says that is
+            // what it is. A client that got a bare `204` here would have no way to undo the delete:
+            // bringing the key back means naming that version, and this is the only place its id
+            // is ever handed out.
+            val headers =
+                deletion.marker?.let {
+                    listOf("x-amz-delete-marker" to "true", "x-amz-version-id" to it.versionId)
+                } ?: emptyList()
+            HttpResponse(204, "No Content", headers = headers)
         } catch (e: ObjectStore.PreconditionFailed) {
             error(head, S3Error.PRECONDITION_FAILED, detail = e.message, key = key, bucket = bucket)
         } catch (e: MalformedCondition) {
