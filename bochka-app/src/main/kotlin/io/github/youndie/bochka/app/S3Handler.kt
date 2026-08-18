@@ -12,6 +12,9 @@ import io.github.youndie.bochka.s3.ListingRequest
 import io.github.youndie.bochka.s3.ObjectHeaders
 import io.github.youndie.bochka.s3.ObjectKeyRules
 import io.github.youndie.bochka.s3.PayloadChecksums
+import io.github.youndie.bochka.s3.PostForm
+import io.github.youndie.bochka.s3.PostPolicy
+import io.github.youndie.bochka.s3.PostSignature
 import io.github.youndie.bochka.s3.S3ErrorResponse
 import io.github.youndie.bochka.s3.S3Router
 import io.github.youndie.bochka.s3.UriCodec
@@ -68,7 +71,7 @@ class S3Handler(
         // Preflight подписи не имеет и иметь не может: браузер шлёт `OPTIONS` до всякой
         // авторизации. Исключение сделано **по маршруту**, а не по методу вообще, чтобы
         // «неподписанный» не расползлось на что-нибудь ещё.
-        if (route !is S3Router.Route.Preflight) {
+        if (route !is S3Router.Route.Preflight && route !is S3Router.Route.PostObject) {
             when (val verification = verifier.verify(head.toSignedRequest())) {
                 is SignatureVerifier.Result.Failure -> return error(head, verification.error, verification)
                 is SignatureVerifier.Result.Ok -> Unit
@@ -208,6 +211,10 @@ class S3Handler(
 
             is S3Router.Route.PutObject -> {
                 putObject(head, route, verification, body)
+            }
+
+            is S3Router.Route.PostObject -> {
+                postObject(head, route.bucket, body)
             }
 
             is S3Router.Route.CopyObject -> {
@@ -869,6 +876,184 @@ class S3Handler(
 
     private fun ListingRequest.encoding(): S3Documents.KeyEncoding =
         if (encodeKeys) S3Documents.KeyEncoding.URL else S3Documents.KeyEncoding.NONE
+
+    /**
+     * Upload by an HTML form, which is the one operation whose authorisation cannot precede its
+     * body (M-100…M-102).
+     *
+     * Everywhere else a refusal costs the head alone (research, §1.2.2). Here the policy and the
+     * signature are fields **inside** the multipart body, so the body has to arrive before it can
+     * be refused. What is left is a ceiling — [MAX_FORM_BODY] — and the client's own
+     * `content-length-range`, checked as soon as the file's length is known.
+     *
+     * The order below is the whole of it, and it is the order that matters: parse, verify the
+     * signature over the policy **as it arrived**, check the policy against the fields, and only
+     * then store. Checking the policy first would let an unsigned form decide which error it gets.
+     */
+    private suspend fun postObject(
+        head: HttpRequestParser.Head,
+        bucket: String,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        val boundary =
+            PostForm.boundaryOf(head.header("content-type"))
+                ?: return error(head, S3Error.MALFORMED_POST_REQUEST, detail = "no multipart boundary", bucket = bucket)
+
+        val collected = ByteArrayOutputStream()
+        try {
+            body.forEach { bytes, offset, length ->
+                if (collected.size() + length > MAX_FORM_BODY) {
+                    throw FormTooLarge("the form exceeds $MAX_FORM_BODY bytes")
+                }
+                collected.write(bytes, offset, length)
+            }
+        } catch (e: FormTooLarge) {
+            return error(head, S3Error.ENTITY_TOO_LARGE, detail = e.message, bucket = bucket)
+        }
+        val raw = collected.toByteArray()
+
+        val form: PostForm.Parsed
+        val accessKeyId: String
+        val keyText: String
+        try {
+            form = PostForm.parse(raw, boundary)
+            val policyField =
+                form["policy"]
+                    ?: throw PostSignature.Refused(S3Error.ACCESS_DENIED, "the form carries no policy")
+            accessKeyId = PostSignature.verify(form.fields, policyField, verifier.credentials, verifier.region)
+            // `${'$'}{filename}` is substituted **before** the policy is checked, and the order is the
+            // whole of `test_post_object_set_key_from_filename:2167`: the form sends
+            // `key=${'$'}{filename}` under a policy demanding `starts-with ${'$'}key, "foo"`, and the literal
+            // `${'$'}{filename}` starts with no such thing. What the signer constrained is the key the
+            // object gets, not the template the browser sent.
+            keyText = (form["key"] ?: "").replace("${'$'}{filename}", form.fileName ?: "")
+            // `bucket` is a condition of every policy and a field of no form: it travels in the
+            // URL, and the form has no reason to repeat it. Checking the fields alone refuses
+            // every real form with "the policy requires field bucket" — which is how this was
+            // found. What the condition is actually about is the bucket that was posted to, so
+            // that is what it gets.
+            // `key` is substituted in, not added: a form that sent no key must not acquire one
+            // here. It did acquire one, and the policy then refused the field nobody sent —
+            // `test_post_object_no_key_specified:2448` got `403` where it wanted `400`, which is
+            // the difference between "you may not" and "your form is incomplete".
+            val checked =
+                form.fields + mapOf("bucket" to bucket) +
+                    (if (form["key"] != null) mapOf("key" to keyText) else emptyMap())
+            PostPolicy.check(
+                PostPolicy.decode(policyField),
+                checked,
+                form.fileLength.toLong(),
+                java.time.Instant.now(),
+            )
+        } catch (e: PostForm.Malformed) {
+            return error(head, e.error, detail = e.message, bucket = bucket)
+        } catch (e: PostSignature.Refused) {
+            return error(head, e.error, detail = e.message, bucket = bucket)
+        } catch (e: PostPolicy.Refused) {
+            return error(head, e.error, detail = e.message, bucket = bucket)
+        }
+
+        // `acl` is a boundary, not a field to store. `private` is what this server does, so it can
+        // be accepted truthfully; `public-read-write` (`test_post_object_anonymous_request:1948`)
+        // would promise anonymous access that does not exist here, and a promise kept nowhere is
+        // found out by a leak rather than by an error — the same rule that refuses `PutBucketAcl`.
+        val acl = form["acl"]
+        if (acl != null && acl != "private") {
+            return error(
+                head,
+                S3Error.ACCESS_DENIED,
+                detail = "acl '$acl' is not honoured by this server; only 'private' is",
+                bucket = bucket,
+            )
+        }
+
+        if (keyText.isEmpty()) {
+            return error(head, S3Error.MALFORMED_POST_REQUEST, detail = "the form has no key", bucket = bucket)
+        }
+        val key = ObjectKey(keyText.toByteArray(Charsets.UTF_8))
+        ObjectKeyRules.check(key)?.let { rejection ->
+            return error(
+                head,
+                if (rejection == ObjectKeyRules.Rejection.TOO_LONG) S3Error.KEY_TOO_LONG else S3Error.INVALID_URI,
+                detail = rejection.message,
+                bucket = bucket,
+            )
+        }
+
+        // The field names of a form are the header names of a `PUT`, which is why the metadata is
+        // read by the same code — `content-type`, `cache-control`, `x-amz-meta-*` and the rest.
+        val metadata = ObjectHeaders.read(form.fields.map { it.key to it.value })
+
+        var staged: ObjectStore.Staged? = null
+        return try {
+            staged = store.stage { out -> out.write(raw, form.fileOffset, form.fileLength) }
+            val stored = store.commit(bucket, key, metadata, staged, ObjectStore.Precondition())
+            staged = null
+            formSuccess(form, bucket, key, stored.eTag, accessKeyId)
+        } catch (e: ObjectStore.CeilingExceeded) {
+            error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = key, bucket = bucket)
+        } finally {
+            staged?.let(store::discard)
+        }
+    }
+
+    /**
+     * What a browser gets back, which is not what an SDK gets back.
+     *
+     * A form post comes from a page, and the page has to end up somewhere: `success_action_redirect`
+     * sends it there with `303`, `success_action_status: 201` answers with a document naming the
+     * object, and everything else is `204` — an empty answer the browser shows as nothing happening.
+     * Guessing `200` here would leave the user staring at a blank page.
+     */
+    private fun formSuccess(
+        form: PostForm.Parsed,
+        bucket: String,
+        key: ObjectKey,
+        eTag: String,
+        accessKeyId: String,
+    ): HttpResponse {
+        val location = "/$bucket/$key"
+        val redirect = form["success_action_redirect"] ?: form["redirect"]
+        if (redirect != null) {
+            val separator = if ('?' in redirect) '&' else '?'
+            // The ETag keeps its quotes, percent-encoded: `test_post_object_success_redirect_action:2321`
+            // compares the landing URL against `etag=%22…%22`. They are part of the value, not
+            // punctuation around it, and stripping them hands the page a tag that matches no object.
+            val target = "$redirect${separator}bucket=$bucket&key=$key&etag=%22${eTag.trim('"')}%22"
+            return HttpResponse(303, "See Other", headers = listOf("Location" to target, "ETag" to eTag))
+        }
+
+        val status = form["success_action_status"]?.trim()?.toIntOrNull()
+        if (status == 201) {
+            val document = S3Documents.postResponse(location, bucket, key.toString(), eTag)
+            return HttpResponse(
+                201,
+                "Created",
+                headers = listOf("Content-Type" to "application/xml", "ETag" to eTag),
+                body = document,
+            )
+        }
+        // The access key is named nowhere in the answer, and that is deliberate: the browser that
+        // posted the form is not the party that signed the policy, and telling it whose key it
+        // used would hand a page the identity of the service behind it.
+        check(accessKeyId.isNotEmpty())
+        return HttpResponse(
+            if (status ==
+                200
+            ) {
+                200
+            } else {
+                204
+            },
+            if (status == 200) "OK" else "No Content",
+            headers = listOf("ETag" to eTag),
+        )
+    }
+
+    /** A form larger than the server will hold in memory, which is a refusal and not a crash. */
+    private class FormTooLarge(
+        override val message: String,
+    ) : RuntimeException(message)
 
     /**
      * The four framings collapse to two paths here, and what they share is the order.
@@ -1777,6 +1962,17 @@ class S3Handler(
 
     private companion object {
         const val OWNER = "bochka"
+
+        /**
+         * The ceiling on a form upload, and the one place this server holds a body in memory.
+         *
+         * Everywhere else bytes go from socket to file without being collected. A form cannot: its
+         * signature is in the body, so the body exists before it is trusted, and trusting it far
+         * enough to spool five gigabytes to disk would be the wrong way round. Sixteen mebibytes
+         * covers what a browser form actually posts; past it the answer is `EntityTooLarge`, which
+         * is the truth — the object is too large **for this path**, and `PUT` has no such limit.
+         */
+        const val MAX_FORM_BODY = 16 * 1024 * 1024
 
         /** `s3-service-2.json`, `GetObjectOutput.members.ContentType`: what S3 says when nobody said. */
         const val DEFAULT_CONTENT_TYPE = "binary/octet-stream"

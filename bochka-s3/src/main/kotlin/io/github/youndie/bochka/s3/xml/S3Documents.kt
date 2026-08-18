@@ -338,6 +338,26 @@ object S3Documents {
             text("ETag", eTag)
         }
 
+    /**
+     * `<PostResponse>` — what a form upload answers with when it asked for `201`.
+     *
+     * The only success document whose shape is chosen by the client: a form that said nothing gets
+     * `204` and no body at all. `Location` is here because the browser that posted has no other way
+     * to learn where the object landed.
+     */
+    fun postResponse(
+        location: String,
+        bucket: String,
+        key: String,
+        eTag: String,
+    ): ByteArray =
+        XmlWriter(256).document("PostResponse") {
+            text("Location", location)
+            text("Bucket", bucket)
+            text("Key", key)
+            text("ETag", eTag)
+        }
+
     /** `<CopyPartResult>` — the answer to `UploadPartCopy`, and the same shape as a copy's. */
     fun copyPartResult(
         eTag: String,

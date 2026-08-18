@@ -21,8 +21,15 @@ import java.util.Locale
  * `Authorization` header, and a presigned URL where the same fields travel in the query.
  */
 class SignatureVerifier(
-    private val credentials: Credentials,
-    private val region: String = "us-east-1",
+    /**
+     * Public because one operation carries its signature outside the headers: the upload form of
+     * `POST /<bucket>` signs a policy that lives in the body, and the check happens after the body
+     * has been parsed rather than in [verify]. The keys are handed out, not the secrets —
+     * [Credentials] answers only `secretFor`.
+     */
+    val credentials: Credentials,
+    /** Public for the same reason as [credentials]: the form's credential scope names a region. */
+    val region: String = "us-east-1",
     private val clock: Clock = Clock.systemUTC(),
     private val skew: Duration = MAX_SKEW,
 ) {

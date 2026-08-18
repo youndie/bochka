@@ -165,6 +165,72 @@ class S3Fixture(
         return Answer(response.statusCode(), response.headers(), response.body())
     }
 
+    /**
+     * `POST /<bucket>` with a `multipart/form-data` body — the upload a browser makes.
+     *
+     * Unsigned at the HTTP level on purpose: this operation carries its signature in the `policy`
+     * and `signature` fields, and there is nothing in the head to sign it with. The body is built
+     * byte by byte rather than by a library because the parser under test reads bytes: a helper
+     * that framed it "correctly" would hide exactly the framing this is meant to exercise.
+     */
+    fun postForm(
+        bucket: String,
+        fields: List<Pair<String, String>>,
+        file: ByteArray,
+        fileName: String? = "upload.bin",
+        boundary: String = "----bochkaformboundary",
+    ): Answer {
+        val body = java.io.ByteArrayOutputStream()
+
+        fun line(text: String) = body.write("$text\r\n".toByteArray(Charsets.UTF_8))
+        for ((name, value) in fields) {
+            line("--$boundary")
+            line("Content-Disposition: form-data; name=\"$name\"")
+            line("")
+            line(value)
+        }
+        line("--$boundary")
+        val disposition = StringBuilder("Content-Disposition: form-data; name=\"file\"")
+        if (fileName != null) disposition.append("; filename=\"$fileName\"")
+        line(disposition.toString())
+        line("Content-Type: application/octet-stream")
+        line("")
+        body.write(file)
+        line("")
+        line("--$boundary--")
+
+        val request =
+            HttpRequest
+                .newBuilder(URI.create("http://127.0.0.1:$port/$bucket"))
+                .header("Host", host)
+                .header("Content-Type", "multipart/form-data; boundary=$boundary")
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body.toByteArray()))
+                .build()
+        val response = client.send(request, BodyHandlers.ofByteArray())
+        return Answer(response.statusCode(), response.headers(), response.body())
+    }
+
+    /**
+     * The client half of a form upload: a policy and the signature over it.
+     *
+     * The second version, which is what `ceph/s3-tests` sends. Written here rather than reused from
+     * the server so that the test signs the way a client signs — with `javax.crypto` and nothing
+     * of ours in between.
+     */
+    fun signedPolicy(json: String): List<Pair<String, String>> {
+        val policy =
+            java.util.Base64
+                .getEncoder()
+                .encodeToString(json.toByteArray(Charsets.UTF_8))
+        val mac = javax.crypto.Mac.getInstance("HmacSHA1")
+        mac.init(javax.crypto.spec.SecretKeySpec(SECRET.toByteArray(Charsets.UTF_8), "HmacSHA1"))
+        val signature =
+            java.util.Base64
+                .getEncoder()
+                .encodeToString(mac.doFinal(policy.toByteArray(Charsets.UTF_8)))
+        return listOf("AWSAccessKeyId" to ACCESS_KEY, "policy" to policy, "signature" to signature)
+    }
+
     fun createBucket(bucket: String): Answer = send("PUT", "/$bucket")
 
     fun put(

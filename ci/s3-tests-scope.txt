@@ -41,8 +41,12 @@ out-of-scope	request_payment	requester pays is out of the v1 scope
 out-of-scope	storage_class	one storage class; there is one disk
 out-of-scope	_torrent	BitTorrent retrieval was removed from S3 itself
 out-of-scope	usage	usage accounting is a ceph extension, not S3
-out-of-scope	post_object	browser POST form uploads are out of the v1 scope
-out-of-scope	_post	browser POST form uploads are out of the v1 scope
+deferred	post_object_upload_checksum	the form's x-amz-checksum-* is neither conditioned nor verified yet (M-103)
+out-of-scope	post_object_anonymous	an anonymous form needs a bucket open to everyone, which needs public ACLs
+out-of-scope	post_object_tags_anonymous	an anonymous form needs a bucket open to everyone, which needs public ACLs
+out-of-scope	post_object_set_success_code	the form carries no policy at all; it is an anonymous POST to a public bucket
+out-of-scope	post_object_set_invalid_success_code	the form carries no policy at all; it is an anonymous POST to a public bucket
+out-of-scope	post_object_success_redirect_action	the upload succeeds; the case then reads the redirect target unsigned, which needs public read
 out-of-scope	select	S3 Select is out of the v1 scope
 out-of-scope	restore	Glacier restore is out of the v1 scope
 out-of-scope	ownership	object ownership controls belong with ACLs, which are out of scope

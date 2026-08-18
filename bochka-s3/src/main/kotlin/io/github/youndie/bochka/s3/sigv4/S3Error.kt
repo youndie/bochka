@@ -235,7 +235,32 @@ enum class S3Error(
         400,
     ),
 
-    /** `:824` — a body this server could not read at all, as opposed to one it disagrees with. */
+    /** Политика формы, которую нельзя разобрать: не base64, не JSON, неизвестное условие. */
+    MALFORMED_POLICY_DOCUMENT(
+        "MalformedPolicyDocument",
+        "The policy document is not well-formed",
+        400,
+    ),
+
+    /** Файл формы вышел за `content-length-range` политики. */
+    ENTITY_TOO_LARGE(
+        "EntityTooLarge",
+        "Your proposed upload exceeds the maximum allowed object size",
+        400,
+    ),
+
+    /**
+     * `:824` — форма `multipart/form-data`, которую нельзя разобрать.
+     *
+     * Отдельно от `MalformedXML`, потому что это другой формат и клиент чинит другое место:
+     * у формы разбирается тело браузерного запроса, а не документ, который клиент собрал сам.
+     */
+    MALFORMED_POST_REQUEST(
+        "MalformedPOSTRequest",
+        "The body of the POST request is not well-formed multipart/form-data",
+        400,
+    ),
+
     MALFORMED_XML(
         "MalformedXML",
         "The XML you provided was not well-formed or did not validate against our published schema.",

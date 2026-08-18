@@ -62,6 +62,17 @@ class S3Router(
             val bucket: String,
         ) : Route
 
+        /**
+         * Upload by an HTML form: `POST /<bucket>` with a `multipart/form-data` body.
+         *
+         * The key, the policy and the signature all live inside the body, so the router has
+         * nothing to route on beyond the method — everything else is decided after the form is
+         * parsed. That inversion is the whole point of the operation, not an omission here.
+         */
+        data class PostObject(
+            val bucket: String,
+        ) : Route
+
         data class DeleteObjects(
             val bucket: String,
         ) : Route
@@ -359,7 +370,7 @@ class S3Router(
             }
 
             "POST" -> {
-                if ("delete" in params) Route.DeleteObjects(bucket) else Route.NotImplemented("POST /$bucket")
+                if ("delete" in params) Route.DeleteObjects(bucket) else Route.PostObject(bucket)
             }
 
             else -> {
