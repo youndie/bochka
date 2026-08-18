@@ -2193,14 +2193,6 @@ class S3Handler(
         }
 
     /**
-     * Retention and legal hold stated as headers of the upload, when they are.
-     *
-     * `null` when the request says nothing about locks, which is the common case and must not
-     * become "no retention" — that would be a write quietly stripping the protection a default
-     * rule put on the object.
-     */
-
-    /**
      * What the upload **said** about locks, with "said nothing" kept distinct from "said none".
      *
      * Both fields are null when the header was absent, and that distinction is the whole type. An
@@ -2212,6 +2204,13 @@ class S3Handler(
         val legalHold: Boolean?,
     )
 
+    /**
+     * Retention and legal hold stated as headers of the upload, when they are.
+     *
+     * `null` when the request says nothing about locks, which is the common case and must not
+     * become "no retention" — that would be a write quietly stripping the protection a default
+     * rule put on the object.
+     */
     private fun lockOnUpload(head: HttpRequestParser.Head): StatedLock? {
         fun stated(name: String) = head.header(name)?.trim()?.takeIf { it.isNotEmpty() }
 
