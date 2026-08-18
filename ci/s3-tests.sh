@@ -49,7 +49,15 @@ preserve() {
 
 cleanup() {
   status=$?
-  [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null
+  # Killed **and waited for**, in that order and both before the copy. The server writes its log to
+  # a file, so `System.out` is buffered rather than line-flushed, and a `kill` that does not wait
+  # leaves the last thousands of lines in a buffer nobody will read: the first version of this
+  # preserved a log with the startup banner and nothing else, which is worse than preserving
+  # nothing — it looks like the server handled no requests.
+  if [ -n "${server_pid:-}" ]; then
+    kill "$server_pid" 2>/dev/null
+    wait "$server_pid" 2>/dev/null
+  fi
   if [ "$scored" = no ]; then
     echo "this run ended without producing a score, which is a failure rather than a zero" >&2
     [ "$status" -eq 0 ] && status=1
@@ -206,8 +214,14 @@ if [ -f "$work/results.xml" ]; then
   if echo "$classification" | grep -q "unclassified"; then keep=yes; fi
 fi
 
-# `BOCHKA_KEEP_LOG=1` keeps it regardless, for the run that is green and still surprising.
-# `|| true` because a bare `&&` as the last statement decides the script's exit status, and a green
-# run would end in `1` for the sole reason that the variable was unset.
-if [ "${BOCHKA_KEEP_LOG:-}" = 1 ]; then keep=yes; fi
+# `S3TESTS_KEEP_LOG=1` keeps it regardless, for the run that is green and still surprising.
+#
+# **Not** `BOCHKA_KEEP_LOG`, and that is not taste: the server reads its whole configuration out of
+# `BOCHKA_*` and refuses a name it does not know. It inherits this script's environment, so a knob
+# invented here under that prefix makes the server print its usage and exit — the run then keeps a
+# log holding the usage text and nothing else, which reads as "the server handled no requests".
+#
+# `if` rather than a bare `&&`, because `&&` as the last statement decides the script's exit status
+# and a green run would end in `1` for the sole reason that the variable was unset.
+if [ "${S3TESTS_KEEP_LOG:-}" = 1 ]; then keep=yes; fi
 true

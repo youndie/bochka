@@ -66,10 +66,45 @@ class LoggingHandler(
 
                 else -> "SIGNED-PAYLOAD"
             }
-        println("bochka $stage ${head.method} ${head.target} -> $status framing=$framing")
+        println("bochka $stage ${head.method} ${head.target} -> $status framing=$framing${locks(head)}")
+    }
+
+    /**
+     * The lock headers, when the request carries any.
+     *
+     * The same reason the framing is here: they change what a request **means** and are invisible
+     * from the outside. A `DELETE` refused with `403` and a `DELETE` refused with `403` after
+     * asking to bypass governance are the same line otherwise — and telling them apart is the
+     * difference between "the lock works" and "the bypass does not reach this path".
+     *
+     * Values, not just presence: `legal-hold=OFF` and no legal-hold header at all are different
+     * requests, and a bug already lived in exactly that gap.
+     *
+     * Absent from the line when there are none, so the four framings stay greppable by column.
+     */
+    private fun locks(head: HttpRequestParser.Head): String {
+        val stated =
+            LOCK_HEADERS.mapNotNull { name ->
+                head
+                    .header(name)
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { "${name.removePrefix("x-amz-")}=$it" }
+            }
+        return if (stated.isEmpty()) "" else " " + stated.joinToString(" ")
     }
 
     private companion object {
+        /** Headers that decide whether a write or a delete is allowed, rather than what it carries. */
+        val LOCK_HEADERS =
+            listOf(
+                "x-amz-bypass-governance-retention",
+                "x-amz-object-lock-mode",
+                "x-amz-object-lock-retain-until-date",
+                "x-amz-object-lock-legal-hold-status",
+                "x-amz-bucket-object-lock-enabled",
+            )
+
         const val EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     }
 }
