@@ -205,7 +205,8 @@ mock, and a mock answers what it was told to answer. This is the same server the
 same signature verification, same four body framings, same storage.
 
 ```kotlin
-dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:<version>") }
+repositories { maven("https://reposilite.kotlin.website/snapshots") }
+dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:0.1.0-SNAPSHOT") }
 ```
 
 ```kotlin
