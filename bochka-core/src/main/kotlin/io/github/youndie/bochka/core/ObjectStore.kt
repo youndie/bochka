@@ -746,11 +746,20 @@ class ObjectStore(
         }
 
     /**
-     * Removes every version of [key] called `null`, journalling each removal.
+     * Removes every version of [key] called `null`, and writes **nothing** to the log.
      *
-     * Called under [writing]. There is at most one in practice; the loop is here because "at most
-     * one" is an invariant of the code above rather than of the map, and a leak of one entry per
-     * write is not the kind of thing that shows up in a test.
+     * Both callers follow this with a `Put` whose version is `null`, and replay already treats
+     * such a record as replacing every null version of its key — so a removal record would say a
+     * second time what the next record says anyway.
+     *
+     * It journalled them at first, and the cost was not subtle: every index record costs an
+     * `fsync`, so an ordinary overwrite paid two where it used to pay one, and a thousand-key
+     * batch delete paid two thousand. The server stayed up and answered nothing for minutes,
+     * which reads from outside as a hang rather than as a server doing twice the work
+     * (`bochka-app` tests all passed — they are too small to feel it).
+     *
+     * Called under [writing]. There is at most one null version in practice; the loop is here
+     * because "at most one" is an invariant of the code above rather than of the map.
      */
     private fun dropNullVersions(
         bucket: String,
@@ -764,10 +773,7 @@ class ObjectStore(
                 .filter { it.value.versionId == NULL_VERSION }
                 .map { it.key to it.value }
                 .toList()
-        for ((located, _) in doomed) {
-            objects.remove(located)
-            write(IndexRecord.DeletedVersion(bucket, key, located.sequence))
-        }
+        for ((located, _) in doomed) objects.remove(located)
         // A tombstone has no file, so there is nothing for the caller to unlink.
         return doomed.map { it.second }.filter { !it.deleteMarker }
     }
@@ -1245,12 +1251,20 @@ class ObjectStore(
             val isLatest = !bytes.contentEquals(seenKey)
             seenKey = bytes
 
-            // Everything up to and including the marked version belongs to the previous page.
+            // Everything up to and including the marked version belongs to the previous page —
+            // but the marked version may be **gone**, and that is the normal case rather than the
+            // odd one: the canonical consumer of this listing is a cleanup that deletes each
+            // version as it pages. Scanning for the marker then walks past it and eats the first
+            // version of the next page, one per page, silently. So the skip stops at the marked
+            // **key**: once the walk is past it, whatever comes next belongs to this page.
             if (skippingTo != null) {
-                val reached = entry.value.versionId == skippingTo
-                entry = objects.higherEntry(entry.key)
-                if (reached) skippingTo = null
-                continue
+                if (keyMarker != null && bytes.contentEquals(keyMarker)) {
+                    val reached = entry.value.versionId == skippingTo
+                    entry = objects.higherEntry(entry.key)
+                    if (reached) skippingTo = null
+                    continue
+                }
+                skippingTo = null
             }
 
             if (versions.size + groups.size == maxKeys) {

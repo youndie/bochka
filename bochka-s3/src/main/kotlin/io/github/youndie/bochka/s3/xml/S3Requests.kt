@@ -35,6 +35,15 @@ object S3Requests {
         val eTag: String? = null,
         val lastModifiedTime: String? = null,
         val size: String? = null,
+        /**
+         * Which version to remove, when the client names one.
+         *
+         * Not decoration: this is how a versioned bucket is emptied. `nuke_bucket` in
+         * `ceph/s3-tests` pages `ListObjectVersions` and posts the ids back here in batches of a
+         * hundred and twenty-eight — so a batch delete that drops this field answers `204`,
+         * lays a fresh tombstone over every key, and leaves the bucket exactly as full as it was.
+         */
+        val versionId: String? = null,
     )
 
     /** `shapes.CompletedMultipartUpload.members`: `Parts` flattened as `Part`. */
@@ -162,21 +171,24 @@ object S3Requests {
                     var eTag: String? = null
                     var lastModifiedTime: String? = null
                     var size: String? = null
+                    var versionId: String? = null
                     reader.children { field ->
-                        // VersionId is read and dropped: versioning is out of scope, and refusing a
-                        // member the client is allowed to send would break it for no gain.
+                        // VersionId was read and dropped while versioning was out of scope. It is
+                        // the whole operation now: a batch delete that ignores it answers `204`
+                        // and leaves every version where it was.
                         when (field) {
                             "Key" -> key = ObjectKey(reader.textOf(field).toByteArray())
                             "ETag" -> eTag = reader.textOf(field).trim()
                             "LastModifiedTime" -> lastModifiedTime = reader.textOf(field).trim()
                             "Size" -> size = reader.textOf(field).trim()
+                            "VersionId" -> versionId = reader.textOf(field).trim()
                         }
                     }
                     val parsed = key ?: throw XmlReader.MalformedXmlException("<Object> without <Key>")
                     if (targets.size >= MAX_DELETE_KEYS) {
                         throw XmlReader.MalformedXmlException("more than $MAX_DELETE_KEYS objects in one delete")
                     }
-                    targets.add(Target(parsed, eTag, lastModifiedTime, size))
+                    targets.add(Target(parsed, eTag, lastModifiedTime, size, versionId))
                 }
 
                 "Quiet" -> {

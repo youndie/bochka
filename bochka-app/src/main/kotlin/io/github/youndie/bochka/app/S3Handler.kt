@@ -1952,7 +1952,16 @@ class S3Handler(
                     continue
                 }
             try {
-                store.delete(bucket, target.key, precondition)
+                // A named version is removed for good; an unnamed one goes through the ordinary
+                // delete, which in a versioning bucket lays a tombstone. The batch form carries
+                // both, and treating them alike is how a versioned bucket becomes impossible to
+                // empty — every entry answers `204` while the versions stay.
+                val named = target.versionId
+                if (named != null) {
+                    store.deleteVersion(bucket, target.key, named)
+                } else {
+                    store.delete(bucket, target.key, precondition)
+                }
                 // Deleting what is not there is a success in S3, so every key that got this far is
                 // reported deleted.
                 deleted += S3Documents.DeletedEntry(target.key)

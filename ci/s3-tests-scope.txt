@@ -17,9 +17,20 @@
 out-of-scope	_enc[	server-side encryption touches the bytes on the read path, which cancels zero-copy (README, "What bochka is not")
 out-of-scope	sse	server-side encryption touches the bytes on the read path, which cancels zero-copy
 out-of-scope	encryption	server-side encryption touches the bytes on the read path, which cancels zero-copy
-out-of-scope	versioning	one version per key by design; the index would become key + version (README)
-out-of-scope	versioned	one version per key by design
-out-of-scope	_version	one version per key by design
+# Versioning arrived in M17, so "one version per key by design" stopped being true and stopped
+# being a reason. What is left of the family is three different things, and lumping them under one
+# stale line would hide all three.
+out-of-scope	bucket_logging	bucket logging is out of the v1 scope; these name a version only because their fixture does
+out-of-scope	object_lock	object lock and retention are M18, not versioning
+deferred	_version_if_match	conditional delete of a **named** version: S3 has no conditional form for it and neither have we (M-137)
+deferred	versioned_object_acl	the case reads an object ACL of a version; ACLs are out of scope, but the version half is ours (M-138)
+deferred	versioning_multi_object_delete_with_marker	batch delete must report the markers it created in <Deleted> (M-139)
+deferred	versioning_bucket_multipart_upload_return_version_id	CompleteMultipartUpload does not answer x-amz-version-id yet (M-140)
+deferred	versioning_copy_obj_version	CopyObject does not read ?versionId off x-amz-copy-source yet (M-141)
+deferred	multipart_copy_versioned	UploadPartCopy does not read a version off its source either (M-141)
+deferred	get_versioned_object_attributes	GetObjectAttributes does not take ?versionId yet (M-142)
+deferred	delete_marker_nonversioned	a suspended bucket's marker handling is not finished (M-143)
+out-of-scope	lifecycle	lifecycle rules are out of the v1 scope
 out-of-scope	acl	access control lists: the access keys here are static (open question 4)
 out-of-scope	policy	bucket policies: the access keys here are static (open question 4)
 out-of-scope	_iam	IAM is a different service; this store authenticates with static keys
