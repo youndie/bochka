@@ -8,7 +8,17 @@ metadata:
   annotations:
     helm.sh/hook: test
     {{- /* A failed test pod is left behind, because its log is the finding. */}}
-    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+    # `before-hook-creation` alone, and deliberately not `hook-succeeded` beside it.
+    #
+    # `hook-succeeded` deletes the pod the moment it passes, and `helm test --logs` — which is how
+    # this harness and any operator reads what the round trip did — then asks for the logs of a pod
+    # that is gone: `unable to get pod logs for bochka-test: pods "bochka-test" not found`, and a
+    # test that did its work exactly right ends non-zero. Newer helm reads the logs before deleting
+    # and hides the race; 3.17 does not, which is the version this repository pins.
+    #
+    # Left alone, the pod survives its own success, so its logs are still there to read afterwards,
+    # and the next `helm test` removes it before creating the new one.
+    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   restartPolicy: Never
   enableServiceLinks: false
