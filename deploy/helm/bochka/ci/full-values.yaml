@@ -1,0 +1,62 @@
+# Everything at once, so that the combinations render: an Ingress with TLS and a wildcard host, the
+# matching virtual-host suffix, extra environment, the tcp probe, a non-default storage class.
+auth:
+  keys:
+    - id: chartkey
+      secret: "chart/secret+with:colons=and-base64-ish"
+    - id: secondkey
+      secret: anothersecret
+
+region: eu-central-1
+log: true
+# 0 is here because `default` in a template would have turned it back into 60 and nobody would have
+# seen it — not because it is a setting to copy. It switches off compaction, the orphan sweep and the
+# abandoned-upload sweep together, and the last two are the ones that keep the volume from only
+# growing. See the comment on housekeepingMinutes in values.yaml.
+housekeepingMinutes: 0
+maxObjects: 100000
+
+virtualHostSuffixes:
+  - s3.example.com
+
+extraEnv:
+  - name: TZ
+    value: UTC
+
+probes:
+  type: tcp
+
+persistence:
+  storageClass: fast-local
+  accessModes:
+    - ReadWriteOncePod
+  size: 100Gi
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: s3.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+    - host: "*.s3.example.com"
+  tls:
+    - secretName: s3-example-com-tls
+      hosts:
+        - s3.example.com
+        - "*.s3.example.com"
+
+podAnnotations:
+  example.com/owner: platform
+podLabels:
+  example.com/tier: storage
+
+tolerations:
+  - key: storage
+    operator: Exists
+    effect: NoSchedule
+
+# null, not {}: Helm merges maps, so an empty one leaves the chart default in place. This is the
+# form that actually removes the arch pin, and it is the form the day the image goes multi-arch.
+nodeSelector: null

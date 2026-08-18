@@ -1,0 +1,9 @@
+# An Ingress with no certificate publishes SigV4 in the clear. Must fail.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+ingress:
+  enabled: true
+  hosts:
+    - host: s3.example.com

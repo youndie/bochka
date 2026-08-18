@@ -1,0 +1,324 @@
+{{- include "bochka.validate" . -}}
+{{- /*
+The reasoning lives in template comments rather than YAML ones so that `helm template` output stays
+something a person can read in a review. The reasons are for whoever edits this file; the manifest
+is for the cluster.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "bochka.fullname" . }}
+  labels:
+    {{- include "bochka.labels" . | nindent 4 }}
+spec:
+  {{- /*
+  One replica, and there is no `replicaCount` in values — not even one defaulting to 1, because a
+  knob named "how many replicas" is a promise of horizontal growth from a server that holds one
+  disk.
+
+  Nothing guards the data directory against a second process: bochka-core has no FileLock and no
+  lock file, only an in-process ReentrantLock (ObjectStore.kt:16). Two processes over one directory
+  each keep their own idea of the end of the journal and append past each other (RecordLog.kt:34-42,
+  :99); the compaction of one moves a fresh journal over the old one with ATOMIC_MOVE
+  (ObjectStore.kt:1430), after which the other writes into a deleted inode; and each sweepOrphans
+  deletes the files only the other's in-memory index points at (ObjectStore.kt:1464-1481).
+
+  That is also why this is a StatefulSet rather than a Deployment, and it is the only difference
+  that matters here: a StatefulSet will not create the replacement pod until the old pod object is
+  gone, while a ReplicaSet treats a pod carrying a DeletionTimestamp as not running and creates the
+  replacement immediately — which on an unreachable node is precisely the two-writer case.
+  `strategy: Recreate` on a Deployment would only have covered the rollout and says nothing about a
+  node going away.
+
+  The price of that guarantee is the same sentence read backwards, and it is not a fine print: when
+  the node dies, the kubelet cannot confirm the delete, the pod stays Terminating and no replacement
+  is ever created. The outage lasts until a person acts — there is no timeout that ends it. The
+  command that ends it, `kubectl delete pod --force --grace-period=0`, is the one operation in this
+  whole deployment capable of producing the two writers everything above is built to prevent, and it
+  is safe only once the node is known to be dead rather than partitioned (deleting the Node object is
+  the honest way to say so). `persistence.accessModes: [ReadWriteOncePod]` closes the window at the
+  CSI layer for clusters whose driver supports it; the chart README says all of this out loud under
+  "Чего чарт не обещает", because it is the failure an operator meets at 3 a.m. and not in a review.
+
+  No PodDisruptionBudget either: on a single replica `minAvailable: 1` merely hangs a node drain,
+  and there is no honest "without downtime" here to protect — "one process, one disk, no
+  replication and no failover" is the niche, and it is written down in README.
+  */}}
+  replicas: 1
+  {{- /*
+  No headless Service is created: with one pod nothing needs per-pod DNS, and the ClusterIP Service
+  is a perfectly good governing Service for ordinals this will never grow.
+  */}}
+  serviceName: {{ include "bochka.fullname" . }}
+  {{- /*
+  RollingUpdate is the StatefulSet default, and it is written out because here the word means the
+  opposite of what it means on a Deployment: ordered replacement, the old pod gone before the new
+  one is created. That is exactly what the missing file lock requires. `OnDelete` would give the
+  same guarantee at the price of deleting the pod by hand on every upgrade, and buy nothing.
+
+  `podManagementPolicy` is left at its default for the same reason it cannot matter: it governs the
+  order of *several* pods, and there is one.
+  */}}
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "bochka.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "bochka.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- if or (not .Values.auth.existingSecret) .Values.podAnnotations }}
+      annotations:
+        {{- /*
+        Rotating a key this chart owns rolls the pod, because BOCHKA_KEYS is read once at startup
+        and a Secret updated underneath a running process changes nothing. For an existingSecret the
+        chart cannot see the content and does not pretend to: rotating that one means restarting the
+        pod yourself, and NOTES.txt says so.
+        */}}
+        {{- if not .Values.auth.existingSecret }}
+        checksum/secret: {{ include (print $.Template.BasePath "/secret.yaml") . | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      {{- /*
+      Not an option — a condition for this chart working at all.
+
+      With the default (true) kubelet injects <SVCNAME>_SERVICE_HOST, <SVCNAME>_SERVICE_PORT and
+      <SVCNAME>_PORT_9000_TCP* for every Service in the namespace, and a Service named after the
+      release gives the prefix BOCHKA_ exactly. Any BOCHKA_* name that is not a known setting is a
+      refusal to start with exit 2 (Configuration.kt:93-104, :122-127) — verified by running the
+      image with BOCHKA_SERVICE_HOST set. The trap is that only Services created *before* the pod
+      are injected: the first install can come up clean and the first rollout after it goes into
+      CrashLoopBackOff with a message that reads like an operator's mistake.
+      */}}
+      enableServiceLinks: false
+      {{- /* Nothing in this server talks to the API server, so there is no token to hand it. */}}
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- /*
+      These numbers are not values, because they are not free: the image creates its user with
+      uid/gid 1000 explicitly (Temurin 25's own `ubuntu` at 1000 is removed first) and gives it
+      /var/lib/bochka (Dockerfile:30-41). Without fsGroup a fresh PVC mounts root:root and the only
+      user the image has cannot write to its own data directory.
+
+      runAsUser is spelled out rather than inherited, and it stays spelled out whatever the image
+      declares: it has to agree with fsGroup above, which is what makes the volume writable, and an
+      inherited uid is one nobody can read out of this file. It is also load-bearing for the tag
+      this chart installs by default — `docker manifest inspect ghcr.io/youndie/bochka:v0.1.1`
+      shows Config.User as the string "bochka" rather than a number, and kubelet under
+      runAsNonRoot cannot resolve a name against a passwd file in an image it has not started; it
+      refuses the container instead of assuming it is not root. The Dockerfile in this repository
+      now says `USER 1000:1000` (Dockerfile:45-53), so a later release will no longer need the
+      help — this chart, which installs a published tag, still does.
+
+      fsGroupChangePolicy is not decoration: fsGroup otherwise walks the whole volume changing
+      owners on every mount, and at the object ceiling that is several hundred thousand files on
+      every pod start.
+      */}}
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      {{- /*
+      terminationGracePeriodSeconds is absent on purpose, and so is a preStop hook.
+
+      The JVM is PID 1 (the start script execs, Dockerfile:62-65) and Config.StopSignal is empty, so
+      SIGTERM reaches it; the shutdown hook closes the server and nothing else (Main.kt:81), and the
+      selector thread is joined with a 5 s ceiling. Measured: `docker stop` returned in 74 ms with
+      code 143. Any number above five seconds is equally sufficient and the default 30 already is;
+      anything below it is risk without a gain.
+
+      A preStop sleep would suggest connection draining, which does not exist here: requests in
+      flight are cancelled with the scope, and an interrupted PUT leaves an orphan file for the
+      sweep to collect (ObjectStore.kt:1464-1481) — the stored data is intact either way, because
+      the index record is written after the object file is fsynced.
+
+      That last half holds only while there is a sweep: `housekeepingMinutes: 0` turns it off along
+      with compaction (Main.kt:100-106), and then the orphan of every interrupted upload stays on
+      the volume for good. The stored data is still intact; the disk is not.
+      */}}
+      containers:
+        - name: bochka
+          image: "{{ .Values.image.repository }}:{{ include "bochka.imageTag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          {{- /*
+          readOnlyRootFilesystem is a verified claim rather than a block copied from another chart:
+          the image ran under `--read-only` and a 20 MB file made the round trip through aws-cli,
+          multipart upload included. No emptyDir for /tmp was needed.
+          */}}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          {{- /*
+          The container port is fixed and `service.port` is the only number that moves. A
+          containerPort in values would be a knob whose wrong value this server accepts without a
+          word — see the note on the "bochka.port" helper.
+          */}}
+          ports:
+            - name: s3
+              containerPort: {{ include "bochka.port" . }}
+              protocol: TCP
+          env:
+            {{- /*
+            The three the image already sets are set again here, so that `kubectl describe pod`
+            shows what the process runs with and so that none of them can arrive empty. An empty
+            BOCHKA_DATA_DIR is not "unset, the way the image meant it" — it is createTempDirectory
+            (Main.kt:34): a store inside the container, with the volume mounted and empty beside it.
+            */}}
+            - name: BOCHKA_DATA_DIR
+              value: /var/lib/bochka
+            - name: BOCHKA_BIND_ADDRESS
+              value: 0.0.0.0
+            - name: BOCHKA_PORT
+              value: {{ include "bochka.port" . | quote }}
+            {{- with .Values.region }}
+            - name: BOCHKA_REGION
+              value: {{ . | quote }}
+            {{- end }}
+            {{- /*
+            "1" and nothing else: the server compares BOCHKA_LOG to the literal "1" (Main.kt:64), so
+            a boolean rendered as `true` would be logging quietly switched off.
+            */}}
+            - name: BOCHKA_LOG
+              value: {{ if .Values.log }}"1"{{ else }}"0"{{ end }}
+            - name: BOCHKA_HOUSEKEEPING_MINUTES
+              value: {{ .Values.housekeepingMinutes | toString | quote }}
+            {{- if gt (int .Values.maxObjects) 0 }}
+            - name: BOCHKA_MAX_OBJECTS
+              value: {{ .Values.maxObjects | toString | quote }}
+            {{- end }}
+            {{- with .Values.virtualHostSuffixes }}
+            - name: BOCHKA_VIRTUAL_HOST_SUFFIXES
+              value: {{ join "," . | quote }}
+            {{- end }}
+            {{- /*
+            No `optional: true`. A missing key would leave BOCHKA_KEYS unset, and unset is not an
+            error to this server — it is the two built-in pairs (Main.kt:48), so the pod would come
+            up serving credentials published in this repository.
+            */}}
+            - name: BOCHKA_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "bochka.secretName" . }}
+                  key: {{ include "bochka.secretKey" . }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if ne .Values.probes.type "none" }}
+          {{- /*
+          Liveness stands behind startup deliberately: without a startupProbe it would kill the pod
+          in the middle of recovery, and the next pod would start recovering from the beginning.
+          The port opens only after the journal is replayed (Main.kt:52-65 -> HttpServer init), so a
+          refused connection honestly means "still coming up".
+          */}}
+          startupProbe:
+            {{- include "bochka.probeAction" . | nindent 12 }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.startup.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          readinessProbe:
+            {{- include "bochka.probeAction" . | nindent 12 }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          livenessProbe:
+            {{- include "bochka.probeAction" . | nindent 12 }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          {{- /*
+          The whole directory and no subPath: the index journal and the object files are tied by
+          write order, and compaction renames inside this same directory (ObjectStore.kt:1430,
+          :1497). The image mounts it whole already (Dockerfile:55).
+          */}}
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/bochka
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if or (not .Values.persistence.enabled) .Values.persistence.existingClaim }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim }}
+          {{- else }}
+          {{- /*
+          Allowed, and the only shape here that loses data: an emptyDir lives until the pod is
+          recreated, which is an upgrade or an eviction rather than a crash — no error, no log line.
+          */}}
+          emptyDir: {}
+          {{- end }}
+      {{- end }}
+  {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+  {{- /*
+  Retain both ways, and stated rather than assumed. `helm uninstall` does not touch this claim in
+  any case — the controller created it, so Helm has no record of it — and the deletion command is
+  printed by NOTES.txt.
+
+  A volumeClaimTemplate rather than a PVC declared as a chart manifest, and not only for the name: a
+  PVC that Helm owns can go through delete-and-create on `helm upgrade --force`, and then "the data
+  survives the release" would rest on a helm.sh/resource-policy annotation. Here it rests on the
+  API. The price is named in values.yaml and in NOTES.txt, and it is worth naming precisely, because
+  "applies at install only" sounds like a no-op and is not one: changing `persistence.size`,
+  `persistence.storageClass` or `persistence.accessModes` on an installed release makes the API
+  server reject the whole StatefulSet patch, so `helm upgrade` ends failed with the Secret and the
+  Service already updated and the pod still on the old spec. Growing the volume is an edit to the
+  PVC on a class with allowVolumeExpansion, with the value in values.yaml left where it was.
+  */}}
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+  {{- /*
+  Selector labels only, and not the full set, because `volumeClaimTemplates` is immutable: the API
+  server rejects an update to any StatefulSet field outside replicas, ordinals, template,
+  updateStrategy, persistentVolumeClaimRetentionPolicy and minReadySeconds. `helm.sh/chart` and
+  `app.kubernetes.io/version` move whenever the chart or the image does, so putting them in here
+  would turn the next `helm upgrade` into a forbidden update — on the release that upgrades the
+  server, which is the one nobody wants to debug.
+  */}}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          {{- include "bochka.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- with .Values.persistence.storageClass }}
+        storageClassName: {{ . | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size | quote }}
+  {{- end }}

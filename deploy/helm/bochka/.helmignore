@@ -1,0 +1,20 @@
+# Patterns to ignore when building packages.
+.DS_Store
+.git/
+.gitignore
+*.swp
+*.bak
+*.tmp
+*.orig
+*~
+
+# Editor and IDE leftovers.
+.idea/
+.vscode/
+.project
+.vs/
+
+# Value sets used by the chart's harness (ci/helm-chart.sh) and by nothing a consumer installs.
+# They include the negative ones, which are supposed to fail rendering — shipping those inside the
+# package would put files in it whose whole purpose is to break.
+ci/

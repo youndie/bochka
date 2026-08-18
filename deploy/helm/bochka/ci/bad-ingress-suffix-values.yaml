@@ -1,0 +1,16 @@
+# The mirror image of bad-ingress-wildcard: the server is told to route virtual-hosted requests for
+# s3.example.com, and the Ingress has a rule only for the bare host. `bucket.s3.example.com` then
+# matches no rule at all, the controller answers it itself, and the request never reaches bochka —
+# which the client reads as a missing bucket. Must fail.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+virtualHostSuffixes:
+  - s3.example.com
+ingress:
+  enabled: true
+  hosts:
+    - host: s3.example.com
+  tls:
+    - secretName: s3-example-com-tls

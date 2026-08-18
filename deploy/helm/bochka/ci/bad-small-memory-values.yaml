@@ -1,0 +1,14 @@
+# The shipped runtime profile is about 700 MiB before a single object is stored, and 512Mi looks
+# like arithmetic that works ("-Xmx512M, so 512Mi") right up to the moment the pod is OOM-killed
+# under load instead of refusing at its object ceiling. Must fail at render, the way JAVA_OPTS does.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+resources:
+  requests:
+    cpu: 500m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 512Mi

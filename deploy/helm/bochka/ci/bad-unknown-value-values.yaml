@@ -1,0 +1,7 @@
+# A values key nobody reads is a setting the operator believes they changed — the same reason the
+# server refuses an unknown BOCHKA_* name. Must fail in the schema.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+replicaCount: 3

@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "bochka",
+  "description": "The server checks the NAME of every setting and the VALUE of none of them: a misspelt BOCHKA_* name stops the process with exit 2, while BOCHKA_PORT=abc silently becomes 9000 and BOCHKA_HOUSEKEEPING_MINUTES=abc silently becomes 60 (Configuration.kt:69-71). Type checking has to happen here because it happens nowhere else. additionalProperties is false throughout for the same reason the server refuses an unknown BOCHKA_ name: a values key that is ignored is a setting the operator believes they changed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "image",
+    "auth",
+    "region",
+    "log",
+    "housekeepingMinutes",
+    "maxObjects",
+    "service",
+    "ingress",
+    "probes",
+    "resources",
+    "persistence"
+  ],
+  "properties": {
+    "global": {
+      "description": "Reserved by Helm for umbrella charts; unused here.",
+      "type": "object"
+    },
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string" },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "existingSecretKey": {
+          "description": "A key inside a Secret, so the charset is Kubernetes': letters, digits, '-', '_' and '.'. Checked here because nothing before the API server checks it — a space in this name renders a Secret that `helm install` refuses with a message about a config key, which reads like a fault in the chart rather than in a value somebody typed.",
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[-._a-zA-Z0-9]+$"
+        },
+        "keys": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "secret"],
+            "properties": {
+              "id": {
+                "description": "Quoted if it looks like a number: an unquoted 12345 is an integer here and this rejects it rather than letting YAML decide what the access key is.",
+                "type": "string",
+                "minLength": 1
+              },
+              "secret": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "region": { "type": "string", "minLength": 1 },
+    "virtualHostSuffixes": {
+      "type": "array",
+      "items": {
+        "description": "No leading dot: the code adds one (S3Router.kt:477-486), so '.example.com' would only ever match '..example.com'.",
+        "type": "string",
+        "minLength": 1,
+        "not": { "pattern": "^\\." }
+      }
+    },
+    "log": { "type": "boolean" },
+    "housekeepingMinutes": { "type": "integer", "minimum": 0 },
+    "maxObjects": { "type": "integer", "minimum": 0 },
+    "extraEnv": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port"],
+      "properties": {
+        "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "annotations": { "type": "object" }
+      }
+    },
+    "ingress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "className": { "type": "string" },
+        "annotations": { "type": "object" },
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["host"],
+            "properties": {
+              "host": { "type": "string", "minLength": 1 },
+              "paths": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["path"],
+                  "properties": {
+                    "path": { "type": "string", "minLength": 1 },
+                    "pathType": { "type": "string", "enum": ["Exact", "Prefix", "ImplementationSpecific"] }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tls": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["secretName"],
+            "properties": {
+              "secretName": { "type": "string", "minLength": 1 },
+              "hosts": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+            }
+          }
+        }
+      }
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": { "type": "string", "enum": ["exec", "tcp", "none"] },
+        "startup": { "$ref": "#/definitions/probeTiming" },
+        "readiness": { "$ref": "#/definitions/probeTiming" },
+        "liveness": { "$ref": "#/definitions/probeTiming" }
+      }
+    },
+    "resources": {
+      "description": "A ResourceRequirements as Kubernetes defines it; the API server is the authority on the quantities, so the shape is checked here and the values are not. One value is checked anyway, and in the template rather than here because JSON Schema cannot compare quantities: `limits.memory` below 768Mi is refused, because the shipped runtime profile needs about 700 MiB and under that the pod is OOM-killed while working instead of refusing at its object ceiling. That is a property, not a preference — see the comment on `resources` in values.yaml.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "type": "object" },
+        "limits": { "type": "object" }
+      }
+    },
+    "persistence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "storageClass": { "type": "string" },
+        "accessModes": {
+          "description": "ReadWriteMany is refused rather than discouraged: nothing in bochka-core guards the data directory against a second process, so a volume two nodes can mount is a promise the server does not keep.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "type": "string", "enum": ["ReadWriteOnce", "ReadWriteOncePod"] }
+        },
+        "size": { "type": "string", "minLength": 1 },
+        "existingClaim": { "type": "string" }
+      }
+    },
+    "nodeSelector": { "type": "object" },
+    "tolerations": { "type": "array" },
+    "affinity": { "type": "object" },
+    "podAnnotations": { "type": "object" },
+    "podLabels": { "type": "object" },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "image": { "type": "string", "minLength": 1 } }
+    }
+  },
+  "definitions": {
+    "probeTiming": {
+      "description": "The three fields the template renders, and no others. `initialDelaySeconds` and `successThreshold` were declared here once and rendered nowhere: they passed the schema, passed `helm lint`, upgraded cleanly and changed nothing — which is exactly what the note at the top of this file calls a setting the operator believes they changed, and worse here than a typo, because `additionalProperties: false` refuses `initialDelaySecond` and so teaches that an accepted name works. They are gone rather than rendered, because the chart sets these timings deliberately: the startupProbe already covers a slow start (20 x 3 s), and a readiness `successThreshold` above 1 only delays recovery on a single replica.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "periodSeconds": { "type": "integer", "minimum": 1 },
+        "timeoutSeconds": { "type": "integer", "minimum": 1 },
+        "failureThreshold": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

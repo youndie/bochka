@@ -1,0 +1,6 @@
+# Two answers to one question. Must fail.
+auth:
+  existingSecret: bochka-keys
+  keys:
+    - id: chartkey
+      secret: chartsecret

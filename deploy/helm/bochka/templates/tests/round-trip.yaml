@@ -1,0 +1,89 @@
+{{- $bucket := printf "%s-helmtest" (include "bochka.fullname" .) | trunc 63 | trimSuffix "-" -}}
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "bochka.fullname" . }}-test
+  labels:
+    {{- include "bochka.labels" . | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    {{- /* A failed test pod is left behind, because its log is the finding. */}}
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  enableServiceLinks: false
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  {{- /*
+  Somebody else's client, on purpose. A green run against this project's own client would not be a
+  compatibility check at all — it signs UNSIGNED-PAYLOAD and never touches the streaming input path
+  — and that is a rule of this repository rather than a preference.
+  */}}
+  containers:
+    - name: aws-cli
+      image: {{ .Values.tests.image | quote }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+      env:
+        - name: HOME
+          value: /tmp
+        - name: ENDPOINT
+          value: http://{{ include "bochka.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+        - name: REGION
+          value: {{ .Values.region | quote }}
+        - name: BUCKET
+          value: {{ $bucket | quote }}
+        {{- /*
+        The same Secret the server reads. If it holds nothing — the wrong key name, a value that
+        rendered empty — this pod fails to start, and that is itself the finding: it is exactly the
+        state in which the server comes up with published credentials and says nothing.
+        */}}
+        - name: BOCHKA_KEYS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "bochka.secretName" . }}
+              key: {{ include "bochka.secretKey" . }}
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          export AWS_EC2_METADATA_DISABLED=true
+          export AWS_DEFAULT_REGION="$REGION"
+
+          # The negative check first, and it is the one this chart cannot make at render time: the
+          # content of a Secret is invisible to a template, and an empty BOCHKA_KEYS is not an
+          # error to this server — it is the two built-in pairs, published in this repository, with
+          # `keys (unset)` in the log and nothing that calls it wrong.
+          if AWS_ACCESS_KEY_ID=bochkaadmin AWS_SECRET_ACCESS_KEY=bochkasecret \
+             aws --endpoint-url "$ENDPOINT" s3 ls >/dev/null 2>&1; then
+            echo "FAIL  the built-in credentials bochkaadmin:bochkasecret are accepted."
+            echo "      BOCHKA_KEYS reached the server empty or blank, and this store is public."
+            exit 1
+          fi
+          echo "PASS  the built-in credentials are refused"
+
+          pair=${BOCHKA_KEYS%%,*}
+          AWS_ACCESS_KEY_ID=${pair%%:*}
+          AWS_SECRET_ACCESS_KEY=${pair#*:}
+          export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY
+
+          echo hello > /tmp/probe.txt
+          aws --endpoint-url "$ENDPOINT" s3 mb "s3://$BUCKET" >/dev/null
+          aws --endpoint-url "$ENDPOINT" s3 cp /tmp/probe.txt "s3://$BUCKET/probe.txt" >/dev/null
+          aws --endpoint-url "$ENDPOINT" s3 cp "s3://$BUCKET/probe.txt" /tmp/back.txt >/dev/null
+          if [ "$(cat /tmp/back.txt)" != "hello" ]; then
+            echo "FAIL  the object came back different from what went in"
+            exit 1
+          fi
+          aws --endpoint-url "$ENDPOINT" s3 rm "s3://$BUCKET/probe.txt" >/dev/null
+          aws --endpoint-url "$ENDPOINT" s3 rb "s3://$BUCKET" >/dev/null
+          echo "PASS  a round trip with the configured key works"

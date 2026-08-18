@@ -1,0 +1,8 @@
+# BOCHKA_LOG is compared to the literal "1", so anything but a boolean here is logging quietly off.
+# The schema is the only thing checking values at all — the server checks names and not values.
+# Must fail.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+log: "yes"

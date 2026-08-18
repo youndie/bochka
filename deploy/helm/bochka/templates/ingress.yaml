@@ -1,0 +1,78 @@
+{{- if .Values.ingress.enabled }}
+{{- if not .Values.ingress.tls }}
+{{- fail "ingress.enabled is set without ingress.tls. bochka never terminates TLS itself (research §1.7), so an Ingress without a certificate publishes SigV4 requests in the clear — including the signed Host and every header they cover. Add ingress.tls, or put your own terminator in front of the ClusterIP Service." }}
+{{- end }}
+{{- if not .Values.ingress.hosts }}
+{{- fail "ingress.enabled is set without ingress.hosts. The Host header is part of the signature (deploy/nginx/nginx.conf:75-77), so a rule with no host would answer requests whose signature was computed over a name this Ingress never sees." }}
+{{- end }}
+{{/*
+A wildcard host means virtual-hosted-style requests — `bucket.s3.example.com` — and the server only
+routes those for domains it was told about: bucketFromHost walks `virtualHostSuffixes` and returns
+null otherwise, which is path-style (S3Router.kt:477-486). A wildcard Ingress with an empty or
+different suffix list therefore accepts the request, routes it as path-style, and the signature
+disagrees with the routing. Checked here rather than trusted, because the client sees it as a
+credentials problem.
+*/}}
+{{- $suffixes := list }}
+{{- range .Values.virtualHostSuffixes }}
+{{- $suffixes = append $suffixes (lower .) }}
+{{- end }}
+{{- range .Values.ingress.hosts }}
+{{- if hasPrefix "*." .host }}
+{{- $domain := lower (trimPrefix "*." .host) }}
+{{- if not (has $domain $suffixes) }}
+{{- fail (printf "ingress.hosts contains the wildcard %q while virtualHostSuffixes does not list %q. Virtual-hosted requests to that domain would be routed as path-style and the signature would not match. Add %q to virtualHostSuffixes — without the leading dot, the code adds it." .host $domain $domain) }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{/*
+And the same check the other way, which is the half that diagnoses worse. A suffix the server knows
+about with no `*.<suffix>` rule in this Ingress means `bucket.s3.example.com` matches no rule at all:
+the controller answers its own 404 or its default backend, the request never reaches the Service, and
+bochka logs nothing because nothing arrived. The client reads that as "the bucket is not there" while
+the server half is configured correctly. The certificate for such a host is needed either way, so
+this refusal names work that already existed rather than adding any.
+*/}}
+{{- $wildcards := list }}
+{{- range .Values.ingress.hosts }}
+{{- if hasPrefix "*." .host }}
+{{- $wildcards = append $wildcards (lower (trimPrefix "*." .host)) }}
+{{- end }}
+{{- end }}
+{{- range $suffixes }}
+{{- if not (has . $wildcards) }}
+{{- fail (printf "virtualHostSuffixes lists %q while ingress.hosts has no rule for \"*.%s\". Virtual-hosted requests — bucket.%s — would match no rule in this Ingress and never reach the service at all; the controller answers them itself, and the client sees a missing bucket rather than a missing route. Add a host \"*.%s\" (with a certificate that covers it), or drop the suffix and stay path-style." . . . .) }}
+{{- end }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "bochka.fullname" . }}
+  labels:
+    {{- include "bochka.labels" . | nindent 4 }}
+  {{- with .Values.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.ingress.className }}
+  ingressClassName: {{ . | quote }}
+  {{- end }}
+  tls:
+    {{- toYaml .Values.ingress.tls | nindent 4 }}
+  rules:
+    {{- range .Values.ingress.hosts }}
+    - host: {{ .host | quote }}
+      http:
+        paths:
+          {{- range (.paths | default (list (dict "path" "/" "pathType" "Prefix"))) }}
+          - path: {{ .path | quote }}
+            pathType: {{ .pathType | default "Prefix" }}
+            backend:
+              service:
+                name: {{ include "bochka.fullname" $ }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+    {{- end }}
+{{- end }}

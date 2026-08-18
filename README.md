@@ -140,7 +140,7 @@ something on this machine and looking at the output.
 | `bochka-core` | storage: index, metadata journal, object files, recovery. Knows nothing about S3 |
 | `bochka-s3` | the protocol: request parsing, SigV4 verification including `aws-chunked`, XML, errors. Knows nothing about sockets |
 | `bochka-http` | its own HTTP/1.1: selector, `Expect`, `Range`, keep-alive, `sendfile` |
-| `bochka-app` | running it: configuration, metrics, distribution, health check |
+| `bochka-app` | running it: configuration, request logging, housekeeping, the shipped runtime profile |
 | `bochka-embedded` | start a server on a random port from a test, stop it after |
 | `bochka-benchmark` | the numbers |
 
@@ -286,8 +286,11 @@ disagreeing — which reads like a bug in your project and is a missing line.
   back holes and data compaction, which is the complexity this design exists without. Said here
   on day one rather than discovered later.
 - **Not unbounded in object count.** The index keeps every key in memory, so the ceiling is memory,
-  and it will be published as a number — objects per MiB of heap — once it has been measured. A
-  store that cannot fit its index says so at startup instead of degrading into swap.
+  and it is a published number rather than a surprise: `Runtime.maxMemory() * 0.5 / 650`, which on
+  the shipped `-Xmx512M` profile is **399 215 objects**, printed as `object ceiling` on the first
+  line of the log. A store at its ceiling refuses new keys with `507 InsufficientStorage` and goes
+  on serving everything it already holds; a store whose index no longer fits the heap it was given
+  refuses to open at all, instead of degrading into swap.
 - **Not versioned.** One version per key. Versioning would make the index key composite, which is
   a different project.
 - **Not an identity system.** Access keys are a static list in the configuration; no IAM, no bucket

@@ -1,0 +1,8 @@
+# The server keeps the last pair silently (`associate`), so the first secret would simply stop
+# working. Must fail.
+auth:
+  keys:
+    - id: chartkey
+      secret: first
+    - id: chartkey
+      secret: second

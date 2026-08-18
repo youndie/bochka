@@ -1,0 +1,10 @@
+# Allowed, and the one shape here that loses data quietly. Rendered by the harness so that the
+# branch is exercised and NOTES.txt is seen saying what it costs.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+persistence:
+  enabled: false
+probes:
+  type: none

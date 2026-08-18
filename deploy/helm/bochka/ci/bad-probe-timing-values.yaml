@@ -1,0 +1,12 @@
+# `initialDelaySeconds` used to pass the schema and render nowhere: green lint, green template,
+# successful upgrade, identical behaviour. A values key that is accepted and ignored is worse than a
+# typo, because the schema's own `additionalProperties: false` teaches that an accepted name works.
+# Must fail, and in the schema.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+probes:
+  type: exec
+  startup:
+    initialDelaySeconds: 60

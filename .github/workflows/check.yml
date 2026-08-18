@@ -64,3 +64,40 @@ jobs:
       # Everything about the image that the gate cannot see: the user, the volume, the runtime
       # profile surviving JAVA_OPTS, a misspelt setting stopping the process.
       - run: ./ci/docker-smoke.sh
+      # The chart job installs *this* image rather than the published one, so that a pull request
+      # is checked against what it changed. Handed over as an artefact because jobs do not share a
+      # daemon; building it twice would be four more minutes for the same bytes.
+      - name: Hand the image to the chart job
+        run: docker save bochka:smoke -o bochka-image.tar
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bochka-image
+          path: bochka-image.tar
+          retention-days: 1
+
+  chart:
+    # The Helm chart, on every pull request rather than at release time. A check that only runs on
+    # a release rots unseen — that has already cost this repository eight merges with a red main
+    # and green pull requests — and this one has more to lose than most: the smoke test above looks
+    # at Docker, and Docker does not have service-link environment variables, an arbitrary uid
+    # against a root-owned volume, or an orchestrator that reads 403 as a failed probe. Every
+    # decision in the chart came out of that difference, so the harness has to cover it.
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+      - uses: helm/kind-action@v1
+        with:
+          # The harness creates and deletes its own cluster: it names the release `bochka` on
+          # purpose, so that the Service is named `bochka` and kubelet would inject BOCHKA_* into
+          # the pod. A cluster somebody else made would be one more thing to reason about.
+          install_only: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: bochka-image
+      - run: docker load -i bochka-image.tar
+      # `yes` rather than the default `auto`: a missing kind has to be a red job. The stage this
+      # gates is the only one that has met a kubelet, and a harness that silently skips it would
+      # report a green tick for the half that proves nothing.
+      - run: BOCHKA_IMAGE=bochka:smoke BOCHKA_CHART_KIND=yes ./ci/helm-chart.sh
