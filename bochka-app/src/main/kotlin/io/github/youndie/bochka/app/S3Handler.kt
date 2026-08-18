@@ -43,6 +43,21 @@ class S3Handler(
     private val store: ObjectStore,
     private val verifier: SignatureVerifier,
     private val router: S3Router,
+    /**
+     * Hand a whole-object read to the terminator in front instead of sending it here.
+     *
+     * `null` — and the default — means this server sends every byte itself, which is the only
+     * thing that works when nothing shares its filesystem. Set to an internal location prefix
+     * (`/bochka-data`) and a `GET` of a whole object answers with `X-Accel-Redirect` and no body;
+     * nginx then serves the file, which is the difference between relaying a socket and sending a
+     * file — 2.408 processor-seconds per gibibyte against 0.898, measured (`docs/measurements.md`).
+     *
+     * **The cost is real and is why this is off by default.** The terminator must be able to read
+     * the data directory, so it stops being a process that only speaks TLS; the two must sit on
+     * one filesystem, which forbids putting the terminator on another host; and the bytes leave
+     * without this server seeing them go.
+     */
+    private val accelRedirect: String? = null,
 ) : HttpHandler {
     override fun screen(head: HttpRequestParser.Head): HttpResponse? {
         val route = route(head)
@@ -1106,6 +1121,21 @@ class S3Handler(
                         partChecksumIfAsked(head, stored, partNumber),
                 file = if (withBody) HttpResponse.FileSlice(path, slice.first, slice.second) else null,
                 contentLength = slice.second,
+            )
+        }
+
+        // Handing the file to the terminator in front, when the deployment says to. Only a `GET`
+        // of the whole object: a `HEAD` has no body to hand over, and `partNumber` names a slice
+        // that no header can express — `X-Accel-Redirect` says which file, never which part of it.
+        // A `Range` **is** handed over, because nginx applies the client's own `Range` to the
+        // internal file and answers the `206` itself.
+        if (accelRedirect != null && withBody && partNumber == null) {
+            val relative = store.dataRoot.relativize(path)
+            return HttpResponse(
+                200,
+                "OK",
+                headers = headers + checksumIfAsked(head, stored) + ("X-Accel-Redirect" to "$accelRedirect/$relative"),
+                contentLength = 0,
             )
         }
 

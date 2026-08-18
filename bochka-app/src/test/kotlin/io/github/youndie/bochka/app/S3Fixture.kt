@@ -32,6 +32,7 @@ import java.time.format.DateTimeFormatter
  */
 class S3Fixture(
     virtualHostSuffixes: List<String> = emptyList(),
+    accelRedirect: String? = null,
 ) : AutoCloseable {
     val root: Path = Files.createTempDirectory("bochka-e2e")
     val store = ObjectStore(root, ObjectStore.Durability.NONE)
@@ -42,6 +43,7 @@ class S3Fixture(
                 store = store,
                 verifier = SignatureVerifier(Credentials(mapOf(ACCESS_KEY to SECRET))),
                 router = S3Router(virtualHostSuffixes),
+                accelRedirect = accelRedirect,
             ),
             port = 0,
         )

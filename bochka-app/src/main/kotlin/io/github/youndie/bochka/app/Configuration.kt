@@ -53,6 +53,11 @@ class Configuration private constructor(
         LOG("log", "0", "1 to print a line per request"),
         HOUSEKEEPING_MINUTES("housekeeping.minutes", "60", "how often to compact and sweep; 0 to never"),
         MAX_OBJECTS("max.objects", null, "the ceiling on objects; derived from the heap if unset"),
+        ACCEL_REDIRECT(
+            "accel.redirect",
+            null,
+            "hand whole-object reads to the terminator in front by this internal prefix; off if unset",
+        ),
         ;
 
         /** `data.dir` is `BOCHKA_DATA_DIR`. Mechanical, so that neither list can drift from the other. */

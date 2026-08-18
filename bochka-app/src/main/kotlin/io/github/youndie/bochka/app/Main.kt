@@ -58,6 +58,7 @@ object Main {
                 store = store,
                 verifier = SignatureVerifier(credentials, region = region),
                 router = S3Router(virtualHostSuffixes = configuration.list(Configuration.Key.VIRTUAL_HOST_SUFFIXES)),
+                accelRedirect = configuration[Configuration.Key.ACCEL_REDIRECT]?.trimEnd('/'),
             )
 
         val logged = LoggingHandler(handler, enabled = configuration[Configuration.Key.LOG] == "1")

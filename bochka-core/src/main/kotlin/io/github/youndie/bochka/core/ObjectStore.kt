@@ -620,6 +620,16 @@ class ObjectStore(
     /** Where the bytes are, for a reader that wants the file rather than a copy of it (M-59). */
     fun pathOf(stored: Stored): Path = pathOf(stored.fileId)
 
+    /**
+     * The directory every object file sits under.
+     *
+     * Exposed for one caller: a deployment that hands the file to a terminator in front rather
+     * than sending it itself (`X-Accel-Redirect`) has to name the file **relative** to a root that
+     * the terminator also knows. The absolute path from [pathOf] is this server's view of it, and
+     * the two are the same directory only by arrangement.
+     */
+    val dataRoot: Path get() = data
+
     fun delete(
         bucket: String,
         key: ObjectKey,
