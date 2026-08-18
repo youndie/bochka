@@ -3,9 +3,18 @@ plugins {
     application
 }
 
+// Published because `:bochka-embedded` names it: a POM whose dependencies were never
+// pushed resolves to nothing, and from the publishing side that looks exactly like a
+// good publication. Only `:bochka-embedded` is a supported surface with a checked ABI.
+apply(from = rootProject.file("publishing.gradle.kts"))
+
 dependencies {
-    implementation(project(":bochka-s3"))
-    implementation(project(":bochka-http"))
+    // `api`, not `implementation`: `S3Handler`'s constructor takes an `ObjectStore`, a
+    // `SignatureVerifier` and an `S3Router`, so those types are part of this module's surface
+    // whether the build file says so or not. `implementation` only hid it — from the build,
+    // not from anybody who tried to construct one, which is what `:bochka-embedded` does.
+    api(project(":bochka-s3"))
+    api(project(":bochka-http"))
 
     testImplementation(kotlin("test"))
     testImplementation(libs.coroutines.test)

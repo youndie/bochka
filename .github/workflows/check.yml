@@ -1,0 +1,51 @@
+# The gate, on every push and every pull request.
+#
+# One command, because that is a project rule: `./gradlew check` runs the tests and ktlint in every
+# module, and nobody has to remember a second line here. The harnesses that need Docker and other
+# people's clients are separate jobs — they take minutes rather than seconds, and a gate that takes
+# minutes stops being run locally.
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No setup-java step: the build fetches its own JDK 25 toolchain (settings.gradle.kts), so
+      # the runner's Java is not part of the answer. A green build here means green on a machine
+      # with no JDK at all.
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew check
+
+  live-clients:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/setup-gradle@v4
+      # The metric this project is measured by is other people's clients, not its own tests (Р6).
+      - run: ./ci/live-clients.sh
+
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/setup-gradle@v4
+      # `ceph/s3-tests` never fails the build: the score is a number to publish and watch, and a
+      # threshold on it would be a threshold on somebody else's suite changing. What is printed is
+      # the score, the count of tests that ran, and why the rest fail — including how many nobody
+      # has classified, which is the one number that should be zero.
+      - run: ./ci/s3-tests.sh || true
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/setup-gradle@v4
+      # Everything about the image that the gate cannot see: the user, the volume, the runtime
+      # profile surviving JAVA_OPTS, a misspelt setting stopping the process.
+      - run: ./ci/docker-smoke.sh

@@ -176,6 +176,58 @@ claim worth making: 56 are deferred and **3 are defects**, named. What the numbe
 the count of tests that ran is printed beside it — a rising score and a shrinking suite look
 identical otherwise.
 
+## Running it
+
+```bash
+docker run -d --name bochka \
+  -u 1000:1000 \
+  -v /srv/bochka:/var/lib/bochka \
+  -p 127.0.0.1:9000:9000 \
+  -e BOCHKA_KEYS='youraccesskey:yoursecretkey' \
+  ghcr.io/youndie/bochka:latest
+```
+
+Bound to the loopback on purpose, with nginx in front for TLS — that is the architecture rather
+than a convenience, because terminating TLS inside the JVM would cost the read path this whole
+project is built around. [deploy/](deploy/) has the configuration and the reasoning.
+
+**A setting bochka does not recognise stops it from starting.** `BOCHKA_DATADIR` instead of
+`BOCHKA_DATA_DIR` means the objects are in a temporary directory and nothing about the running
+process says so, so instead the process refuses, names the typo and suggests the real one. The
+cost is real and worth stating: a `BOCHKA_*` variable set for some other purpose will stop this
+server.
+
+## Starting it inside a test
+
+The other half of the niche: on the JVM, "an S3 endpoint you can start in a test" is currently a
+mock, and a mock answers what it was told to answer. This is the same server the image runs —
+same signature verification, same four body framings, same storage.
+
+```kotlin
+dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:<version>") }
+```
+
+```kotlin
+Bochka.start().use { bochka ->
+    val s3 = S3Client.builder()
+        .endpointOverride(URI.create(bochka.endpoint))
+        .credentialsProvider { AwsBasicCredentials.create(bochka.accessKeyId, bochka.secretKey) }
+        .forcePathStyle(true)
+        .build()
+    // ...
+}
+```
+
+It picks its own port, makes its own directory and removes it on close. It does not `fsync` by
+default — a test that flushes every write is measuring the disk — and `durable = true` says so
+when that is the thing being tested.
+
+bochka is compiled to JVM 25 bytecode, so a consumer needs a toolchain that can target 25:
+`plugins { id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0" }` in
+`settings.gradle.kts`. Without it Gradle cannot provision the JDK, Kotlin silently falls back to
+its own highest target, and the build fails with a message about `compileJava` and `compileKotlin`
+disagreeing — which reads like a bug in your project and is a missing line.
+
 ## What bochka is not
 
 - **Not a cluster.** One process, one disk, no replication and no failover. A node that dies takes

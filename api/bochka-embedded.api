@@ -1,0 +1,34 @@
+public final class io/github/youndie/bochka/embedded/Bochka : java/io/Closeable {
+	public static final field Companion Lio/github/youndie/bochka/embedded/Bochka$Companion;
+	public static final field DEFAULT_ACCESS_KEY_ID Ljava/lang/String;
+	public static final field DEFAULT_SECRET_KEY Ljava/lang/String;
+	public fun close ()V
+	public final fun getAccessKeyId ()Ljava/lang/String;
+	public final fun getDataDirectory ()Ljava/nio/file/Path;
+	public final fun getEndpoint ()Ljava/lang/String;
+	public final fun getObjectCount ()I
+	public final fun getPort ()I
+	public final fun getRegion ()Ljava/lang/String;
+	public final fun getSecretKey ()Ljava/lang/String;
+	public static final fun start ()Lio/github/youndie/bochka/embedded/Bochka;
+	public static final fun start (I)Lio/github/youndie/bochka/embedded/Bochka;
+	public static final fun start (ILjava/nio/file/Path;)Lio/github/youndie/bochka/embedded/Bochka;
+	public static final fun start (ILjava/nio/file/Path;Ljava/lang/String;)Lio/github/youndie/bochka/embedded/Bochka;
+	public static final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;)Lio/github/youndie/bochka/embedded/Bochka;
+	public static final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lio/github/youndie/bochka/embedded/Bochka;
+	public static final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)Lio/github/youndie/bochka/embedded/Bochka;
+	public static final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZ)Lio/github/youndie/bochka/embedded/Bochka;
+}
+
+public final class io/github/youndie/bochka/embedded/Bochka$Companion {
+	public final fun start ()Lio/github/youndie/bochka/embedded/Bochka;
+	public final fun start (I)Lio/github/youndie/bochka/embedded/Bochka;
+	public final fun start (ILjava/nio/file/Path;)Lio/github/youndie/bochka/embedded/Bochka;
+	public final fun start (ILjava/nio/file/Path;Ljava/lang/String;)Lio/github/youndie/bochka/embedded/Bochka;
+	public final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;)Lio/github/youndie/bochka/embedded/Bochka;
+	public final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lio/github/youndie/bochka/embedded/Bochka;
+	public final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)Lio/github/youndie/bochka/embedded/Bochka;
+	public final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZ)Lio/github/youndie/bochka/embedded/Bochka;
+	public static synthetic fun start$default (Lio/github/youndie/bochka/embedded/Bochka$Companion;ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZILjava/lang/Object;)Lio/github/youndie/bochka/embedded/Bochka;
+}
+

@@ -19,40 +19,52 @@ import kotlin.io.path.createTempDirectory
 object Main {
     @JvmStatic
     fun main(args: Array<String>) {
-        val port = env("BOCHKA_PORT")?.toIntOrNull() ?: 9000
-        val address = env("BOCHKA_BIND_ADDRESS") ?: "127.0.0.1"
-        val dataDir = env("BOCHKA_DATA_DIR")?.let(Path::of) ?: createTempDirectory("bochka")
-        val region = env("BOCHKA_REGION") ?: "us-east-1"
+        val configuration =
+            try {
+                Configuration.load()
+            } catch (e: Configuration.Refused) {
+                // Printed and then exited, not thrown: a stack trace in a container log buries the
+                // one line that says which setting is misspelt.
+                System.err.println("bochka will not start: ${e.message}")
+                kotlin.system.exitProcess(2)
+            }
+
+        val port = configuration.int(Configuration.Key.PORT) ?: 9000
+        val address = configuration[Configuration.Key.BIND_ADDRESS]!!
+        val dataDir = configuration[Configuration.Key.DATA_DIR]?.let(Path::of) ?: createTempDirectory("bochka")
+        val region = configuration[Configuration.Key.REGION]!!
 
         // Two by default, because the compatibility suite needs two and a server built around one
-        // key cannot run half of it (research, §1.11.1).
-        // `BOCHKA_KEYS=id:secret,id2:secret2`. A list rather than a fixed pair, because the
-        // compatibility suite wants three — main, alt and tenant — and a server shaped around one
-        // key cannot run half of what it is going to be measured by (research, §1.11.1).
+        // key cannot run half of it (research, §1.11.1). A list rather than a fixed pair, because
+        // the suite wants three — main, alt and tenant.
         val credentials =
             Credentials(
-                env("BOCHKA_KEYS")
-                    ?.split(",")
-                    ?.filter { it.isNotBlank() }
-                    ?.associate { pair ->
+                configuration
+                    .list(Configuration.Key.KEYS)
+                    .associate { pair ->
                         val colon = pair.indexOf(':')
-                        require(colon > 0) { "BOCHKA_KEYS entries look like id:secret, got '$pair'" }
+                        require(colon > 0) { "keys look like id:secret, got '$pair'" }
                         pair.substring(0, colon).trim() to pair.substring(colon + 1).trim()
-                    }
-                    ?: mapOf("bochkaadmin" to "bochkasecret", "bochkaalt" to "bochkaaltsecret"),
+                    }.ifEmpty { mapOf("bochkaadmin" to "bochkasecret", "bochkaalt" to "bochkaaltsecret") },
             )
 
-        val store = ObjectStore(dataDir)
+        val store =
+            ObjectStore(
+                root = dataDir,
+                maxObjects = configuration.int(Configuration.Key.MAX_OBJECTS) ?: ObjectStore.ceilingForHeap(),
+            )
         val handler =
             S3Handler(
                 store = store,
                 verifier = SignatureVerifier(credentials, region = region),
-                router = S3Router(virtualHostSuffixes = env("BOCHKA_VIRTUAL_HOST_SUFFIXES")?.split(",") ?: emptyList()),
+                router = S3Router(virtualHostSuffixes = configuration.list(Configuration.Key.VIRTUAL_HOST_SUFFIXES)),
             )
 
-        val logged = LoggingHandler(handler, enabled = env("BOCHKA_LOG") == "1")
+        val logged = LoggingHandler(handler, enabled = configuration[Configuration.Key.LOG] == "1")
         val server = HttpServer(logged, bindAddress = address, port = port)
         println("bochka listening on $address:${server.boundPort}, data in $dataDir")
+        println("configuration:")
+        println(configuration.describe())
         // What the log said when it was opened, rather than a silent start: a run that discarded a
         // torn tail is a fact about the last shutdown, and the only place it is ever visible.
         with(store.recovery) {
@@ -64,7 +76,7 @@ object Main {
         println("access keys: ${credentials.ids.sorted().joinToString(", ")}")
         println("object ceiling: ${store.maxObjects} (${ObjectStore.BYTES_PER_OBJECT} bytes of index each)")
 
-        startHousekeeping(store)
+        startHousekeeping(store, configuration.long(Configuration.Key.HOUSEKEEPING_MINUTES) ?: 60)
         Runtime.getRuntime().addShutdownHook(Thread { server.close() })
         Thread.currentThread().join()
     }
@@ -82,8 +94,10 @@ object Main {
      * are printed and the loop continues — housekeeping that could take the server down with it
      * would be a worse trade than housekeeping that skipped a round.
      */
-    private fun startHousekeeping(store: ObjectStore) {
-        val minutes = env("BOCHKA_HOUSEKEEPING_MINUTES")?.toLongOrNull() ?: 60
+    private fun startHousekeeping(
+        store: ObjectStore,
+        minutes: Long,
+    ) {
         if (minutes <= 0) {
             println("housekeeping: disabled")
             return
@@ -117,6 +131,4 @@ object Main {
             }
         }.onFailure { println("housekeeping failed: $it") }
     }
-
-    private fun env(name: String): String? = System.getenv(name)?.takeIf { it.isNotBlank() }
 }

@@ -1,0 +1,74 @@
+# Publishing, on a tag and never otherwise.
+#
+# Two artefacts and two destinations, because they are two different things: the server is an
+# image somebody runs, and `bochka-embedded` is a jar somebody compiles against. Neither is
+# published from a branch — a tag is the only thing that says "this exact tree is a version", and
+# a build with no `-PVERSION` produces a snapshot on purpose (root build file).
+#
+# The gate runs first and the publish depends on it. That ordering is the whole value of this file:
+# an image built in the same job as its tests can be pushed before they finish.
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew check
+      - run: ./ci/docker-smoke.sh
+
+  image:
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the distribution the image is made of
+        run: ./gradlew -PVERSION=${GITHUB_REF_NAME#v} :bochka-app:installDist
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # The version and `latest`, not `latest` alone: a tag that moves is not a thing anybody
+          # can pin, and a deployment that cannot pin cannot roll back.
+          tags: |
+            ghcr.io/youndie/bochka:${{ github.ref_name }}
+            ghcr.io/youndie/bochka:latest
+
+  maven:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Publish bochka-embedded
+        env:
+          BOCHKA_REPO_URL: ${{ secrets.BOCHKA_REPO_URL }}
+          BOCHKA_REPO_USER: ${{ secrets.BOCHKA_REPO_USER }}
+          BOCHKA_REPO_SECRET: ${{ secrets.BOCHKA_REPO_SECRET }}
+        run: ./gradlew -PVERSION=${GITHUB_REF_NAME#v} :bochka-embedded:publishAllPublicationsToBochkaRepoRepository
+
+  consume:
+    # The check that matters, and the one a publish job cannot make about itself: build something
+    # else against what was just published, the way a consumer would (booblik, M9). A publication
+    # that exists and cannot be resolved — wrong coordinates, a missing POM, a dependency that was
+    # never published — looks identical to a good one from the publishing side.
+    needs: [image, maven]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull the image that was just pushed and round-trip an object through it
+        run: BOCHKA_IMAGE=ghcr.io/youndie/bochka:${{ github.ref_name }} ./ci/consume-published.sh
