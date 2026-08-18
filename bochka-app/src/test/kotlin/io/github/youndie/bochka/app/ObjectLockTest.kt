@@ -2,6 +2,7 @@ package io.github.youndie.bochka.app
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -365,6 +366,26 @@ class ObjectLockTest {
 
             assertEquals(200, answer.status, answer.text)
             assertEquals("GOVERNANCE", s3.get("photos", "a.txt").header("x-amz-object-lock-mode"))
+        }
+    }
+
+    @Test
+    fun `the retain-until header comes back in the form the client sent it`() {
+        // Единственная из трёх проверок `test_object_lock_get_obj_metadata:13955`, которую мои
+        // тесты не покрывали: режим и статус удержания сверялись, а дата — нет. Кейс обрывается
+        // на упавшей проверке, до своей уборки не доходит и оставляет legal hold, который снять
+        // уже нечем, — и следом триста кейсов падают в своих фикстурах.
+        S3Fixture().use { s3 ->
+            s3.locked("photos")
+            s3.put("photos", "a.txt", "тело")
+            s3.send("PUT", "/photos/a.txt", query = "retention", body = retention("GOVERNANCE", "2030-01-01T00:00:00Z"))
+
+            val head = s3.send("HEAD", "/photos/a.txt")
+
+            assertEquals("2030-01-01T00:00:00Z", head.header("x-amz-object-lock-retain-until-date"))
+            // Кейс берёт версию из **этого** ответа, чтобы потом удалить её: без заголовка он
+            // падает на `KeyError` до своей уборки, и legal hold остаётся навсегда.
+            assertNotNull(head.header("x-amz-version-id"), "HEAD обязан назвать версию")
         }
     }
 }
