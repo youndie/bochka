@@ -46,15 +46,20 @@ rule, `main` describes what exists.
 ## Measured, not assumed
 
 The whole read path exists for one property, and identical bytes come out either way — so it is
-measured rather than believed. On ext4, median of seven runs of two gibibytes each, with the
-spread printed beside every number ([docs/measurements.md](docs/measurements.md)):
+measured rather than believed. Median of seven runs, spread printed beside every number
+([docs/measurements.md](docs/measurements.md)):
 
-> **Reading into the heap costs 5.3× the processor per byte that `transferTo` does.**
+> **Reading into the heap costs 7.6–8.0× the processor per byte that `transferTo` does** — across
+> a real network card, between two machines. Over loopback the same comparison says 5.3×, and the
+> difference is the point: loopback has no device in it, so it understates the thing the read path
+> is built for by about half.
 
-Two of the three measurements came out against the plan, which is the more useful half. The
-buffer the upload path uses turns out not to matter — size and kind are both inside the noise, so
-nothing was changed — and `splice(2)` through FFM is not being introduced, because the most it
-could remove is a quarter of a core at the rate a single disk sustains.
+The measurements that came out against the plan are the more useful half, and there have been
+several. The buffer the upload path uses turns out not to matter — size and kind are both inside
+the noise, so nothing was changed. `splice(2)` through FFM is not being introduced, because the
+most it could remove is a quarter of a core at the rate a single disk sustains. And the reason
+this project terminates TLS outside the process turned out to be a different reason than the one
+written down for a year — see below.
 
 ## How many objects, stated rather than discovered
 
@@ -107,9 +112,14 @@ against a source rather than remembered. They are the reason the design looks th
   heap buffer. GET can be zero-copy, PUT never can.
 - **kTLS is not reachable from the JVM through FFM.** The syscall is; the keys are not — JSSE
   exports no traffic secrets, and what is missing is the secrets, not the call. So TLS terminates
-  in front of the process — which loses nothing, because nginx does the same zero-copy send over
-  TLS itself (`SSL_sendfile`, guarded by `BIO_get_ktls_send`, in `ngx_event_openssl.c`). The way
-  inside exists but means replacing the TLS stack, not adding a flag.
+  in front of the process. This used to say "which loses nothing, because nginx does the same
+  zero-copy send over TLS itself"; measuring it showed that half wrong. `SSL_sendfile` applies
+  when nginx serves a **file**, and in front of a store it proxies a socket — the same TLS with
+  the same kTLS costs 0.898 processor-seconds per gibibyte with a file and 2.408 relaying. What
+  moving the TLS out actually buys is that this server's read path never sees it: 0.27 s/GiB
+  against nginx's 2.4. `BOCHKA_ACCEL_REDIRECT` hands the file over and takes 2.85× of that back,
+  at a price named in [deploy/README.md](deploy/README.md). The way inside exists but means
+  replacing the TLS stack, not adding a flag.
 
 Two of those come from reading MinIO's source, two from reading the JDK's, and three from running
 something on this machine and looking at the output.
