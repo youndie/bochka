@@ -25,15 +25,41 @@ log="$work/bochka.log"
 # refuse. So the guard moves into the exit trap, where nothing can step over it.
 scored=no
 
+# Whether anything about this run is worth keeping the evidence for. Set to `yes` when the run
+# errors, when a failure is unclassified, or when no score came out at all.
+keep=no
+
+# Where the evidence goes when it is kept. Inside `build/` because that is already ignored, and
+# under a fixed name because the point is that the next command can find it without being told.
+readonly EVIDENCE="$root/build/s3-tests"
+
+# The server's own log, the raw pytest output and the junit XML live in a temp directory that this
+# trap removes — which is right for a green run and exactly wrong for a red one. A whole afternoon
+# went into guessing which request a fixture had been refused, because the answer was in a log that
+# had been deleted a second after it was written. Diagnosis that has to re-run the suite to look at
+# it again is diagnosis by guesswork.
+preserve() {
+  [ "$keep" = yes ] || return 0
+  mkdir -p "$EVIDENCE" 2>/dev/null || return 0
+  for name in bochka.log pytest.out results.xml suite-revision; do
+    [ -f "$work/$name" ] && cp "$work/$name" "$EVIDENCE/$name" 2>/dev/null
+  done
+  echo "kept the server log and the raw output in $EVIDENCE" >&2
+}
+
 cleanup() {
   status=$?
   [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null
-  chmod -R u+w "$work" 2>/dev/null
-  rm -rf "$work" 2>/dev/null
   if [ "$scored" = no ]; then
     echo "this run ended without producing a score, which is a failure rather than a zero" >&2
     [ "$status" -eq 0 ] && status=1
+    keep=yes
   fi
+  # Before the removal, and deliberately: a copy made after `rm -rf` copies nothing, and would do
+  # it silently.
+  preserve
+  chmod -R u+w "$work" 2>/dev/null
+  rm -rf "$work" 2>/dev/null
   exit "$status"
 }
 trap cleanup EXIT
@@ -42,7 +68,10 @@ command -v docker >/dev/null || { echo "docker is not installed; the suite canno
 
 "$root/gradlew" -p "$root" -q :bochka-app:installDist || { echo "build failed" >&2; exit 3; }
 
-BOCHKA_PORT=$PORT BOCHKA_BIND_ADDRESS=0.0.0.0 BOCHKA_DATA_DIR="$work/data" \
+# `BOCHKA_LOG=1` is on for the whole run, and it is the half of this that matters: a preserved log
+# with nothing in it but the startup banner answers no question at all. It costs a few megabytes of
+# a file that is thrown away on a green run.
+BOCHKA_PORT=$PORT BOCHKA_BIND_ADDRESS=0.0.0.0 BOCHKA_DATA_DIR="$work/data" BOCHKA_LOG=1 \
   BOCHKA_KEYS="s3main:s3mainsecret,s3alt:s3altsecret,s3tenant:s3tenantsecret" \
   "$root/bochka-app/build/install/bochka-app/bin/bochka-app" >"$log" 2>&1 &
 server_pid=$!
@@ -158,6 +187,9 @@ fi
 printf 'ceph/s3-tests: %d of %d passed (%d%%), %d failed, %d errored\n' \
   "$passed" "$ran" $((passed * 100 / ran)) "$failed" "$errors"
 scored=yes
+# An errored case is not a failing case: it never reached its own assertions, which almost always
+# means a fixture was refused something. That is the run whose log is worth keeping.
+if [ "$errors" -gt 0 ]; then keep=yes; fi
 echo "the count of tests that ran is part of the number: a rising score and a shrinking suite look the same"
 
 # Why the rest fail, grouped. A bare percentage says how far there is to go and nothing about what
@@ -166,6 +198,16 @@ echo "the count of tests that ran is part of the number: a rising score and a sh
 # nobody has classified shows up as `unclassified` rather than quietly joining a bucket.
 if [ -f "$work/results.xml" ]; then
   echo
-  python3 "$root/ci/s3_tests_scope.py" "$work/results.xml" "$root/ci/s3-tests-scope.txt" \
-    "${BOCHKA_FAILED_OUT:-}"
+  classification=$(python3 "$root/ci/s3_tests_scope.py" "$work/results.xml" "$root/ci/s3-tests-scope.txt" \
+    "${BOCHKA_FAILED_OUT:-}")
+  echo "$classification"
+  # A failure nobody has classified is the other kind of run worth keeping: either the rules have
+  # gone stale or something new broke, and both are answered from the log rather than from here.
+  if echo "$classification" | grep -q "unclassified"; then keep=yes; fi
 fi
+
+# `BOCHKA_KEEP_LOG=1` keeps it regardless, for the run that is green and still surprising.
+# `|| true` because a bare `&&` as the last statement decides the script's exit status, and a green
+# run would end in `1` for the sole reason that the variable was unset.
+if [ "${BOCHKA_KEEP_LOG:-}" = 1 ]; then keep=yes; fi
+true
