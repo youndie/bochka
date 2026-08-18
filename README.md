@@ -61,13 +61,13 @@ most it could remove is a quarter of a core at the rate a single disk sustains. 
 this project terminates TLS outside the process turned out to be a different reason than the one
 written down for a year — see below.
 
-## How many objects, stated rather than discovered
+## How many versions, stated rather than discovered
 
-Every key lives in memory, so the number of objects is bounded by the heap whether anybody says so
-or not. Measured at **650 bytes of index per object** (586 for a forty-byte key, 647 for a
+Every key lives in memory, so the number of index entries is bounded by the heap whether anybody
+says so or not. Measured at **650 bytes of index per entry** (586 for a forty-byte key, 647 for a
 hundred-byte one — the larger is what the code uses), with half the heap allowed to be index:
 
-| `-Xmx` | `Runtime.maxMemory()` | Objects |
+| `-Xmx` | `Runtime.maxMemory()` | Versions |
 |---|---|---|
 | 64 MiB, the development profile | 61.9 MiB | 49 908 |
 | **512 MiB, what ships** | **494.9 MiB** | **399 215** |
@@ -78,6 +78,11 @@ The middle column is there because it is the one being divided, and it is **not*
 allocated in both at once — so a 512 MiB heap reports 494.9 MiB. These numbers were `-Xmx / 2 / 650`
 for a year, which is about 3.4 % more objects than the process would ever accept; the ceiling it
 prints as `object ceiling` on its first line has always been the smaller one.
+
+**Versions, not objects**, and the distinction is only free in a bucket that does not version. In
+one that does, ten writes to a key are ten entries and a delete adds an eleventh — so a bucket with
+versioning on holds as many objects as its history allows, not as many as the table says. The
+number itself did not move when versioning arrived; what it counts did.
 
 Going over it is a **refusal to start**, not a slide into swap. A process that comes up and then
 thrashes looks like a slow disk to everybody who did not write the index; a process that will not

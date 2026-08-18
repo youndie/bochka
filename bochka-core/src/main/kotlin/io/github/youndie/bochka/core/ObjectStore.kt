@@ -48,13 +48,20 @@ class ObjectStore(
     private val root: Path,
     private val durability: Durability = Durability.FSYNC,
     /**
-     * The published ceiling: how many objects this store will manage.
+     * The published ceiling: how many **versions** this store will manage (M-105).
      *
      * Not a limit invented to be safe — a consequence of the shape. Every key lives in memory
-     * (Р1), so the number of objects is bounded by the heap whether anybody says so or not, and
-     * the only question is whether it is a stated characteristic or a slow slide into swap that
-     * looks like the disk being slow. It is stated, and it is enforced twice: the store refuses to
-     * **open** a log that is already over it, and refuses a new key once it is reached.
+     * (Р1), so the number of index entries is bounded by the heap whether anybody says so or not,
+     * and the only question is whether it is a stated characteristic or a slow slide into swap
+     * that looks like the disk being slow. It is stated, and it is enforced twice: the store
+     * refuses to **open** a log that is already over it, and refuses a new entry once it is
+     * reached.
+     *
+     * It counted objects until versioning arrived, and the number did not change — what it
+     * measures did. In a bucket that versions, ten writes to one key are ten entries, so a
+     * consumer who read the old number and sized a deployment by it would meet the difference as
+     * a refusal rather than as a note. Which is why the word in the message, in the `README` and
+     * in this name is now the same word.
      *
      * The default comes from the measurement in `docs/measurements.md`, not from taste.
      */
@@ -372,7 +379,7 @@ class ObjectStore(
             throw CeilingExceeded(
                 objects.size,
                 maxObjects,
-                "the index holds ${objects.size} objects and this heap allows $maxObjects " +
+                "the index holds ${objects.size} versions and this heap allows $maxObjects " +
                     "($BYTES_PER_OBJECT bytes each, half of ${heapMiB()} MiB). " +
                     "Start with a larger -Xmx, or move objects off this node.",
             )
@@ -1154,6 +1161,115 @@ class ObjectStore(
         }
 
         return Page(keys, groups, truncated, if (truncated) last else null, read)
+    }
+
+    /**
+     * One entry of `ListObjectVersions`: a version, and whether it is the current one.
+     *
+     * Separate from the pair a listing of objects yields, because the two answer different
+     * questions. A listing of objects has one row per key and never mentions a tombstone; this has
+     * one row per version and must mention them, since a tombstone is what a client is looking for
+     * when it wants to know why its object is gone.
+     */
+    data class VersionEntry(
+        val key: ObjectKey,
+        val stored: Stored,
+        val isLatest: Boolean,
+    )
+
+    data class VersionPage(
+        val versions: List<VersionEntry>,
+        val commonPrefixes: List<ByteArray>,
+        val isTruncated: Boolean,
+        val nextKeyMarker: ByteArray?,
+        val nextVersionIdMarker: String?,
+    )
+
+    /**
+     * A page of every version in a bucket, newest first within each key (M-107).
+     *
+     * The walk steps **entry by entry** rather than key by key, which is the whole difference from
+     * [page]: there the cursor jumps past a key once its current version has been emitted, and
+     * here the older ones are the point. A delimiter still collapses a whole group in one step,
+     * versions and all — a rolled-up prefix says nothing about how many versions are under it.
+     *
+     * Resuming takes two markers because one is not enough: a page can end in the middle of a
+     * key's versions, and `key-marker` alone could only resume at a key boundary, which would
+     * either repeat versions or skip them.
+     */
+    fun versionPage(
+        bucket: String,
+        prefix: ByteArray = ByteArray(0),
+        delimiter: ByteArray? = null,
+        keyMarker: ByteArray? = null,
+        versionIdMarker: String? = null,
+        maxKeys: Int = 1000,
+    ): VersionPage {
+        val versions = ArrayList<VersionEntry>()
+        val groups = ArrayList<ByteArray>()
+        var truncated = false
+        var lastKey: ByteArray? = null
+        var lastVersion: String? = null
+
+        // Where to start. Without a version marker the previous page ended on a whole key, so the
+        // next one starts after it; with one it ended inside a key, and the versions before the
+        // marker have already been sent.
+        var cursor: ByteArray = if (keyMarker != null && versionIdMarker == null) justAfter(keyMarker) else prefix
+        if (keyMarker != null && versionIdMarker != null && Arrays.compareUnsigned(keyMarker, prefix) >= 0) {
+            cursor = keyMarker
+        }
+        var skippingTo: String? = versionIdMarker
+        var seenKey: ByteArray? = null
+
+        var entry = objects.ceilingEntry(headOf(bucket, ObjectKey(cursor)))
+        while (entry != null && entry.key.bucket == bucket) {
+            val bytes = entry.key.key.toByteArray()
+            if (!bytes.startsWith(prefix)) break
+
+            val group = delimiter?.let { groupOf(bytes, prefix.size, it) }
+            if (group != null) {
+                if (groups.none { it.contentEquals(group) }) {
+                    if (versions.size + groups.size == maxKeys) {
+                        truncated = true
+                        break
+                    }
+                    groups.add(group)
+                    lastKey = group
+                    lastVersion = null
+                }
+                val next = past(group) ?: break
+                entry = objects.ceilingEntry(headOf(bucket, ObjectKey(next)))
+                continue
+            }
+
+            val isLatest = !bytes.contentEquals(seenKey)
+            seenKey = bytes
+
+            // Everything up to and including the marked version belongs to the previous page.
+            if (skippingTo != null) {
+                val reached = entry.value.versionId == skippingTo
+                entry = objects.higherEntry(entry.key)
+                if (reached) skippingTo = null
+                continue
+            }
+
+            if (versions.size + groups.size == maxKeys) {
+                truncated = true
+                break
+            }
+            versions.add(VersionEntry(entry.key.key, entry.value, isLatest))
+            lastKey = bytes
+            lastVersion = entry.value.versionId
+            entry = objects.higherEntry(entry.key)
+        }
+
+        return VersionPage(
+            versions,
+            groups,
+            truncated,
+            if (truncated) lastKey else null,
+            if (truncated) lastVersion else null,
+        )
     }
 
     /** The smallest byte string strictly greater than [value]: itself with a zero byte appended. */

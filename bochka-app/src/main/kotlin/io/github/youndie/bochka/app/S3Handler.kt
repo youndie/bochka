@@ -834,25 +834,66 @@ class S3Handler(
             )
         }
 
-    /** The same listing, every object at version `null` — see [S3Documents.listVersionsResult]. */
+    /**
+     * `GET /<bucket>?versions` — every version of every key, tombstones included (M-107).
+     *
+     * Not the ordinary listing with a different document around it, which is what it used to be:
+     * that one has a row per key and skips tombstones, and reusing it made `?versions` answer that
+     * a bucket has one version of everything and no deletions. The answer was well-formed, which
+     * is the problem with it — a client cannot tell a lie of that shape from the truth.
+     *
+     * It also does not go through [listing]: that helper carries a continuation token, and this
+     * operation resumes on two markers instead, because a page can end in the middle of a key.
+     */
     private fun listVersions(
         head: HttpRequestParser.Head,
         bucket: String,
-    ): HttpResponse =
-        listing(head, bucket) { request, page ->
+    ): HttpResponse {
+        val params = rawQueryParams(head.query)
+        val request =
+            try {
+                ListingRequest.of(params)
+            } catch (e: ListingRequest.Malformed) {
+                return error(head, e.error, detail = e.message, bucket = bucket)
+            }
+        val versionIdMarker = params["version-id-marker"]?.takeIf { it.isNotEmpty() }?.let { String(it) }
+        val page =
+            store.versionPage(
+                bucket = bucket,
+                prefix = request.prefix,
+                delimiter = request.delimiter,
+                keyMarker = request.keyMarker,
+                versionIdMarker = versionIdMarker,
+                maxKeys = request.requestedMaxKeys,
+            )
+        return xml(
             S3Documents.listVersionsResult(
                 bucket = bucket,
                 prefix = request.prefix,
                 delimiter = request.delimiter,
                 keyMarker = request.keyMarker,
-                nextKeyMarker = page.nextAfter,
+                nextKeyMarker = page.nextKeyMarker,
+                versionIdMarker = versionIdMarker,
+                nextVersionIdMarker = page.nextVersionIdMarker,
                 maxKeys = request.requestedMaxKeys,
                 isTruncated = page.isTruncated,
-                contents = page.entries(),
+                versions =
+                    page.versions.map {
+                        S3Documents.VersionEntry(
+                            key = it.key,
+                            versionId = it.stored.versionId,
+                            isLatest = it.isLatest,
+                            lastModified = timestamp(it.stored.lastModified),
+                            eTag = it.stored.eTag,
+                            size = it.stored.size,
+                            deleteMarker = it.stored.deleteMarker,
+                        )
+                    },
                 commonPrefixes = page.commonPrefixes,
                 encoding = request.encoding(),
-            )
-        }
+            ),
+        )
+    }
 
     private inline fun listing(
         head: HttpRequestParser.Head,

@@ -500,15 +500,35 @@ object S3Documents {
         }
 
     /**
-     * `<ListVersionsResult>`: the same listing, with every object at version `null`.
+     * One row of `ListObjectVersions`, which is a `<Version>` or a `<DeleteMarker>`.
      *
-     * Not a versioning feature, and that is the point. `ListObjectVersions` is how a client lists a
-     * bucket that *has* no versioning — real S3 answers it on a non-versioned bucket with the
-     * objects and `VersionId=null` — so refusing it as unimplemented is wrong in the same way an
-     * empty listing would be: both answer a question that has a defined answer.
+     * Two element names for one shape, minus the two fields a tombstone has no answer for: it
+     * holds no bytes, so it has neither `ETag` nor `Size`. Emitting them as zero would let a client
+     * compare a tombstone against an empty object and find them equal.
+     */
+    data class VersionEntry(
+        val key: ObjectKey,
+        val versionId: String,
+        val isLatest: Boolean,
+        val lastModified: String,
+        val eTag: String,
+        val size: Long,
+        val deleteMarker: Boolean,
+        val storageClass: String = "STANDARD",
+    )
+
+    /**
+     * `<ListVersionsResult>` — every version of every key, tombstones included.
      *
-     * Found by the compatibility suite, whose cleanup fixture calls this before every single test.
-     * A `501` here errored 837 of 838 tests without any of them reaching the thing they check.
+     * It was a second rendering of the ordinary listing until M-107, and answering it that way was
+     * wrong in a particular direction: the document said the bucket held one version of everything
+     * and had never deleted anything. Well-formed, and unfalsifiable from the outside — which is
+     * the shape of answer this file exists to avoid.
+     *
+     * It is still answered for a bucket that has no versioning at all, and that part has not
+     * changed: real S3 answers it there too, with the objects at `VersionId=null`. Found by the
+     * compatibility suite, whose cleanup fixture calls this before every single test — a `501`
+     * here errored 837 of 838 tests without any of them reaching the thing they check.
      */
     @Suppress("LongParameterList")
     fun listVersionsResult(
@@ -517,13 +537,15 @@ object S3Documents {
         delimiter: ByteArray?,
         keyMarker: ByteArray?,
         nextKeyMarker: ByteArray?,
+        versionIdMarker: String?,
+        nextVersionIdMarker: String?,
         maxKeys: Int,
         isTruncated: Boolean,
-        contents: List<ObjectEntry>,
+        versions: List<VersionEntry>,
         commonPrefixes: List<ByteArray>,
         encoding: KeyEncoding,
     ): ByteArray =
-        XmlWriter(1024 + contents.size * 160).document("ListVersionsResult") {
+        XmlWriter(1024 + versions.size * 160).document("ListVersionsResult") {
             text("Name", bucket)
             encodedText("Prefix", prefix ?: ByteArray(0), encoding)
             if (delimiter != null) encodedText("Delimiter", delimiter, encoding)
@@ -536,20 +558,22 @@ object S3Documents {
             // alone, which is exactly the shape of failure that gets blamed on the harness.
             encodedText("KeyMarker", keyMarker ?: ByteArray(0), encoding)
             encodedText("NextKeyMarker", nextKeyMarker ?: ByteArray(0), encoding)
-            text("VersionIdMarker", "")
-            text("NextVersionIdMarker", "")
+            text("VersionIdMarker", versionIdMarker ?: "")
+            text("NextVersionIdMarker", nextVersionIdMarker ?: "")
             text("MaxKeys", maxKeys.toLong())
             text("IsTruncated", isTruncated)
             if (encoding == KeyEncoding.URL) text("EncodingType", "url")
-            for (entry in contents) {
-                element("Version") {
+            for (entry in versions) {
+                element(if (entry.deleteMarker) "DeleteMarker" else "Version") {
                     encodedText("Key", entry.key.toByteArray(), encoding)
-                    text("VersionId", "null")
-                    text("IsLatest", true)
+                    text("VersionId", entry.versionId)
+                    text("IsLatest", entry.isLatest)
                     text("LastModified", entry.lastModified)
-                    text("ETag", entry.eTag)
-                    text("Size", entry.size)
-                    text("StorageClass", entry.storageClass)
+                    if (!entry.deleteMarker) {
+                        text("ETag", entry.eTag)
+                        text("Size", entry.size)
+                        text("StorageClass", entry.storageClass)
+                    }
                 }
             }
             for (commonPrefix in commonPrefixes) {
