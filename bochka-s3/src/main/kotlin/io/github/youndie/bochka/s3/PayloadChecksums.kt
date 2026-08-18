@@ -137,6 +137,35 @@ class PayloadChecksums private constructor(
             return PayloadChecksums(md5, chosen?.first, chosen?.second)
         }
 
+        /**
+         * The checksum of an assembled object: the algorithm run over its parts' **raw** checksums,
+         * base64, with `-<count>` after it.
+         *
+         * The same shape as a multipart `ETag` and for the same reason. The object's bytes never
+         * went through a single hash, so a value that looked like an ordinary checksum would be one
+         * no client could reproduce from the bytes it holds; the suffix says which kind it is.
+         * `s3-service-2.json` names this `ChecksumType: COMPOSITE`.
+         *
+         * `null` when the parts disagree about the algorithm, or name one this server does not
+         * have. Both are questions with no answer, and answering anyway is the failure mode this
+         * whole class exists to avoid.
+         */
+        fun ofParts(parts: List<Metadata.Checksum>): Metadata.Checksum? {
+            if (parts.isEmpty()) return null
+            val algorithm = parts.map { it.algorithm }.distinct().singleOrNull() ?: return null
+            val running = Algorithm.entries.firstOrNull { it.id == algorithm }?.let(::runningFor) ?: return null
+            for (part in parts) {
+                val raw =
+                    try {
+                        Base64.getDecoder().decode(part.value.substringBefore('-'))
+                    } catch (_: IllegalArgumentException) {
+                        return null
+                    }
+                running.update(raw, 0, raw.size)
+            }
+            return Metadata.Checksum(algorithm, Base64.getEncoder().encodeToString(running.digest()) + "-" + parts.size)
+        }
+
         /** Whether the request stated a checksum of any kind — what `DeleteObjects` requires (M-45). */
         fun anyStated(header: (String) -> String?): Boolean =
             header("content-md5") != null ||

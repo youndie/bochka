@@ -34,8 +34,20 @@ class ObjectKeyRulesTest {
     }
 
     @Test
-    fun `a key that is not valid utf-8 is still a key`() {
-        assertNull(ObjectKeyRules.check(ObjectKey(byteArrayOf(0xC3.toByte(), 0x28))))
+    fun `a control byte is a key and a malformed encoding is not`() {
+        // This said "a key that is not valid utf-8 is still a key" and asserted `0xC3 0x28` was
+        // fine. That read Р3 one step too far: the byte-string rule is about **order** — nothing
+        // compares keys as text — and S3 still defines a key as characters whose UTF-8 encoding
+        // fits in 1024 bytes. `ceph/s3-tests` settled it (`test_object_read_unreadable`: 400, not
+        // 404), and 404 was the worse answer of the two — it says the key is merely absent.
+        assertEquals(
+            ObjectKeyRules.Rejection.NOT_UTF8,
+            ObjectKeyRules.check(ObjectKey(byteArrayOf(0xC3.toByte(), 0x28))),
+        )
+
+        // A control byte, on the other hand, encodes a character and stays a key. It is why the
+        // listing has `encoding-type=url` at all: XML cannot carry it, and the answer to that is
+        // to encode the response, not to refuse the key.
         assertNull(ObjectKeyRules.check(ObjectKey(byteArrayOf(1))))
     }
 
@@ -64,5 +76,34 @@ class ObjectKeyRulesTest {
     fun `rejections carry the code that goes on the wire`() {
         assertEquals("KeyTooLongError", ObjectKeyRules.Rejection.TOO_LONG.code)
         assertEquals("InvalidURI", ObjectKeyRules.Rejection.EMPTY.code)
+    }
+
+    @Test
+    fun `a key whose bytes are not UTF-8 is refused, and one that merely looks odd is not`() {
+        // Р3 says the key is a byte string, and that is about its **order**: nothing here compares
+        // keys as text. Its **validity** is a different question with a different answer — S3
+        // defines a key as characters whose UTF-8 encoding is at most 1024 bytes, so bytes that
+        // are not an encoding of anything are not a key.
+        //
+        // `ceph/s3-tests`, `test_object_read_unreadable`: `\xae\x8a-` is a 400, and this server
+        // answered 404 — which tells the client the key is merely absent and that writing it
+        // would work.
+        assertEquals(
+            ObjectKeyRules.Rejection.NOT_UTF8,
+            ObjectKeyRules.check(ObjectKey(byteArrayOf(0xAE.toByte(), 0x8A.toByte(), '-'.code.toByte()))),
+        )
+        assertEquals(ObjectKeyRules.Rejection.NOT_UTF8, ObjectKeyRules.check(ObjectKey(byteArrayOf(0xC3.toByte()))))
+        assertEquals(ObjectKeyRules.Rejection.NOT_UTF8, ObjectKeyRules.check(ObjectKey(byteArrayOf(0x80.toByte()))))
+
+        // A lone surrogate encoded as three bytes: valid-looking and not valid.
+        assertEquals(
+            ObjectKeyRules.Rejection.NOT_UTF8,
+            ObjectKeyRules.check(ObjectKey(byteArrayOf(0xED.toByte(), 0xA0.toByte(), 0x80.toByte()))),
+        )
+
+        // And the keys that must keep working, which is the whole point of the byte-string rule.
+        for (key in listOf("a/b", "a//b", "..", ".", "café.txt", "😀", "\u0001control", "a b+c%2F")) {
+            assertNull(ObjectKeyRules.check(ObjectKey.of(key)), key)
+        }
     }
 }

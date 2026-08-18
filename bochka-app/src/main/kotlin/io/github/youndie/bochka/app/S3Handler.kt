@@ -63,6 +63,8 @@ class S3Handler(
         // chunk, and the body ends where it says it ends. Refusing it was over-reading the rule —
         // the rule is that a body whose length is stated **nowhere** cannot be stored, and a
         // chunked body states it.
+        // `UploadPartCopy` is absent from this list on purpose: its bytes come from another object,
+        // so it has no body and a `Content-Length` would describe nothing.
         if ((route is S3Router.Route.PutObject || route is S3Router.Route.UploadPart) &&
             head.contentLength == null &&
             !head.isChunked &&
@@ -73,13 +75,16 @@ class S3Handler(
 
         // A part number outside 1..10 000 is a request that could never be completed
         // (`s3-service-2.json:1604`), and it is visible from the head.
-        if (route is S3Router.Route.UploadPart && route.partNumber !in 1..S3Requests.MAX_PARTS) {
+        val partNumber =
+            (route as? S3Router.Route.UploadPart)?.partNumber
+                ?: (route as? S3Router.Route.UploadPartCopy)?.partNumber
+        if (partNumber != null && partNumber !in 1..S3Requests.MAX_PARTS) {
             return error(
                 head,
                 S3Error.INVALID_ARGUMENT,
-                detail = "part number ${route.partNumber} is outside 1..${S3Requests.MAX_PARTS}",
-                key = route.key,
-                bucket = route.bucket,
+                detail = "part number $partNumber is outside 1..${S3Requests.MAX_PARTS}",
+                key = keyOf(route),
+                bucket = bucketOf(route),
             )
         }
 
@@ -151,12 +156,14 @@ class S3Handler(
             is S3Router.Route.ListObjectVersions -> listVersions(head, route.bucket)
             is S3Router.Route.PutObject -> putObject(head, route, verification, body)
             is S3Router.Route.CopyObject -> copyObject(head, route)
-            is S3Router.Route.GetObject -> getObject(head, route.bucket, route.key)
+            is S3Router.Route.GetObject -> getObject(head, route.bucket, route.key, partNumber = route.partNumber)
+            is S3Router.Route.GetObjectAttributes -> objectAttributes(head, route)
             is S3Router.Route.HeadObject -> getObject(head, route.bucket, route.key, withBody = false)
             is S3Router.Route.DeleteObject -> deleteObject(head, route.bucket, route.key)
             is S3Router.Route.DeleteObjects -> deleteObjects(head, route.bucket, body)
             is S3Router.Route.CreateMultipartUpload -> createUpload(head, route)
             is S3Router.Route.UploadPart -> uploadPart(head, route, verification, body)
+            is S3Router.Route.UploadPartCopy -> uploadPartCopy(head, route)
             is S3Router.Route.ListParts -> listParts(head, route)
             is S3Router.Route.AbortMultipartUpload -> abortUpload(head, route)
             is S3Router.Route.CompleteMultipartUpload -> completeUpload(head, route, body)
@@ -264,7 +271,7 @@ class S3Handler(
             }
             checksums.verify()?.let { return error(head, it.error, detail = it.detail) }
 
-            val part = store.commitPart(route.uploadId, route.partNumber, staged)
+            val part = store.commitPart(route.uploadId, route.partNumber, staged, checksums.stored())
             staged = null
             HttpResponse(200, "OK", headers = listOf("ETag" to part.eTag))
         } catch (e: AwsChunkedDecoder.MalformedBody) {
@@ -275,6 +282,88 @@ class S3Handler(
             staged?.let(store::discard)
         }
     }
+
+    /**
+     * A part whose bytes come from another object.
+     *
+     * `x-amz-copy-source-range` narrows the source, and it is the one place a malformed range is
+     * an **error** rather than something to ignore: on a `GET` an unparseable `Range` means "send
+     * everything" (RFC 9110 §14.2), but here it decides what the part *is*, and guessing would
+     * assemble an object out of bytes nobody asked for.
+     */
+    private fun uploadPartCopy(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.UploadPartCopy,
+    ): HttpResponse {
+        if (!store.hasBucket(route.sourceBucket)) {
+            return error(head, S3Error.NO_SUCH_BUCKET, bucket = route.sourceBucket)
+        }
+        val source =
+            store.get(route.sourceBucket, route.sourceKey)
+                ?: return error(head, S3Error.NO_SUCH_KEY, key = route.sourceKey, bucket = route.sourceBucket)
+
+        val requested = head.header("x-amz-copy-source-range")
+        val slice =
+            if (requested == null) {
+                0L to source.size
+            } else {
+                when (val range = ByteRanges.resolve(requested, source.size)) {
+                    // Exact, not clamped: `ByteRanges` trims an end past the object because that is
+                    // what a `GET` must do (RFC 9110 §14.1.2), and a copy must not — a client
+                    // asking for `bytes=0-99` of an eighty-byte object would get a part of a size
+                    // it did not choose, and find out at completion or never.
+                    is ByteRanges.Resolved.Satisfiable -> {
+                        if (endsPastTheObject(requested, source.size)) {
+                            return error(
+                                head,
+                                S3Error.INVALID_ARGUMENT,
+                                detail = "x-amz-copy-source-range '$requested' runs past ${source.size} bytes",
+                                key = route.key,
+                                bucket = route.bucket,
+                            )
+                        }
+                        range.start to range.length
+                    }
+
+                    // Both of the other outcomes are refusals here. `Whole` means the header did
+                    // not parse, and a copy of everything is not what "bytes=abc" asked for.
+                    else -> {
+                        return error(
+                            head,
+                            S3Error.INVALID_ARGUMENT,
+                            detail =
+                                "x-amz-copy-source-range '$requested' does not name a range " +
+                                    "of ${source.size} bytes",
+                            key = route.key,
+                            bucket = route.bucket,
+                        )
+                    }
+                }
+            }
+
+        return try {
+            val part =
+                store.commitPart(
+                    route.uploadId,
+                    route.partNumber,
+                    store.stagePartFrom(source, slice.first, slice.second),
+                )
+            xml(S3Documents.copyPartResult(part.eTag, timestamp(part.lastModified)))
+        } catch (e: ObjectStore.CompletionRefused) {
+            error(head, refusalOf(e.reason), detail = e.message, key = route.key, bucket = route.bucket)
+        }
+    }
+
+    /** `bytes=0-99` of an eighty-byte object: satisfiable for a read, and not a range to copy. */
+    private fun endsPastTheObject(
+        requested: String,
+        size: Long,
+    ): Boolean =
+        requested
+            .substringAfter('-')
+            .trim()
+            .toLongOrNull()
+            ?.let { it >= size } == true
 
     private fun listParts(
         head: HttpRequestParser.Head,
@@ -335,7 +424,12 @@ class S3Handler(
             }
 
         return try {
-            val stored = store.completeUpload(route.uploadId, requested.map { it.partNumber to it.eTag })
+            val stored =
+                store.completeUpload(
+                    route.uploadId,
+                    requested.map { it.partNumber to it.eTag },
+                    PayloadChecksums::ofParts,
+                )
             xml(
                 S3Documents.completeMultipartUploadResult(
                     location = "/${route.bucket}/${UriCodec.encodePath(route.key.toByteArray())}",
@@ -691,6 +785,7 @@ class S3Handler(
         bucket: String,
         key: ObjectKey,
         withBody: Boolean = true,
+        partNumber: Int? = null,
     ): HttpResponse {
         val stored = store.get(bucket, key) ?: return error(head, S3Error.NO_SUCH_KEY, key = key, bucket = bucket)
         val path = store.pathOf(stored)
@@ -717,6 +812,33 @@ class S3Handler(
             } else {
                 error(head, S3Error.PRECONDITION_FAILED, key = key, bucket = bucket)
             }
+        }
+
+        // `?partNumber=N` is a `Range` the client did not have to compute: the object remembers
+        // where its seams were, so a resumable download asks for the piece by number. It is only
+        // ever a range — the bytes were joined at completion and there is nothing else to read.
+        if (partNumber != null) {
+            // An object that was never assembled has exactly one part, and it is the object. S3
+            // answers `partNumber=1` on an ordinary upload with the whole thing and a parts count
+            // of one, which is what lets a client use one download loop for both kinds.
+            val slice =
+                if (stored.parts.isEmpty()) {
+                    if (partNumber != 1) return error(head, S3Error.INVALID_PART, key = key, bucket = bucket)
+                    0L to stored.size
+                } else {
+                    sliceOfPart(stored, partNumber)
+                        ?: return error(head, S3Error.INVALID_PART, key = key, bucket = bucket)
+                }
+            return HttpResponse(
+                206,
+                "Partial Content",
+                headers =
+                    headers +
+                        ("Content-Range" to "bytes ${slice.first}-${slice.first + slice.second - 1}/${stored.size}") +
+                        ("x-amz-mp-parts-count" to maxOf(stored.parts.size, 1).toString()),
+                file = if (withBody) HttpResponse.FileSlice(path, slice.first, slice.second) else null,
+                contentLength = slice.second,
+            )
         }
 
         return when (val range = ByteRanges.resolve(head.header("range"), stored.size)) {
@@ -810,6 +932,80 @@ class S3Handler(
                 .parse(value.trim(), HTTP_DATE)
                 .toEpochSecond()
         }.getOrNull()
+
+    /**
+     * Where part [number] sits in the assembled object, or `null` if there is no such part.
+     *
+     * The offsets are added up rather than stored, because storing them would be the same numbers
+     * twice: the sizes are already there and a stored offset that disagreed with them would be a
+     * second source of truth about the same bytes.
+     */
+    private fun sliceOfPart(
+        stored: ObjectStore.Stored,
+        number: Int,
+    ): Pair<Long, Long>? {
+        var offset = 0L
+        for (part in stored.parts) {
+            if (part.number == number) return offset to part.size
+            offset += part.size
+        }
+        return null
+    }
+
+    /**
+     * `GET /<bucket>/<key>?attributes` — the object's shape, without its bytes.
+     *
+     * `x-amz-object-attributes` names which members to answer, and only those are sent. A server
+     * that answered all of them regardless would be handing a client `ObjectParts` it did not ask
+     * for, which on a ten-thousand-part object is a megabyte of document instead of a line.
+     */
+    private fun objectAttributes(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.GetObjectAttributes,
+    ): HttpResponse {
+        val stored =
+            store.get(route.bucket, route.key)
+                ?: return error(head, S3Error.NO_SUCH_KEY, key = route.key, bucket = route.bucket)
+
+        val asked =
+            head
+                .header("x-amz-object-attributes")
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                ?: return error(
+                    head,
+                    S3Error.INVALID_ARGUMENT,
+                    detail = "x-amz-object-attributes names which attributes to return",
+                    key = route.key,
+                    bucket = route.bucket,
+                )
+
+        conditional(head, stored)?.let { status ->
+            return if (status == 304) {
+                HttpResponse(304, "Not Modified", contentLength = 0)
+            } else {
+                error(head, S3Error.PRECONDITION_FAILED, key = route.key, bucket = route.bucket)
+            }
+        }
+
+        return xml(
+            S3Documents.getObjectAttributesResult(
+                eTag = stored.eTag.takeIf { "ETag" in asked },
+                checksum =
+                    stored.metadata.checksum
+                        ?.takeIf { "Checksum" in asked }
+                        ?.let { it.algorithm to it.value },
+                objectSize = stored.size.takeIf { "ObjectSize" in asked },
+                storageClass = "STANDARD".takeIf { "StorageClass" in asked },
+                parts =
+                    stored.parts
+                        .takeIf { "ObjectParts" in asked }
+                        ?.map { S3Documents.PartEntry(it.number, timestamp(stored.lastModified), it.eTag, it.size) },
+                partsCount = stored.parts.size,
+            ),
+        ).copy(headers = listOf("Content-Type" to "application/xml", "Last-Modified" to httpDate(stored.lastModified)))
+    }
 
     /** `x-amz-checksum-<algorithm>`, echoed back exactly as the client stated it on upload. */
     private fun checksumHeaders(metadata: Metadata): List<Pair<String, String>> =
@@ -905,8 +1101,10 @@ class S3Handler(
             is S3Router.Route.HeadObject -> route.bucket
             is S3Router.Route.DeleteObject -> route.bucket
             is S3Router.Route.CopyObject -> route.bucket
+            is S3Router.Route.GetObjectAttributes -> route.bucket
             is S3Router.Route.CreateMultipartUpload -> route.bucket
             is S3Router.Route.UploadPart -> route.bucket
+            is S3Router.Route.UploadPartCopy -> route.bucket
             is S3Router.Route.CompleteMultipartUpload -> route.bucket
             is S3Router.Route.AbortMultipartUpload -> route.bucket
             is S3Router.Route.ListParts -> route.bucket
@@ -918,6 +1116,7 @@ class S3Handler(
     private fun uploadIdOf(route: S3Router.Route): String? =
         when (route) {
             is S3Router.Route.UploadPart -> route.uploadId
+            is S3Router.Route.UploadPartCopy -> route.uploadId
             is S3Router.Route.CompleteMultipartUpload -> route.uploadId
             is S3Router.Route.AbortMultipartUpload -> route.uploadId
             is S3Router.Route.ListParts -> route.uploadId
@@ -931,8 +1130,10 @@ class S3Handler(
             is S3Router.Route.HeadObject -> route.key
             is S3Router.Route.DeleteObject -> route.key
             is S3Router.Route.CopyObject -> route.key
+            is S3Router.Route.GetObjectAttributes -> route.key
             is S3Router.Route.CreateMultipartUpload -> route.key
             is S3Router.Route.UploadPart -> route.key
+            is S3Router.Route.UploadPartCopy -> route.key
             is S3Router.Route.CompleteMultipartUpload -> route.key
             is S3Router.Route.AbortMultipartUpload -> route.key
             is S3Router.Route.ListParts -> route.key

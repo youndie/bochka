@@ -76,6 +76,30 @@ class ObjectStore(
         val eTag: String,
         val lastModified: Instant,
         val metadata: Metadata,
+        /**
+         * What the object was assembled from, when it was assembled from anything.
+         *
+         * Empty for an ordinary upload, and one entry per part for a completed multipart one. The
+         * bytes are joined into a single file at completion (open question 3), so this is the only
+         * thing that remembers the seams — and three operations need them: `partNumber` on a `GET`,
+         * `ObjectParts` in `GetObjectAttributes`, and the checksum of a multipart object, which is
+         * the checksum of its parts' checksums rather than of its bytes.
+         */
+        val parts: List<PartSummary> = emptyList(),
+    )
+
+    /**
+     * One part of a completed object: how long it was and what it hashed to.
+     *
+     * Deliberately not the [Part] of an upload in flight — that one has a file of its own and this
+     * one does not, because the bytes are in the assembled object. Sharing a type would invite
+     * code that asks a finished object for a part's `fileId`.
+     */
+    data class PartSummary(
+        val number: Int,
+        val size: Long,
+        val eTag: String,
+        val checksum: Metadata.Checksum?,
     )
 
     /**
@@ -165,6 +189,7 @@ class ObjectStore(
                                 eTag = record.eTag,
                                 lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
                                 metadata = record.metadata,
+                                parts = record.parts,
                             )
                     }
 
@@ -346,6 +371,7 @@ class ObjectStore(
         metadata: Metadata,
         staged: Staged,
         precondition: Precondition = Precondition.None,
+        parts: List<PartSummary> = emptyList(),
     ): Stored {
         val stored =
             Stored(
@@ -354,6 +380,7 @@ class ObjectStore(
                 eTag = staged.eTag,
                 lastModified = Instant.now(),
                 metadata = metadata,
+                parts = parts,
             )
 
         // The ceiling is checked against a key that is not already there: overwriting an object
@@ -395,6 +422,7 @@ class ObjectStore(
                 eTag = stored.eTag,
                 lastModifiedMillis = stored.lastModified.toEpochMilli(),
                 metadata = metadata,
+                parts = parts,
             ),
         )
 
@@ -455,6 +483,52 @@ class ObjectStore(
         // the same bytes, and recomputing an MD5 of five gigabytes to learn what is already known
         // would be the expensive way to get the same string.
         return commit(bucket, key, metadata, Staged(fileId, source.size, source.eTag))
+    }
+
+    /**
+     * Stages a part from a stretch of another object.
+     *
+     * The bytes never leave the store, which is the whole point of the operation: a client
+     * rewriting a five-gigabyte object copies the parts it keeps instead of downloading and
+     * re-uploading them. The `ETag` is recomputed rather than carried across, unlike [copy] —
+     * a slice of an object hashes to something the source's `ETag` says nothing about.
+     */
+    fun stagePartFrom(
+        source: Stored,
+        offset: Long,
+        length: Long,
+    ): Staged {
+        require(offset >= 0 && length >= 0 && offset + length <= source.size) {
+            "range $offset..${offset + length} is outside an object of ${source.size} bytes"
+        }
+        val fileId = UUID.randomUUID().toString()
+        val target = pathOf(fileId)
+        Files.createDirectories(target.parent)
+        val partial = target.resolveSibling("${target.fileName}.partial")
+
+        val digest = MessageDigest.getInstance("MD5")
+        FileChannel.open(partial, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { out ->
+            FileChannel.open(pathOf(source.fileId), StandardOpenOption.READ).use { from ->
+                // Read into a buffer rather than `transferFrom`, because the ETag has to be
+                // computed from these bytes and a kernel-side copy never shows them to anybody.
+                val buffer = ByteBuffer.allocate(256 * 1024)
+                var moved = 0L
+                while (moved < length) {
+                    buffer.clear()
+                    buffer.limit(minOf(buffer.capacity().toLong(), length - moved).toInt())
+                    val read = from.read(buffer, offset + moved)
+                    if (read <= 0) throw java.io.EOFException("the source ended ${length - moved} bytes early")
+                    buffer.flip()
+                    digest.update(buffer.duplicate())
+                    while (buffer.hasRemaining()) out.write(buffer)
+                    moved += read
+                }
+            }
+            if (durability == Durability.FSYNC) out.force(true)
+        }
+        Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE)
+
+        return Staged(fileId, length, "\"" + digest.digest().joinToString("") { "%02x".format(it) } + "\"")
     }
 
     /** Where the bytes are, for a reader that wants the file rather than a copy of it (M-59). */
@@ -652,6 +726,8 @@ class ObjectStore(
         val size: Long,
         val eTag: String,
         val lastModified: Instant,
+        /** What the client stated about this part, kept so the finished object can answer for it. */
+        val checksum: Metadata.Checksum? = null,
     )
 
     /** Why a completion cannot happen. The S3 layer turns each of these into a code and a status. */
@@ -714,9 +790,10 @@ class ObjectStore(
         uploadId: String,
         number: Int,
         staged: Staged,
+        checksum: Metadata.Checksum? = null,
     ): Part {
         val state = uploads[uploadId] ?: throw CompletionRefused(CompletionRefused.Reason.NO_SUCH_UPLOAD, uploadId)
-        val part = Part(number, staged.fileId, staged.size, staged.eTag, Instant.now())
+        val part = Part(number, staged.fileId, staged.size, staged.eTag, Instant.now(), checksum)
         val previous = state.parts.put(number, part)
         this.write(
             IndexRecord.UploadPart(
@@ -756,6 +833,15 @@ class ObjectStore(
     fun completeUpload(
         uploadId: String,
         requested: List<Pair<Int, String>>,
+        /**
+         * How to combine the parts' checksums into the object's, when they have any.
+         *
+         * A function rather than a computation, because the algorithms live one layer up: `crc32c`
+         * and its siblings are S3's vocabulary, and this module deliberately knows nothing about
+         * S3. What it does know is which parts went in and in what order, so it hands that over
+         * and takes back an answer or a `null`.
+         */
+        combineChecksums: (List<Metadata.Checksum>) -> Metadata.Checksum? = { null },
     ): Stored {
         val state =
             uploads[uploadId] ?: throw CompletionRefused(CompletionRefused.Reason.NO_SUCH_UPLOAD, uploadId)
@@ -814,12 +900,25 @@ class ObjectStore(
         }
         Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE)
 
+        val summaries =
+            chosen.map { PartSummary(number = it.number, size = it.size, eTag = it.eTag, checksum = it.checksum) }
         val stored =
             commit(
-                state.upload.bucket,
-                state.upload.key,
-                state.upload.metadata,
-                Staged(fileId, size, multipartETag(chosen)),
+                bucket = state.upload.bucket,
+                key = state.upload.key,
+                metadata =
+                    state.upload.metadata.copy(
+                        // Only when **every** part carried a checksum: a mixture has no answer,
+                        // and inventing one would be worse than saying nothing.
+                        checksum =
+                            chosen
+                                .map { it.checksum }
+                                .takeIf { all -> all.all { it != null } }
+                                ?.filterNotNull()
+                                ?.let(combineChecksums),
+                    ),
+                staged = Staged(fileId, size, multipartETag(chosen)),
+                parts = summaries,
             )
         uploads.remove(uploadId)
         write(IndexRecord.UploadEnded(state.upload.bucket, uploadId))
@@ -940,6 +1039,7 @@ class ObjectStore(
                                 eTag = stored.eTag,
                                 lastModifiedMillis = stored.lastModified.toEpochMilli(),
                                 metadata = stored.metadata,
+                                parts = stored.parts,
                             ),
                         ),
                     )

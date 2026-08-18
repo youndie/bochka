@@ -40,12 +40,48 @@ object ObjectKeyRules {
 
         /** `KeyTooLongError`, 400 — the same code the reference server returns. */
         TOO_LONG("KeyTooLongError", "Your key is too long"),
+
+        /**
+         * The bytes are not well-formed UTF-8.
+         *
+         * This is not a retreat from "a key is a byte string" (Р3) — it is the other half of it.
+         * The **order** of keys is defined by their bytes, which is why nothing here sorts or
+         * compares them as text; their **validity** is defined by UTF-8, because S3 says so ("a
+         * sequence of Unicode characters whose UTF-8 encoding is at most 1024 bytes"). Two
+         * different questions about the same bytes, and conflating them is how a store ends up
+         * either sorting wrongly or accepting keys no client can ask for again.
+         *
+         * `ceph/s3-tests`, `test_object_read_unreadable`: a `GET` of `\xae\x8a-` is a `400`, and
+         * this server answered `404` — which tells the client the key is merely absent and that
+         * writing it would work.
+         */
+        NOT_UTF8("InvalidURI", "Couldn't parse the specified URI"),
     }
 
     fun check(key: ObjectKey): Rejection? =
         when {
             key.size == 0 -> Rejection.EMPTY
             key.size > MAX_LENGTH_BYTES -> Rejection.TOO_LONG
+            !isWellFormedUtf8(key.toByteArray()) -> Rejection.NOT_UTF8
             else -> null
+        }
+
+    /**
+     * The JDK's decoder rather than a hand-rolled scan, set to report instead of replace.
+     *
+     * `String(bytes, UTF_8)` cannot answer this question: it substitutes `U+FFFD` for anything
+     * malformed and returns successfully, so a check written that way says every byte string is
+     * fine. The decoder configured to report is the same code path with the failure left in.
+     */
+    private fun isWellFormedUtf8(bytes: ByteArray): Boolean =
+        try {
+            java.nio.charset.StandardCharsets.UTF_8
+                .newDecoder()
+                .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                .decode(java.nio.ByteBuffer.wrap(bytes))
+            true
+        } catch (_: java.nio.charset.CharacterCodingException) {
+            false
         }
 }

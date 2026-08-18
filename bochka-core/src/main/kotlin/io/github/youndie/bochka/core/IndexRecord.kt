@@ -32,6 +32,8 @@ sealed interface IndexRecord {
         val eTag: String,
         val lastModifiedMillis: Long,
         val metadata: Metadata,
+        /** Empty for an ordinary upload; the seams of an assembled one (M-82, M-83). */
+        val parts: List<ObjectStore.PartSummary> = emptyList(),
     ) : IndexRecord
 
     data class Deleted(
@@ -88,6 +90,19 @@ sealed interface IndexRecord {
         private const val KIND_UPLOAD_ENDED: Byte = 8
 
         /**
+         * A put that also remembers the parts it was assembled from.
+         *
+         * A new kind byte for a new field, which is the rule this file already follows for
+         * [KIND_PUT_CONTENT_TYPE_ONLY]: an old kind keeps decoding to exactly what it meant, so a
+         * log written last week opens without anybody having to reason about which fields a record
+         * of that vintage carries.
+         */
+        private const val KIND_PUT_WITH_PARTS: Byte = 9
+
+        /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
+        private const val MAX_PARTS = 10_000L
+
+        /**
          * A ceiling on the entry count read back from a record, so a corrupt length allocates
          * nothing. AWS caps user metadata at 2 KiB of names and values together; 256 entries is
          * well past what fits and well short of what an accident produces.
@@ -140,7 +155,7 @@ sealed interface IndexRecord {
                 }
 
                 is Put -> {
-                    out.write(KIND_PUT.toInt())
+                    out.write(KIND_PUT_WITH_PARTS.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.key.toByteArray())
                     out.putField(record.fileId.toByteArray(StandardCharsets.US_ASCII))
@@ -148,6 +163,14 @@ sealed interface IndexRecord {
                     out.putInt64(record.lastModifiedMillis)
                     out.putField(record.eTag.toByteArray(StandardCharsets.US_ASCII))
                     out.putMetadata(record.metadata)
+                    out.putInt64(record.parts.size.toLong())
+                    for (part in record.parts) {
+                        out.putInt64(part.number.toLong())
+                        out.putInt64(part.size)
+                        out.putField(part.eTag.toByteArray(StandardCharsets.US_ASCII))
+                        out.putText(part.checksum?.algorithm)
+                        out.putText(part.checksum?.value)
+                    }
                 }
             }
             return out.toByteArray()
@@ -206,13 +229,15 @@ sealed interface IndexRecord {
                     UploadEnded(buffer.text(), buffer.text())
                 }
 
-                KIND_PUT -> {
+                KIND_PUT, KIND_PUT_WITH_PARTS -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
                     val fileId = buffer.text()
                     val size = buffer.long
                     val lastModified = buffer.long
                     val eTag = buffer.text()
+                    val metadata = buffer.metadata()
+                    val parts = if (kind == KIND_PUT_WITH_PARTS) buffer.parts() else emptyList()
                     Put(
                         bucket = bucket,
                         key = key,
@@ -220,7 +245,8 @@ sealed interface IndexRecord {
                         size = size,
                         lastModifiedMillis = lastModified,
                         eTag = eTag,
-                        metadata = buffer.metadata(),
+                        metadata = metadata,
+                        parts = parts,
                     )
                 }
 
@@ -325,6 +351,24 @@ sealed interface IndexRecord {
         }
 
         private fun ByteBuffer.optionalText(): String? = if (get().toInt() == 0) null else latin1()
+
+        private fun ByteBuffer.parts(): List<ObjectStore.PartSummary> {
+            val count = long
+            require(count in 0..MAX_PARTS) { "index record claims $count parts" }
+            return List(count.toInt()) {
+                val number = long.toInt()
+                val size = long
+                val eTag = text()
+                val algorithm = optionalText()
+                val value = optionalText()
+                ObjectStore.PartSummary(
+                    number = number,
+                    size = size,
+                    eTag = eTag,
+                    checksum = if (algorithm != null && value != null) Metadata.Checksum(algorithm, value) else null,
+                )
+            }
+        }
 
         /** The byte-preserving read, for fields that were header values rather than text. */
         private fun ByteBuffer.latin1(): String = String(bytes(), StandardCharsets.ISO_8859_1)

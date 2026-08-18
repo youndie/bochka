@@ -90,6 +90,26 @@ class S3Router(
         data class GetObject(
             val bucket: String,
             val key: ObjectKey,
+            /**
+             * `?partNumber=N` — read the bytes that arrived as that part of a multipart upload.
+             *
+             * A `Range` the client does not have to know the arithmetic for: the server remembers
+             * where the seams were, so a resumable download can ask for the piece rather than
+             * compute an offset it would have to be told anyway.
+             */
+            val partNumber: Int? = null,
+        ) : Route
+
+        /**
+         * `GET /<bucket>/<key>?attributes` — the object's shape without its bytes.
+         *
+         * A separate operation rather than a flavour of `HEAD`, because it answers things a `HEAD`
+         * has no header for: how many parts the object has and how long each one was. Which of
+         * them to answer is `x-amz-object-attributes`, a header rather than a query parameter.
+         */
+        data class GetObjectAttributes(
+            val bucket: String,
+            val key: ObjectKey,
         ) : Route
 
         data class HeadObject(
@@ -112,6 +132,23 @@ class S3Router(
             val key: ObjectKey,
             val uploadId: String,
             val partNumber: Int,
+        ) : Route
+
+        /**
+         * `UploadPart` whose bytes come from another object rather than from the request body.
+         *
+         * How a client rewrites a large object without moving it through itself: copy the parts it
+         * keeps, upload the ones it changes. `x-amz-copy-source-range` narrows the source to a
+         * range of it, which is also how a client makes parts of a size the server will accept out
+         * of an object that has none.
+         */
+        data class UploadPartCopy(
+            val bucket: String,
+            val key: ObjectKey,
+            val uploadId: String,
+            val partNumber: Int,
+            val sourceBucket: String,
+            val sourceKey: ObjectKey,
         ) : Route
 
         data class CompleteMultipartUpload(
@@ -281,10 +318,23 @@ class S3Router(
                 when {
                     uploadId != null && params["partNumber"] != null -> {
                         val number = params.getValue("partNumber").toIntOrNull()
-                        if (number == null) {
-                            Route.NotImplemented("partNumber=${params["partNumber"]}")
-                        } else {
-                            Route.UploadPart(bucket, key, uploadId, number)
+                        val source = copySource?.let(::parseCopySource)
+                        when {
+                            number == null -> {
+                                Route.NotImplemented("partNumber=${params["partNumber"]}")
+                            }
+
+                            copySource == null -> {
+                                Route.UploadPart(bucket, key, uploadId, number)
+                            }
+
+                            source == null -> {
+                                Route.NotImplemented("x-amz-copy-source: $copySource")
+                            }
+
+                            else -> {
+                                Route.UploadPartCopy(bucket, key, uploadId, number, source.first, source.second)
+                            }
                         }
                     }
 
@@ -310,8 +360,9 @@ class S3Router(
             "GET" -> {
                 when {
                     uploadId != null -> Route.ListParts(bucket, key, uploadId)
+                    "attributes" in params -> Route.GetObjectAttributes(bucket, key)
                     params.keys.any { it in OBJECT_SUBRESOURCES } -> Route.NotImplemented("GET object sub-resource")
-                    else -> Route.GetObject(bucket, key)
+                    else -> Route.GetObject(bucket, key, params["partNumber"]?.toIntOrNull())
                 }
             }
 
@@ -392,7 +443,6 @@ class S3Router(
                 "tagging",
                 "retention",
                 "legal-hold",
-                "attributes",
                 "torrent",
                 "restore",
             )

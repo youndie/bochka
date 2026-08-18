@@ -3,7 +3,7 @@
 [![kotlin](https://img.shields.io/badge/Kotlin-2.4.10-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
-[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-229%2F744-yellow)](ci/s3-tests.sh)
+[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-244%2F744-yellow)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 An S3-compatible object store in Kotlin/JVM. One process, one node, one disk: no erasure coding,
@@ -31,8 +31,9 @@ under a UUID, the key lives only in the index, the index is a log with a checksu
 write order is the one whose worst outcome is an orphan rather than a key pointing at nothing, and
 a `GET` is `transferTo` from that file straight into the socket.
 
-Objects can also be copied server-side, read conditionally (`If-Match` and the rest), and
-listed with owners.
+Objects can also be copied server-side, written and read conditionally (`If-Match` and the rest),
+listed with owners, and asked about without their bytes — `GetObjectAttributes`, `partNumber` on a
+read, and the checksum of an assembled object, which is the checksum of its parts' checksums.
 
 Not built: delivery — a distribution, an image and published artifacts — and the seven things the
 compatibility run found and nobody has claimed. [BACKLOG.md](BACKLOG.md) says which milestone each
@@ -165,14 +166,14 @@ of `ceph/s3-tests` a single-process JVM store passes is comparable with other im
 which is true of no benchmark this project could run on its own. So it is published as soon as it
 exists, ahead of everything else:
 
-> **229 of 744 passed (30%)** — `ceph/s3-tests` at `5522d1c`, 3m09s, `./ci/s3-tests.sh`.
+> **244 of 744 passed (32%)** — `ceph/s3-tests` at `5522d1c`, 3m03s, `./ci/s3-tests.sh`.
 
-Low, and it should be: most of the 515 remaining failures are things this store says in
+Low, and it should be: most of the 500 remaining failures are things this store says in
 ["What bochka is not"](#what-bochka-is-not) that it will never have — encryption, ACLs,
 versioning, lifecycle, policies. Every failure is classified with a reason
 ([docs/s3-tests.md](docs/s3-tests.md)), and a failure nobody has classified is reported by name
-as `unclassified` rather than folded into a category. That count is currently zero, which is the
-claim worth making: 52 are deferred and **1 is a defect**, named. What the number is for is the direction it moves, which is why
+as `unclassified` rather than folded into a category. That count is zero, and so is the number of
+known defects: the remaining 43 in scope are deferred, each with a reason. What the number is for is the direction it moves, which is why
 the count of tests that ran is printed beside it — a rising score and a shrinking suite look
 identical otherwise.
 

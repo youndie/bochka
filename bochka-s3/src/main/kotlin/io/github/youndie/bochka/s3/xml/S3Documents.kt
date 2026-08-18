@@ -184,6 +184,60 @@ object S3Documents {
             }
         }
 
+    /**
+     * `<GetObjectAttributesOutput>` — only the members the request asked for.
+     *
+     * `x-amz-object-attributes` is a list, and the response carries **exactly** what it named:
+     * `shapes.ObjectAttributes` enumerates `ETag`, `Checksum`, `ObjectParts`, `StorageClass` and
+     * `ObjectSize`, and a server that answered all five regardless would be sending a client
+     * fields it deliberately did not ask for — which for `ObjectParts` on a ten-thousand-part
+     * object is the difference between a header-sized answer and a megabyte.
+     */
+    @Suppress("LongParameterList")
+    fun getObjectAttributesResult(
+        eTag: String?,
+        checksum: Pair<String, String>?,
+        objectSize: Long?,
+        storageClass: String?,
+        parts: List<PartEntry>?,
+        partsCount: Int,
+    ): ByteArray =
+        XmlWriter(256 + (parts?.size ?: 0) * 96).document("GetObjectAttributesOutput") {
+            // The quotes come off here and only here: `ETag` is the one member of this document
+            // that S3 sends unquoted, unlike the same value in every other response.
+            if (eTag != null) text("ETag", eTag.trim('"'))
+            if (checksum != null) {
+                element("Checksum") {
+                    text("Checksum${checksum.first.uppercase()}", checksum.second)
+                    // COMPOSITE when the value is a checksum of checksums, which the `-N` says.
+                    text("ChecksumType", if ('-' in checksum.second) "COMPOSITE" else "FULL_OBJECT")
+                }
+            }
+            // Present only for an object that **was** assembled from parts. S3 omits the member
+            // entirely for an ordinary upload, and a client reads its absence as "not multipart";
+            // an empty `ObjectParts` with `PartsCount` of zero says something different and wrong.
+            if (parts != null && parts.isNotEmpty()) {
+                element("ObjectParts") {
+                    // `shapes.GetObjectAttributesParts` is a paginated shape, and its members are
+                    // not optional to a generated client: botocore reads `IsTruncated` and
+                    // `MaxParts` off it whether or not there is a second page.
+                    text("PartsCount", partsCount.toLong())
+                    text("PartNumberMarker", 0L)
+                    text("NextPartNumberMarker", parts.lastOrNull()?.partNumber?.toLong() ?: 0L)
+                    text("MaxParts", partsCount.toLong())
+                    text("IsTruncated", false)
+                    for (part in parts) {
+                        element("Part") {
+                            text("PartNumber", part.partNumber.toLong())
+                            text("Size", part.size)
+                        }
+                    }
+                }
+            }
+            if (storageClass != null) text("StorageClass", storageClass)
+            if (objectSize != null) text("ObjectSize", objectSize)
+        }
+
     fun listAllMyBucketsResult(
         buckets: List<BucketEntry>,
         ownerId: String,
@@ -224,6 +278,16 @@ object S3Documents {
             text("ETag", eTag)
         }
 
+    /** `<CopyPartResult>` — the answer to `UploadPartCopy`, and the same shape as a copy's. */
+    fun copyPartResult(
+        eTag: String,
+        lastModified: String,
+    ): ByteArray =
+        XmlWriter(256).document("CopyPartResult") {
+            text("LastModified", lastModified)
+            text("ETag", eTag)
+        }
+
     fun initiateMultipartUploadResult(
         bucket: String,
         key: ObjectKey,
@@ -259,6 +323,7 @@ object S3Documents {
         isTruncated: Boolean,
         parts: List<PartEntry>,
         storageClass: String = "STANDARD",
+        checksumAlgorithm: String? = null,
     ): ByteArray =
         XmlWriter(512 + parts.size * 96).document("ListPartsResult") {
             text("Bucket", bucket)
@@ -269,6 +334,9 @@ object S3Documents {
             text("MaxParts", maxParts.toLong())
             text("IsTruncated", isTruncated)
             text("StorageClass", storageClass)
+            // Which algorithm the parts were checksummed with, so a client resuming an upload
+            // knows what to send for the parts it has not sent yet.
+            if (checksumAlgorithm != null) text("ChecksumAlgorithm", checksumAlgorithm.uppercase())
             for (part in parts) {
                 element("Part") {
                     text("PartNumber", part.partNumber.toLong())

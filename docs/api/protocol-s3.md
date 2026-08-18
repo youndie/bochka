@@ -160,8 +160,8 @@ botocore ставит его на **любое** файлоподобное те
 
 ## 4. Операции v1
 
-**Реализованы (M5)** все, кроме многочастной загрузки — она целевая, M-54…M-57. Полный список
-параметров каждой операции — в `s3-service-2.json`, здесь копия не заводится (иначе разъедется).
+**Реализованы все**, включая многочастную загрузку. Полный список параметров каждой операции —
+в `s3-service-2.json`, здесь копия не заводится (иначе разъедется).
 
 | Операция | Метод и URI | Успех |
 |---|---|---|
@@ -182,6 +182,9 @@ botocore ставит его на **любое** файлоподобное те
 | `CompleteMultipartUpload` | `POST /<bucket>/<key>?uploadId=…` | 200 — **см. ниже** |
 | `AbortMultipartUpload` | `DELETE /<bucket>/<key>?uploadId=…` | **204** |
 | `ListParts` | `GET /<bucket>/<key>?uploadId=…` | 200, `ListPartsResult` |
+| `CopyObject` | `PUT /<bucket>/<key>` + `x-amz-copy-source` | 200, `CopyObjectResult` |
+| `UploadPartCopy` | `PUT /<bucket>/<key>?partNumber=N&uploadId=…` + `x-amz-copy-source` | 200, `CopyPartResult` |
+| `GetObjectAttributes` | `GET /<bucket>/<key>?attributes` | 200, `GetObjectAttributesOutput` |
 
 `Range` — только на `GetObject`, и исходов у него три, а не два
 ([`ByteRanges`](../../bochka-s3/src/main/kotlin/io/github/youndie/bochka/s3/ByteRanges.kt)):
@@ -208,6 +211,22 @@ doesn't support retrieving multiple ranges of data per GET request»), так ч
 `Content-Language`, `Expires` и всё с префиксом `x-amz-meta-` — сохраняются и возвращаются
 `GET`/`HEAD` дословно; предел на пользовательские — 2 КиБ имён и значений вместе, дальше
 `MetadataTooLarge`.
+
+Многочастный объект помнит, из чего собран, и это нужно трём операциям сразу. Байты соединяются
+при завершении (открытый вопрос 3), так что швы знает только индекс:
+
+* `GET /<bucket>/<key>?partNumber=N` — часть по номеру, `206` и `x-amz-mp-parts-count`. У обычной
+  загрузки часть ровно одна, и это объект целиком: так у клиента один цикл скачивания на оба
+  случая;
+* `GetObjectAttributes` отвечает **только тем**, что назвал `x-amz-object-attributes`.
+  `ObjectParts` у обычной загрузки **отсутствует**, а не пуст: клиент читает отсутствие как
+  «это не многочастный объект»;
+* контрольная сумма многочастного объекта — это сумма над **сырыми** суммами частей плюс `-N`,
+  той же формы, что и `ETag`, и по той же причине (`ChecksumType: COMPOSITE` в модели).
+
+`x-amz-copy-source-range` — единственное место, где неразобранный диапазон это **ошибка**: на
+`GET` он значит «отдай всё» (RFC 9110 §14.2), а здесь он решает, чем часть является. И конец
+диапазона не обрезается по размеру источника, в отличие от чтения.
 
 Три места, где интуиция врёт и тест обязан это закрепить:
 
