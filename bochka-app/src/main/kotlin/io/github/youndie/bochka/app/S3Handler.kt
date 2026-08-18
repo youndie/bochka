@@ -20,6 +20,7 @@ import io.github.youndie.bochka.s3.S3Router
 import io.github.youndie.bochka.s3.UriCodec
 import io.github.youndie.bochka.s3.sigv4.AwsChunkedDecoder
 import io.github.youndie.bochka.s3.sigv4.CanonicalRequest
+import io.github.youndie.bochka.s3.sigv4.KeyScope
 import io.github.youndie.bochka.s3.sigv4.S3Error
 import io.github.youndie.bochka.s3.sigv4.SignatureVerifier
 import io.github.youndie.bochka.s3.xml.S3Documents
@@ -74,7 +75,7 @@ class S3Handler(
         if (route !is S3Router.Route.Preflight && route !is S3Router.Route.PostObject) {
             when (val verification = verifier.verify(head.toSignedRequest())) {
                 is SignatureVerifier.Result.Failure -> return error(head, verification.error, verification)
-                is SignatureVerifier.Result.Ok -> Unit
+                is SignatureVerifier.Result.Ok -> scopeRefusal(head, route, verification.accessKeyId)?.let { return it }
             }
         }
 
@@ -178,7 +179,7 @@ class S3Handler(
 
         return when (route) {
             is S3Router.Route.ListBuckets -> {
-                listBuckets(head)
+                listBuckets(head, verification.accessKeyId)
             }
 
             is S3Router.Route.CreateBucket -> {
@@ -738,7 +739,10 @@ class S3Handler(
      * bucket sent — buckets are ordered by name and names are unique, so a position in that order
      * **is** a name and needs nothing opaque behind it.
      */
-    private fun listBuckets(head: HttpRequestParser.Head): HttpResponse {
+    private fun listBuckets(
+        head: HttpRequestParser.Head,
+        accessKeyId: String,
+    ): HttpResponse {
         val params = rawQueryParams(head.query)
         val prefix = params["prefix"]?.let { String(it) }
         val after = params["continuation-token"]?.let { String(it) }
@@ -747,6 +751,10 @@ class S3Handler(
         val matching =
             store
                 .bucketList()
+                // Filtered, not refused, and the order matters: a listing that shows a bucket and
+                // then denies it has already told the caller the name exists. Invisibility is the
+                // stronger half of a scope, so it is the half applied first (M-127).
+                .filter { verifier.credentials.scopeFor(accessKeyId).sees(it.name) }
                 .filter { prefix == null || it.name.startsWith(prefix) }
                 .filter { after == null || it.name > after }
         val page = if (maxBuckets != null) matching.take(maxBuckets) else matching
@@ -2261,6 +2269,87 @@ class S3Handler(
             head.query,
             head.header("x-amz-copy-source"),
         )
+
+    /**
+     * What each operation needs from the key that signed it — the whole table, in one place.
+     *
+     * A table and not a condition at each call site, because permissions are read far more often
+     * than they are written and the question asked of them is always "what may this key do", never
+     * "what does this line do". Fifty conditions scattered through a handler answer the second
+     * question and cannot be made to answer the first.
+     *
+     * `READ` is `GET`, `HEAD` and the listings. Everything else is `WRITE`, including operations
+     * that only look like reads — `POST ?delete` is a delete, a multipart completion is a write,
+     * and a pre-flight is neither, which is why it is absent (it carries no signature at all).
+     */
+    private fun needOf(route: S3Router.Route): KeyScope.Need =
+        when (route) {
+            is S3Router.Route.ListBuckets,
+            is S3Router.Route.HeadBucket,
+            is S3Router.Route.GetBucketLocation,
+            is S3Router.Route.ListObjectsV2,
+            is S3Router.Route.ListObjects,
+            is S3Router.Route.ListObjectVersions,
+            is S3Router.Route.ListMultipartUploads,
+            is S3Router.Route.ListParts,
+            is S3Router.Route.GetObject,
+            is S3Router.Route.HeadObject,
+            is S3Router.Route.GetObjectAttributes,
+            -> {
+                KeyScope.Need.READ
+            }
+
+            // A sub-resource is a read or a write by its method, not by its name: the same route
+            // carries `GET ?tagging` and `PUT ?tagging`.
+            is S3Router.Route.BucketSubresource -> {
+                if (route.method == "GET") KeyScope.Need.READ else KeyScope.Need.WRITE
+            }
+
+            is S3Router.Route.ObjectTagging -> {
+                if (route.method == "GET") KeyScope.Need.READ else KeyScope.Need.WRITE
+            }
+
+            is S3Router.Route.ObjectLockSubresource -> {
+                if (route.method == "GET") KeyScope.Need.READ else KeyScope.Need.WRITE
+            }
+
+            else -> {
+                KeyScope.Need.WRITE
+            }
+        }
+
+    /**
+     * Refuses what the signing key may not do — **from the head of the request** (§1.2).
+     *
+     * Before the body, deliberately: an upload into a bucket the key cannot see must not cost five
+     * gigabytes to refuse, and this is the one check that can always be made from the head because
+     * it depends on nothing the body carries.
+     *
+     * Invisibility comes before refusal. A key outside a bucket's scope is told the bucket does
+     * not exist rather than that it may not have it — `NoSuchBucket`, not `AccessDenied` — because
+     * a refusal is itself an answer: it confirms the name. `ListBuckets` follows the same rule by
+     * filtering rather than refusing (see [listBuckets]).
+     */
+    private fun scopeRefusal(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
+        accessKeyId: String,
+    ): HttpResponse? {
+        val scope = verifier.credentials.scopeFor(accessKeyId)
+        val bucket = bucketOf(route)
+        if (bucket != null && !scope.sees(bucket)) {
+            return error(head, S3Error.NO_SUCH_BUCKET, bucket = bucket)
+        }
+        if (!scope.allows(needOf(route))) {
+            return error(
+                head,
+                S3Error.ACCESS_DENIED,
+                detail = "this key is read-only",
+                bucket = bucket,
+            )
+        }
+        return null
+    }
 
     private fun bucketOf(route: S3Router.Route): String? =
         when (route) {

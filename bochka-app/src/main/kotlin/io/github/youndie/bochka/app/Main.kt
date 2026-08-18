@@ -4,6 +4,7 @@ import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.http.HttpServer
 import io.github.youndie.bochka.s3.S3Router
 import io.github.youndie.bochka.s3.sigv4.Credentials
+import io.github.youndie.bochka.s3.sigv4.KeyScope
 import io.github.youndie.bochka.s3.sigv4.SignatureVerifier
 import java.nio.file.Path
 import kotlin.io.path.createTempDirectory
@@ -46,6 +47,7 @@ object Main {
                         require(colon > 0) { "keys look like id:secret, got '$pair'" }
                         pair.substring(0, colon).trim() to pair.substring(colon + 1).trim()
                     }.ifEmpty { mapOf("bochkaadmin" to "bochkasecret", "bochkaalt" to "bochkaaltsecret") },
+                KeyScope.parse(configuration.list(Configuration.Key.KEY_SCOPES)),
             )
 
         val store =

@@ -13,8 +13,17 @@ package io.github.youndie.bochka.s3.sigv4
  */
 class Credentials(
     keys: Map<String, String>,
+    scopes: Map<String, KeyScope> = emptyMap(),
 ) {
     private val keys: Map<String, String> = keys.toMap()
+
+    /**
+     * What each key may do, for the keys that are narrowed at all.
+     *
+     * A key absent from here keeps everything: scopes only ever narrow, so configuration written
+     * wrong cannot lock an operator out of their own store.
+     */
+    private val scopes: Map<String, KeyScope> = scopes.toMap()
 
     init {
         require(keys.isNotEmpty()) { "at least one access key is required" }
@@ -27,7 +36,12 @@ class Credentials(
     /** `null` when the key is unknown — the caller answers [S3Error.INVALID_ACCESS_KEY_ID]. */
     fun secretFor(accessKeyId: String): String? = keys[accessKeyId]
 
+    /** Unrestricted for a key nobody narrowed, which is every key by default. */
+    fun scopeFor(accessKeyId: String): KeyScope = scopes[accessKeyId] ?: UNRESTRICTED
+
     companion object {
+        private val UNRESTRICTED = KeyScope()
+
         fun of(vararg pairs: Pair<String, String>): Credentials = Credentials(pairs.toMap())
     }
 }

@@ -33,6 +33,8 @@ import java.time.format.DateTimeFormatter
 class S3Fixture(
     virtualHostSuffixes: List<String> = emptyList(),
     accelRedirect: String? = null,
+    /** What the fixture's one key may do; unrestricted unless a test narrows it (M19). */
+    scope: io.github.youndie.bochka.s3.sigv4.KeyScope? = null,
 ) : AutoCloseable {
     val root: Path = Files.createTempDirectory("bochka-e2e")
     val store = ObjectStore(root, ObjectStore.Durability.NONE)
@@ -41,7 +43,13 @@ class S3Fixture(
         HttpServer(
             S3Handler(
                 store = store,
-                verifier = SignatureVerifier(Credentials(mapOf(ACCESS_KEY to SECRET))),
+                verifier =
+                    SignatureVerifier(
+                        Credentials(
+                            mapOf(ACCESS_KEY to SECRET),
+                            scope?.let { mapOf(ACCESS_KEY to it) } ?: emptyMap(),
+                        ),
+                    ),
                 router = S3Router(virtualHostSuffixes),
                 accelRedirect = accelRedirect,
             ),

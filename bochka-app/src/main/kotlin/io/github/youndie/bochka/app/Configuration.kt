@@ -49,6 +49,11 @@ class Configuration private constructor(
         DATA_DIR("data.dir", null, "where objects and the index live; a temporary directory if unset"),
         REGION("region", "us-east-1", "the region name this deployment answers with"),
         KEYS("keys", null, "access keys as id:secret,id2:secret2; two defaults if unset"),
+        KEY_SCOPES(
+            "key.scopes",
+            null,
+            "narrow a key: id=ro, id=rw@bucket|bucket; a key not named here keeps everything",
+        ),
         VIRTUAL_HOST_SUFFIXES("virtual.host.suffixes", null, "domains under which a leading label is a bucket name"),
         LOG("log", "0", "1 to print a line per request"),
         HOUSEKEEPING_MINUTES("housekeeping.minutes", "60", "how often to compact and sweep; 0 to never"),
