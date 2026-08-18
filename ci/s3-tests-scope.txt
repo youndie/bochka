@@ -49,22 +49,40 @@ out-of-scope	account	account-level operations are out of the v1 scope
 out-of-scope	user_policy	IAM user policies are a different service
 out-of-scope	bucket_logging	server access logging is out of the v1 scope
 
+# --- matched by name, and these are about something the name does not say ----------------------
+#
+# Classification reads the **test name**, and a name is not always what a test is about: every
+# rule below names a case whose fixture sets up versioning or an ACL before it gets to the thing
+# the name mentions. They spent a milestone filed as `deferred` conditional writes because
+# `if_match` matched their names first, and the reason they carried was wrong twice over — the
+# feature was implemented, and it is not what they exercise.
+out-of-scope	_current_object_if	the fixture enables versioning first ("current object" is the versioned one); versioning is out of scope
+out-of-scope	_current_if_match	the fixture enables versioning first; versioning is out of scope
+out-of-scope	object_current_if	the fixture enables versioning first; versioning is out of scope
+out-of-scope	_current_object	the fixture enables versioning first; versioning is out of scope
+out-of-scope	bucket_create_special_key_names	the fixture sets an ACL before it gets to the key names
+out-of-scope	list_multipart_upload_owner	the fixture sets an ACL; the owner needs an owner model anyway
+
+# --- in scope, in the backlog. The reasons here are what the suite says **now** ----------------
+deferred	if_match_size	x-amz-if-match-size: a precondition on the object's length, not on its ETag. A separate header and a separate feature from the conditional writes of M-80 (M-84)
+deferred	if_match_last_modified_time	x-amz-if-match-last-modified-time: a precondition on the object's timestamp. Separate from M-80 (M-84)
+
 # --- things bochka should do and does not. Each one names the task it becomes. -----------------
-deferred	if_match	conditional writes: If-Match / If-None-Match on PUT, DELETE and copy. Reads have them (M10); writes need the compare and the write to be one step
-deferred	if_none_match	conditional writes: If-Match / If-None-Match on PUT, DELETE and copy. Reads have them (M10)
-deferred	ifmatch	conditional writes: If-Match / If-None-Match on PUT, DELETE and copy. Reads have them (M10)
+deferred	if_match	conditional writes exist (M-80) and these cases still fail: a precondition on a key that is absent answers 404 rather than 412, and DeleteObjects reports no per-key <Error> (M-85)
+deferred	if_none_match	conditional writes exist (M-80); these cases still fail (M-85)
+deferred	ifmatch	conditional writes exist (M-80); these cases still fail (M-85)
 deferred	ifnonematch	conditional writes: If-Match / If-None-Match on PUT, DELETE and copy. Reads have them (M10)
 deferred	conditional_write	conditional writes, as above
-deferred	object_attributes	GetObjectAttributes is a separate operation, not a shape of GET
-deferred	multipart_copy	UploadPartCopy: a part whose source is a range of another object
-deferred	_get_part	partNumber on GET, which reads one part of a multipart object
+deferred	object_attributes	GetObjectAttributes exists (M-82); ObjectParts does not honour MaxParts and the multipart Checksum member is missing (M-86)
+deferred	multipart_copy	UploadPartCopy exists (M-81); a range past the source answers InvalidArgument where S3 answers InvalidRange (M-86)
+deferred	_get_part	partNumber on GET exists (M-82); the response is missing x-amz-mp-parts-count on some paths (M-86)
 deferred	list_buckets_paginated	ListBuckets with max-buckets and a continuation token
 deferred	buckets_list_ctime	buckets record no creation time; every one reports the epoch
 deferred	multipart_resend	resending a part while the upload is being completed
 deferred	multipart_reupload	re-uploading a part and what that does to the ETag
-deferred	use_cksum_helper	the checksum of a multipart object, which is the checksums of its parts
-deferred	multipart_checksum	the checksum of a multipart object, which is the checksums of its parts
-deferred	checksum_object_attributes	GetObjectAttributes, as above
+deferred	use_cksum_helper	the composite checksum exists (M-83); the multipart responses do not carry ChecksumAlgorithm where the client reads it (M-87)
+deferred	multipart_checksum	the composite checksum exists (M-83); ChecksumAlgorithm is missing from the responses (M-87)
+deferred	checksum_object_attributes	GetObjectAttributes does not answer Checksum for a multipart object (M-86)
 deferred	object_checksum	a checksum sent as a trailer rather than a header on a whole-body upload
 deferred	special_key_names	keys holding characters this server has not been shown to handle end to end
 deferred	special_names	keys holding characters this server has not been shown to handle end to end
