@@ -70,5 +70,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Pull the image that was just pushed and round-trip an object through it
-        run: BOCHKA_IMAGE=ghcr.io/youndie/bochka:${{ github.ref_name }} ./ci/consume-published.sh
+      - name: Pull the image and resolve the jar, the way a consumer would
+        env:
+          BOCHKA_IMAGE: ghcr.io/youndie/bochka:${{ github.ref_name }}
+          # Explicit, and not derived from the image tag. The script's default takes the version
+          # from after the last colon, which is `v0.1.0` — the git tag. The Maven coordinate is
+          # `0.1.0`, without the `v`, because that is what `-PVERSION` was given. Left to the
+          # default, this job asks the repository for a version nobody published and reports the
+          # publication broken.
+          BOCHKA_VERSION: ${{ github.ref_name }}
+          BOCHKA_REPO_URL: ${{ secrets.BOCHKA_REPO_URL }}
+        run: |
+          BOCHKA_VERSION="${BOCHKA_VERSION#v}" ./ci/consume-published.sh

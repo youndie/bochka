@@ -39,6 +39,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# The consumer project has no Gradle wrapper on purpose — a wrapper would be this repository's
+# Gradle, and the point is to be somebody else. So a system `gradle` is required, and its absence
+# has to say so rather than surface as "the published jar does not resolve".
+command -v gradle >/dev/null || { echo "gradle is not on PATH; this script needs a system Gradle" >&2; exit 3; }
+
 echo "pulling $IMAGE"
 docker pull -q "$IMAGE" >/dev/null 2>&1 && pass "the image can be pulled by name" || {
   fail "the image cannot be pulled by name"
