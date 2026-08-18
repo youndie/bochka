@@ -32,7 +32,7 @@ class LoggingHandler(
 
     override fun screen(head: HttpRequestParser.Head): HttpResponse? {
         val response = delegate.screen(head)
-        if (enabled && response != null) log(head, response.status, "screened")
+        if (enabled && response != null) log(head, response.status, "screened", response)
         return response
     }
 
@@ -41,7 +41,7 @@ class LoggingHandler(
         body: HttpHandler.RequestBody,
     ): HttpResponse {
         val response = delegate.handle(head, body)
-        if (enabled) log(head, response.status, "handled")
+        if (enabled) log(head, response.status, "handled", response)
         return response
     }
 
@@ -49,6 +49,7 @@ class LoggingHandler(
         head: HttpRequestParser.Head,
         status: Int,
         stage: String,
+        response: HttpResponse,
     ) {
         val payload = head.header("x-amz-content-sha256") ?: "-"
         val framing =
@@ -66,7 +67,25 @@ class LoggingHandler(
 
                 else -> "SIGNED-PAYLOAD"
             }
-        println("bochka $stage ${head.method} ${head.target} -> $status framing=$framing${locks(head)}")
+        println(
+            "bochka $stage ${head.method} ${head.target} -> $status framing=$framing" +
+                locks(head) + answered(response),
+        )
+    }
+
+    /**
+     * The lock headers of the **answer**, when it carries any.
+     *
+     * The request side alone left a question the log could not settle: a client complaining that a
+     * header is missing and a server that never sent it look identical from here. Prefixed `->` so
+     * the two directions cannot be read for one another.
+     */
+    private fun answered(response: HttpResponse): String {
+        val stated =
+            response.headers
+                .filter { it.first.lowercase() in ANSWERED_LOCK_HEADERS }
+                .map { "->${it.first.lowercase().removePrefix("x-amz-")}=${it.second}" }
+        return if (stated.isEmpty()) "" else " " + stated.joinToString(" ")
     }
 
     /**
@@ -95,6 +114,15 @@ class LoggingHandler(
     }
 
     private companion object {
+        /** What the answer says about a lock, which is the other half of the same question. */
+        val ANSWERED_LOCK_HEADERS =
+            setOf(
+                "x-amz-object-lock-mode",
+                "x-amz-object-lock-retain-until-date",
+                "x-amz-object-lock-legal-hold-status",
+                "x-amz-version-id",
+            )
+
         /** Headers that decide whether a write or a delete is allowed, rather than what it carries. */
         val LOCK_HEADERS =
             listOf(
