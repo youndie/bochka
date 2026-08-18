@@ -10,3 +10,6 @@ local.properties
 # lands in /tmp is measuring tmpfs, that is, memory (see CLAUDE.md).
 /data/
 *.log
+
+# Worktrees the agent tooling creates here are checkouts, not sources.
+.claude/worktrees/
