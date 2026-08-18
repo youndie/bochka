@@ -196,7 +196,11 @@ refuses bad-access-mode        "accessModes"           "ReadWriteMany, which pro
 refuses bad-small-memory       "runtime profile needs" "a memory limit under the profile, where the OOM kill beats the object ceiling"
 refuses bad-probe-timing       "initialDelaySeconds"   "a probe field the template renders nowhere"
 refuses bad-unknown-value      "replicaCount"          "a values key nobody reads"
-refuses bad-log-type           "Expected: boolean"      "a non-boolean log, which would be logging quietly off"
+# `boolean` alone, because the rest of that sentence belongs to helm rather than to us: it says
+# "Expected: boolean, given: string" up to 3.17 and "got string, want boolean" after, and this
+# check went red on a helm upgrade while the chart refused the value exactly as it should. What is
+# being asserted is that the refusal is about the type, and that word is the whole of it.
+refuses bad-log-type           "boolean"                "a non-boolean log, which would be logging quietly off"
 
 # --- cluster --------------------------------------------------------------------------------------
 
@@ -304,7 +308,12 @@ else
     sleep 2
   done
   kubectl delete pod "$probe_pod" --now >/dev/null 2>&1
-  if printf '%s' "$linkmsg" | grep -q "unknown setting 'BOCHKA_SERVICE_HOST'"; then
+  # Any injected name, not one chosen in advance. The claim is "a Service called `bochka` puts
+  # BOCHKA_* variables in the pod and this server stops on them" — which one it hits first is
+  # kubelet's business and the environment's iteration order. Pinned to BOCHKA_SERVICE_HOST, this
+  # check went red against a server that had refused to start exactly as predicted, and printed the
+  # refusal underneath its own verdict: `unknown setting 'BOCHKA_PORT_9000_TCP_PORT'`.
+  if printf '%s' "$linkmsg" | grep -q "unknown setting 'BOCHKA_"; then
     pass "with service links left on, the same image refuses to start — which is what the chart turns off"
   else
     fail "the service-link hazard did not reproduce, so 'enableServiceLinks: false' is now unproven"
