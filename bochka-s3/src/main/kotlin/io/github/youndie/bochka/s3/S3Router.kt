@@ -142,6 +142,21 @@ class S3Router(
             val method: String,
         ) : Route
 
+        /**
+         * `?retention` and `?legal-hold` on a version (M-110, M-111).
+         *
+         * One route for two sub-resources because they are the same shape and the same target — a
+         * named version, or the current one — and differ only in which document they carry. Two
+         * routes would mean two copies of the version lookup.
+         */
+        data class ObjectLockSubresource(
+            val bucket: String,
+            val key: ObjectKey,
+            val name: String,
+            val method: String,
+            val versionId: String? = null,
+        ) : Route
+
         /** `?tagging` у объекта: те же три метода, но теги живут в метаданных объекта. */
         data class ObjectTagging(
             val bucket: String,
@@ -438,6 +453,16 @@ class S3Router(
                         Route.ObjectTagging(bucket, key, "PUT")
                     }
 
+                    params.keys.any { it in LOCK_SUBRESOURCES } -> {
+                        Route.ObjectLockSubresource(
+                            bucket,
+                            key,
+                            params.keys.first { it in LOCK_SUBRESOURCES },
+                            "PUT",
+                            params["versionId"],
+                        )
+                    }
+
                     params.keys.any { it in OBJECT_SUBRESOURCES } -> {
                         Route.NotImplemented("PUT object sub-resource")
                     }
@@ -465,11 +490,35 @@ class S3Router(
 
             "GET" -> {
                 when {
-                    uploadId != null -> Route.ListParts(bucket, key, uploadId)
-                    "attributes" in params -> Route.GetObjectAttributes(bucket, key)
-                    "tagging" in params -> Route.ObjectTagging(bucket, key, "GET")
-                    params.keys.any { it in OBJECT_SUBRESOURCES } -> Route.NotImplemented("GET object sub-resource")
-                    else -> Route.GetObject(bucket, key, params["partNumber"]?.toIntOrNull(), params["versionId"])
+                    uploadId != null -> {
+                        Route.ListParts(bucket, key, uploadId)
+                    }
+
+                    "attributes" in params -> {
+                        Route.GetObjectAttributes(bucket, key)
+                    }
+
+                    "tagging" in params -> {
+                        Route.ObjectTagging(bucket, key, "GET")
+                    }
+
+                    params.keys.any { it in LOCK_SUBRESOURCES } -> {
+                        Route.ObjectLockSubresource(
+                            bucket,
+                            key,
+                            params.keys.first { it in LOCK_SUBRESOURCES },
+                            "GET",
+                            params["versionId"],
+                        )
+                    }
+
+                    params.keys.any { it in OBJECT_SUBRESOURCES } -> {
+                        Route.NotImplemented("GET object sub-resource")
+                    }
+
+                    else -> {
+                        Route.GetObject(bucket, key, params["partNumber"]?.toIntOrNull(), params["versionId"])
+                    }
                 }
             }
 
@@ -531,7 +580,10 @@ class S3Router(
          * умеем, должно перехватываться до общего отказа, и добавление новой настройки — это
          * строчка здесь, а не правка трёх ветвей маршрутизации.
          */
-        val CONFIGURABLE_SUBRESOURCES = setOf("tagging", "cors", "versioning")
+        val CONFIGURABLE_SUBRESOURCES = setOf("tagging", "cors", "versioning", "object-lock")
+
+        /** Sub-resources of an **object** that carry a lock rather than a configuration (M18). */
+        val LOCK_SUBRESOURCES = setOf("retention", "legal-hold")
 
         /** Sub-resources of a bucket that exist in S3 and not here. Listed so they can be refused by name. */
         val BUCKET_SUBRESOURCES =

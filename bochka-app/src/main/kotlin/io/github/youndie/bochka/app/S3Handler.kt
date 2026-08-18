@@ -182,7 +182,7 @@ class S3Handler(
             }
 
             is S3Router.Route.CreateBucket -> {
-                createBucket(route.bucket)
+                createBucket(head, route.bucket)
             }
 
             is S3Router.Route.DeleteBucket -> {
@@ -231,6 +231,10 @@ class S3Handler(
 
             is S3Router.Route.BucketSubresource -> {
                 bucketSubresource(head, route, body)
+            }
+
+            is S3Router.Route.ObjectLockSubresource -> {
+                objectLockSubresource(head, route, body)
             }
 
             is S3Router.Route.ObjectTagging -> {
@@ -629,7 +633,7 @@ class S3Handler(
                     writePrecondition(head),
                     stated.stored(),
                 )
-            completed(route, stored.eTag, stored.metadata.checksum)
+            completed(route, stored.eTag, stored.metadata.checksum, stored.versionId)
         } catch (e: ObjectStore.CompletionRefused) {
             // A repeat of a completion that already happened is answered with what it answered
             // (M-88). The upload is gone by then, so the store cannot be asked again — but what it
@@ -655,6 +659,7 @@ class S3Handler(
         route: S3Router.Route.CompleteMultipartUpload,
         eTag: String,
         checksum: Metadata.Checksum?,
+        versionId: String? = null,
     ): HttpResponse =
         xml(
             S3Documents.completeMultipartUploadResult(
@@ -665,7 +670,13 @@ class S3Handler(
                 checksum = checksum?.let { it.algorithm to it.value },
                 checksumType = checksum?.let(::typeOf),
             ),
-        )
+        ).let { response ->
+            if (versionId == null || versionId == ObjectStore.NULL_VERSION) {
+                response
+            } else {
+                response.copy(headers = response.headers + ("x-amz-version-id" to versionId))
+            }
+        }
 
     private fun listUploads(
         head: HttpRequestParser.Head,
@@ -751,8 +762,18 @@ class S3Handler(
         )
     }
 
-    private fun createBucket(bucket: String): HttpResponse {
+    private fun createBucket(
+        head: HttpRequestParser.Head,
+        bucket: String,
+    ): HttpResponse {
         store.createBucket(bucket)
+        // `x-amz-bucket-object-lock-enabled` is the only way object lock is ever switched on: S3
+        // has no operation that adds it later, so a bucket either was created for it or never can
+        // be. It brings versioning with it — a retention on something that can be overwritten in
+        // place protects nothing.
+        if (head.header("x-amz-bucket-object-lock-enabled")?.equals("true", ignoreCase = true) == true) {
+            store.setObjectLock(bucket, ObjectStore.ObjectLock())
+        }
         // Creating a bucket that is already yours is a success, not a conflict — the model has
         // BucketAlreadyOwnedByYou for the AWS case, and every client treats `mb` as idempotent.
         return HttpResponse(200, "OK", headers = listOf("Location" to "/$bucket"))
@@ -1155,8 +1176,16 @@ class S3Handler(
                 return error(head, rejection.error, detail = rejection.detail, key = route.key, bucket = route.bucket)
             }
 
-            val stored = store.commit(route.bucket, route.key, metadata, staged, writePrecondition(head))
+            var stored = store.commit(route.bucket, route.key, metadata, staged, writePrecondition(head))
             staged = null
+            // `x-amz-object-lock-*` on the upload itself: the object arrives already protected,
+            // which is the only way to close the window between a write and the retention that was
+            // meant to cover it.
+            lockOnUpload(head)?.let { (retention, held) ->
+                store.setRetention(route.bucket, route.key, stored.versionId, retention)
+                if (held) store.setLegalHold(route.bucket, route.key, stored.versionId, true)
+                stored = store.get(route.bucket, route.key, stored.versionId) ?: stored
+            }
             HttpResponse(
                 200,
                 "OK",
@@ -1381,6 +1410,16 @@ class S3Handler(
                     add("ETag" to stored.eTag)
                     add("Last-Modified" to httpDate(stored.lastModified))
                     addAll(versionHeader(stored))
+                    stored.retention?.let {
+                        add("x-amz-object-lock-mode" to it.mode)
+                        add(
+                            "x-amz-object-lock-retain-until-date" to
+                                java.time.Instant
+                                    .ofEpochMilli(it.untilMillis)
+                                    .toString(),
+                        )
+                    }
+                    if (stored.legalHold) add("x-amz-object-lock-legal-hold-status" to "ON")
                     add("Accept-Ranges" to "bytes")
                     addAll(ObjectHeaders.write(stored.metadata))
                     // Сколько тегов, а не какие: список отдаёт `?tagging`, а здесь клиенту нужно
@@ -1683,6 +1722,125 @@ class S3Handler(
     }
 
     /**
+     * `?object-lock` — a bucket sub-resource with a precondition none of the others have.
+     *
+     * Every other configuration can be put on any bucket. This one cannot: object lock is a
+     * property of creation (`x-amz-bucket-object-lock-enabled` on `CreateBucket`), and a bucket
+     * made without it answers `409 InvalidBucketState` to a `PUT` and
+     * `404 ObjectLockConfigurationNotFoundError` to a `GET`. Two different codes for one absence,
+     * because the client fixes two different things: one recreates the bucket, the other stops
+     * asking.
+     */
+    private suspend fun bucketObjectLock(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.BucketSubresource,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        val lock = store.objectLock(route.bucket)
+        return when (route.method) {
+            "GET" -> {
+                if (lock == null) {
+                    error(head, S3Error.OBJECT_LOCK_CONFIGURATION_NOT_FOUND, bucket = route.bucket)
+                } else {
+                    xml(S3Documents.objectLockResult(lock))
+                }
+            }
+
+            "PUT" -> {
+                // Creation is not the only door after all: a bucket that already versions may take
+                // object lock later (`test_object_lock_put_obj_lock_enable_after_create:13341`
+                // refuses only because its bucket is **not versioned**). What lock protects is a
+                // version, so versioning is the real precondition and creation was a proxy for it.
+                if (lock == null && store.versioning(route.bucket) != ObjectStore.Versioning.ENABLED) {
+                    return error(head, S3Error.INVALID_BUCKET_STATE, bucket = route.bucket)
+                }
+                val collected = ByteArrayOutputStream()
+                body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+                try {
+                    store.setObjectLock(route.bucket, S3Requests.parseObjectLock(collected.toByteArray()))
+                    HttpResponse(200, "OK")
+                } catch (e: XmlReader.MalformedXmlException) {
+                    error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
+                } catch (e: S3Requests.InvalidRetentionPeriod) {
+                    error(head, S3Error.INVALID_RETENTION_PERIOD, detail = e.message, bucket = route.bucket)
+                }
+            }
+
+            else -> {
+                error(head, S3Error.NOT_IMPLEMENTED, detail = "${route.method} ?object-lock", bucket = route.bucket)
+            }
+        }
+    }
+
+    /**
+     * `?retention` and `?legal-hold` on a version.
+     *
+     * Both refuse on a bucket without object lock, and both answer an object that has no rule with
+     * an empty document rather than a refusal — the object is there, and what is absent is a rule
+     * about it.
+     */
+    private suspend fun objectLockSubresource(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.ObjectLockSubresource,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        // `400 InvalidRequest` here and `409 InvalidBucketState` on the bucket's own sub-resource,
+        // and the suite pins both. It is the same absence seen from two places: asking a bucket to
+        // configure a lock it cannot have is about the bucket, asking an **object** about a lock
+        // that cannot exist is a request that was never valid.
+        if (store.objectLock(route.bucket) == null) {
+            return error(head, S3Error.INVALID_REQUEST, key = route.key, bucket = route.bucket)
+        }
+        val named = route.versionId
+        val stored =
+            (
+                if (named !=
+                    null
+                ) {
+                    store.get(route.bucket, route.key, named)
+                } else {
+                    store.currentVersion(route.bucket, route.key)
+                }
+            ) ?: return error(head, S3Error.NO_SUCH_KEY, key = route.key, bucket = route.bucket)
+
+        if (route.method == "GET") {
+            return if (route.name == "retention") {
+                xml(S3Documents.retentionResult(stored.retention))
+            } else {
+                xml(S3Documents.legalHoldResult(stored.legalHold))
+            }
+        }
+
+        val collected = ByteArrayOutputStream()
+        body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+        return try {
+            if (route.name == "retention") {
+                // `x-amz-bypass-governance-retention` is the caller saying out loud that it means
+                // to step over a `GOVERNANCE` lock. `COMPLIANCE` does not read it.
+                store.setRetention(
+                    route.bucket,
+                    route.key,
+                    route.versionId,
+                    S3Requests.parseRetention(collected.toByteArray()),
+                    bypass = head.header("x-amz-bypass-governance-retention")?.equals("true", true) == true,
+                )
+            } else {
+                store.setLegalHold(
+                    route.bucket,
+                    route.key,
+                    route.versionId,
+                    S3Requests.parseLegalHold(collected.toByteArray()),
+                )
+            }
+            HttpResponse(200, "OK")
+        } catch (e: XmlReader.MalformedXmlException) {
+            error(head, S3Error.MALFORMED_XML, detail = e.message, key = route.key, bucket = route.bucket)
+        } catch (e: ObjectStore.Locked) {
+            error(head, S3Error.ACCESS_DENIED, detail = e.message, key = route.key, bucket = route.bucket)
+        }
+    }
+
+    /**
      * `?versioning` — the one bucket sub-resource that changes what writing does.
      *
      * Kept as store state rather than as the document that carried it, so the answer is rendered
@@ -1703,7 +1861,14 @@ class S3Handler(
                 val collected = ByteArrayOutputStream()
                 body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
                 try {
-                    store.setVersioning(route.bucket, S3Requests.parseVersioning(collected.toByteArray()))
+                    val wanted = S3Requests.parseVersioning(collected.toByteArray())
+                    // A locked bucket cannot stop versioning: suspending it would let the next
+                    // write replace a version somebody is holding under retention
+                    // (`test_object_lock_suspend_versioning:13462`).
+                    if (wanted == ObjectStore.Versioning.SUSPENDED && store.objectLock(route.bucket) != null) {
+                        return error(head, S3Error.INVALID_BUCKET_STATE, bucket = route.bucket)
+                    }
+                    store.setVersioning(route.bucket, wanted)
                     HttpResponse(200, "OK")
                 } catch (e: XmlReader.MalformedXmlException) {
                     error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
@@ -1731,6 +1896,7 @@ class S3Handler(
         // early: "no configuration" has a defined document, while "no tag set" and "no CORS rules"
         // are refusals with codes of their own. Three sub-resources, two different right answers.
         if (route.name == "versioning") return bucketVersioning(head, route, body)
+        if (route.name == "object-lock") return bucketObjectLock(head, route, body)
 
         val absent = if (route.name == "tagging") S3Error.NO_SUCH_TAG_SET else S3Error.NO_SUCH_CORS_CONFIGURATION
         return when (route.method) {
@@ -1951,14 +2117,14 @@ class S3Handler(
                     errors += S3Documents.DeleteError(target.key, S3Error.INVALID_ARGUMENT.code, e.message)
                     continue
                 }
+            val named = target.versionId
             try {
                 // A named version is removed for good; an unnamed one goes through the ordinary
                 // delete, which in a versioning bucket lays a tombstone. The batch form carries
                 // both, and treating them alike is how a versioned bucket becomes impossible to
                 // empty — every entry answers `204` while the versions stay.
-                val named = target.versionId
                 if (named != null) {
-                    store.deleteVersion(bucket, target.key, named)
+                    store.deleteVersion(bucket, target.key, named, bypass = bypassGovernance(head))
                 } else {
                     store.delete(bucket, target.key, precondition)
                 }
@@ -1967,6 +2133,11 @@ class S3Handler(
                 deleted += S3Documents.DeletedEntry(target.key)
             } catch (e: ObjectStore.PreconditionFailed) {
                 errors += S3Documents.DeleteError(target.key, S3Error.PRECONDITION_FAILED.code, e.message)
+            } catch (e: ObjectStore.Locked) {
+                // Per key, like every other refusal in a batch: the other 999 go on being deleted,
+                // and the client is told which one is held. `nuke_bucket` reads exactly this to
+                // decide whether to wait out a retention period.
+                errors += S3Documents.DeleteError(target.key, S3Error.ACCESS_DENIED.code, e.message, named)
             }
         }
         // In quiet mode only failures are reported.
@@ -1989,7 +2160,7 @@ class S3Handler(
             // version named may not be it. S3 has no conditional delete of a named version.
             if (versionId != null) {
                 val removed =
-                    store.deleteVersion(bucket, key, versionId)
+                    store.deleteVersion(bucket, key, versionId, bypass = bypassGovernance(head))
                         ?: return HttpResponse(204, "No Content")
                 return HttpResponse(
                     204,
@@ -2013,9 +2184,42 @@ class S3Handler(
             HttpResponse(204, "No Content", headers = headers)
         } catch (e: ObjectStore.PreconditionFailed) {
             error(head, S3Error.PRECONDITION_FAILED, detail = e.message, key = key, bucket = bucket)
+        } catch (e: ObjectStore.Locked) {
+            error(head, S3Error.ACCESS_DENIED, detail = e.message, key = key, bucket = bucket)
         } catch (e: MalformedCondition) {
             error(head, S3Error.INVALID_ARGUMENT, detail = e.message, key = key, bucket = bucket)
         }
+
+    /**
+     * Retention and legal hold stated as headers of the upload, when they are.
+     *
+     * `null` when the request says nothing about locks, which is the common case and must not
+     * become "no retention" — that would be a write quietly stripping the protection a default
+     * rule put on the object.
+     */
+    private fun lockOnUpload(head: HttpRequestParser.Head): Pair<ObjectStore.Retention?, Boolean>? {
+        val mode = head.header("x-amz-object-lock-mode")?.trim()
+        val until = head.header("x-amz-object-lock-retain-until-date")?.trim()
+        val held = head.header("x-amz-object-lock-legal-hold-status")?.trim().equals("ON", ignoreCase = true)
+        if (mode == null && until == null && !held) return null
+        val retention =
+            if (mode != null && until != null) {
+                runCatching {
+                    java.time.OffsetDateTime
+                        .parse(until)
+                        .toInstant()
+                }.recoverCatching { java.time.Instant.parse(until) }
+                    .getOrNull()
+                    ?.let { ObjectStore.Retention(mode, it.toEpochMilli()) }
+            } else {
+                null
+            }
+        return retention to held
+    }
+
+    /** The caller saying out loud that it means to step over a `GOVERNANCE` lock. */
+    private fun bypassGovernance(head: HttpRequestParser.Head): Boolean =
+        head.header("x-amz-bypass-governance-retention")?.equals("true", ignoreCase = true) == true
 
     private fun route(head: HttpRequestParser.Head): S3Router.Route =
         router.route(

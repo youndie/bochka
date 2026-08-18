@@ -111,6 +111,10 @@ class ObjectStore(
          * `x-amz-delete-marker: true`. Deleting it by version id is how a key comes back.
          */
         val deleteMarker: Boolean = false,
+        /** Retention on this version, when it has any (M-110). */
+        val retention: Retention? = null,
+        /** A legal hold: on until somebody turns it off, independent of [retention] (M-111). */
+        val legalHold: Boolean = false,
     )
 
     /**
@@ -220,6 +224,8 @@ class ObjectStore(
     // declaration order. Declared after that one, it is still null when recovery reaches it.
     private val versioningStates = ConcurrentHashMap<String, Versioning>()
 
+    private val objectLocks = ConcurrentHashMap<String, ObjectLock>()
+
     // Beside the maps for the reason given above: recovery runs in a property initialiser, and
     // initialisers run in declaration order. This one is raised to one past the highest sequence
     // the log holds, so version order survives a restart.
@@ -283,6 +289,11 @@ class ObjectStore(
                         }
                     }
 
+                    is IndexRecord.BucketObjectLock -> {
+                        objectLocks[record.bucket] =
+                            ObjectLock(record.defaultMode, record.days, record.years)
+                    }
+
                     is IndexRecord.BucketVersioning -> {
                         versioningStates[record.bucket] = record.state
                     }
@@ -293,6 +304,7 @@ class ObjectStore(
                         // же именем, унаследовал бы чужие теги и CORS, и узнали бы об этом не сразу.
                         subresources.remove(record.bucket)
                         versioningStates.remove(record.bucket)
+                        objectLocks.remove(record.bucket)
                     }
 
                     is IndexRecord.Deleted -> {
@@ -317,6 +329,11 @@ class ObjectStore(
                                 parts = record.parts,
                                 versionId = record.versionId,
                                 deleteMarker = record.deleteMarker,
+                                retention =
+                                    record.retentionMode?.let {
+                                        Retention(it, record.retentionUntilMillis)
+                                    },
+                                legalHold = record.legalHold,
                             )
                         // A record from before versions carries sequence 0 and the `null` version,
                         // and every write of that key carried the same pair. Replayed as an insert
@@ -445,6 +462,7 @@ class ObjectStore(
                 for (part in state.parts.values) runCatching { Files.deleteIfExists(pathOf(part.fileId)) }
             }
             versioningStates.clear()
+            objectLocks.clear()
             sequences.set(0)
             objects.clear()
             buckets.clear()
@@ -525,6 +543,133 @@ class ObjectStore(
         write(IndexRecord.BucketVersioning(bucket, state))
     }
 
+    /**
+     * Object lock on a bucket: whether versions can be locked at all, and for how long by default.
+     *
+     * Enabling it is a property of **creation** — S3 offers no way to turn it on afterwards, and
+     * neither does this. It also forces versioning on, because a retention on something that can
+     * be overwritten in place protects nothing.
+     */
+    data class ObjectLock(
+        val defaultMode: String? = null,
+        val days: Int? = null,
+        val years: Int? = null,
+    )
+
+    /**
+     * Retention on one version: a mode and the moment it stops applying.
+     *
+     * The two modes are not two strengths of the same thing. `GOVERNANCE` can be stepped over by a
+     * caller who says so out loud; `COMPLIANCE` cannot be stepped over by anybody, including the
+     * account that set it, and that is the entire point of it — a promise that is breakable by its
+     * author is not a promise a regulator accepts.
+     */
+    data class Retention(
+        val mode: String,
+        val untilMillis: Long,
+    )
+
+    /** Refused because a version is under retention or a legal hold. */
+    class Locked(
+        override val message: String,
+    ) : RuntimeException(message)
+
+    fun objectLock(bucket: String): ObjectLock? = objectLocks[bucket]
+
+    /**
+     * Turns object lock on for a bucket, or replaces its default rule.
+     *
+     * Versioning comes with it and is not optional: [Versioning.ENABLED] is written here rather
+     * than left to the caller, so a locked bucket cannot exist in a state where a write silently
+     * replaces the version somebody locked.
+     */
+    fun setObjectLock(
+        bucket: String,
+        lock: ObjectLock,
+    ) {
+        objectLocks[bucket] = lock
+        if (versioning(bucket) != Versioning.ENABLED) setVersioning(bucket, Versioning.ENABLED)
+        write(IndexRecord.BucketObjectLock(bucket, lock.defaultMode, lock.days, lock.years))
+    }
+
+    /**
+     * Puts retention on a version, refusing the changes S3 refuses.
+     *
+     * Weakening is the whole rule: extending a retention is always allowed, shortening it or
+     * dropping the mode is what the lock exists to prevent. `GOVERNANCE` yields to a caller who
+     * passes [bypass]; `COMPLIANCE` yields to nobody, so [bypass] is deliberately not consulted
+     * for it.
+     */
+    fun setRetention(
+        bucket: String,
+        key: ObjectKey,
+        versionId: String?,
+        retention: Retention?,
+        bypass: Boolean = false,
+        now: Instant = Instant.now(),
+    ): Boolean =
+        writing.withLock {
+            val entry = versionEntry(bucket, key, versionId) ?: return@withLock false
+            val existing = entry.value.retention
+            if (existing != null && existing.untilMillis > now.toEpochMilli()) {
+                val weakened = retention == null || retention.untilMillis < existing.untilMillis
+                if (weakened && (existing.mode == "COMPLIANCE" || !bypass)) {
+                    throw Locked("the version is under ${existing.mode} retention until ${existing.untilMillis}")
+                }
+            }
+            val stored = entry.value.copy(retention = retention)
+            objects[entry.key] = stored
+            write(putRecord(bucket, key, entry.key.sequence, stored))
+            true
+        }
+
+    fun setLegalHold(
+        bucket: String,
+        key: ObjectKey,
+        versionId: String?,
+        held: Boolean,
+    ): Boolean =
+        writing.withLock {
+            val entry = versionEntry(bucket, key, versionId) ?: return@withLock false
+            val stored = entry.value.copy(legalHold = held)
+            objects[entry.key] = stored
+            write(putRecord(bucket, key, entry.key.sequence, stored))
+            true
+        }
+
+    /** The named version, or the current one when no name was given. */
+    private fun versionEntry(
+        bucket: String,
+        key: ObjectKey,
+        versionId: String?,
+    ): Map.Entry<Located, Stored>? {
+        if (versionId == null) return currentEntry(bucket, key)
+        return objects
+            .tailMap(headOf(bucket, key), true)
+            .asSequence()
+            .takeWhile { it.key.bucket == bucket && it.key.key == key }
+            .firstOrNull { it.value.versionId == versionId }
+    }
+
+    /**
+     * What stands between a version and its deletion, if anything.
+     *
+     * A legal hold answers first and is not a duration: it is on until somebody turns it off, and
+     * it does not care what the retention says. That independence is why the two are separate
+     * fields rather than one state.
+     */
+    private fun lockRefusal(
+        stored: Stored,
+        bypass: Boolean,
+        now: Instant,
+    ): String? {
+        if (stored.legalHold) return "the version is under a legal hold"
+        val retention = stored.retention ?: return null
+        if (retention.untilMillis <= now.toEpochMilli()) return null
+        if (retention.mode == "GOVERNANCE" && bypass) return null
+        return "the version is under ${retention.mode} retention"
+    }
+
     /** Every bucket, in name order — which is the order `ListBuckets` pages through. */
     fun bucketList(): List<Bucket> = buckets.entries.map { Bucket(it.key, it.value) }.sortedBy { it.name }
 
@@ -535,6 +680,7 @@ class ObjectStore(
         if (buckets.remove(name) == null) return false
         subresources.remove(name)
         versioningStates.remove(name)
+        objectLocks.remove(name)
         write(IndexRecord.BucketDeleted(name))
         return true
     }
@@ -795,6 +941,9 @@ class ObjectStore(
         sequence = sequence,
         versionId = stored.versionId,
         deleteMarker = stored.deleteMarker,
+        retentionMode = stored.retention?.mode,
+        retentionUntilMillis = stored.retention?.untilMillis ?: 0,
+        legalHold = stored.legalHold,
     )
 
     /** Throws away bytes that were written and turned out not to be wanted. */
@@ -1048,6 +1197,8 @@ class ObjectStore(
         bucket: String,
         key: ObjectKey,
         versionId: String,
+        bypass: Boolean = false,
+        now: Instant = Instant.now(),
     ): Stored? =
         writing.withLock {
             val entry =
@@ -1058,6 +1209,7 @@ class ObjectStore(
                     .firstOrNull { it.value.versionId == versionId }
                     ?: return@withLock null
 
+            lockRefusal(entry.value, bypass, now)?.let { throw Locked(it) }
             objects.remove(entry.key)
             write(IndexRecord.DeletedVersion(bucket, key, entry.key.sequence))
             if (!entry.value.deleteMarker) Files.deleteIfExists(pathOf(entry.value.fileId))

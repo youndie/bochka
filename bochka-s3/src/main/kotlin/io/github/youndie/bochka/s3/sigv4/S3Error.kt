@@ -274,6 +274,34 @@ enum class S3Error(
         405,
     ),
 
+    /**
+     * The bucket is not in a state where this makes sense.
+     *
+     * Object lock is a property of creation: asking a bucket that was made without it to answer
+     * about locks is not a malformed request, it is a request to a bucket that cannot have one
+     * (`test_object_lock_put_obj_lock_invalid_bucket:13312`). `409`, because what is wrong is the
+     * bucket rather than the document.
+     */
+    INVALID_BUCKET_STATE(
+        "InvalidBucketState",
+        "The request is not valid with the current state of the bucket.",
+        409,
+    ),
+
+    /** A lock-enabled bucket that has no configuration yet — absent, not unimplemented. */
+    OBJECT_LOCK_CONFIGURATION_NOT_FOUND(
+        "ObjectLockConfigurationNotFoundError",
+        "Object Lock configuration does not exist for this bucket",
+        404,
+    ),
+
+    /** A retention period that parses and cannot be meant: zero days, negative years. */
+    INVALID_RETENTION_PERIOD(
+        "InvalidRetentionPeriod",
+        "The retention period specified is invalid.",
+        400,
+    ),
+
     MALFORMED_XML(
         "MalformedXML",
         "The XML you provided was not well-formed or did not validate against our published schema.",

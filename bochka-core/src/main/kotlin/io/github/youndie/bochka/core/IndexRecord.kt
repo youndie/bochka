@@ -82,6 +82,18 @@ sealed interface IndexRecord {
         val sequence: Long = 0,
         val versionId: String = ObjectStore.NULL_VERSION,
         val deleteMarker: Boolean = false,
+        /** Retention and legal hold ride with the version they protect (M-110, M-111). */
+        val retentionMode: String? = null,
+        val retentionUntilMillis: Long = 0,
+        val legalHold: Boolean = false,
+    ) : IndexRecord
+
+    /** Object lock on a bucket: the default rule, and by its presence that lock is on at all. */
+    data class BucketObjectLock(
+        override val bucket: String,
+        val defaultMode: String?,
+        val days: Int?,
+        val years: Int?,
     ) : IndexRecord
 
     /** Every version of a key goes. Written by a bucket that has no versioning, and by old logs. */
@@ -232,6 +244,10 @@ sealed interface IndexRecord {
         private const val KIND_PUT_VERSIONED: Byte = 17
         private const val KIND_DELETED_VERSION: Byte = 18
 
+        /** A version that can be locked: [KIND_PUT_VERSIONED] plus retention and legal hold. */
+        private const val KIND_PUT_LOCKED: Byte = 19
+        private const val KIND_BUCKET_OBJECT_LOCK: Byte = 20
+
         /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
         private const val MAX_PARTS = 10_000L
 
@@ -317,8 +333,16 @@ sealed interface IndexRecord {
                     out.putInt64(record.sequence)
                 }
 
+                is BucketObjectLock -> {
+                    out.write(KIND_BUCKET_OBJECT_LOCK.toInt())
+                    out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
+                    out.putText(record.defaultMode)
+                    out.putInt64((record.days ?: -1).toLong())
+                    out.putInt64((record.years ?: -1).toLong())
+                }
+
                 is Put -> {
-                    out.write(KIND_PUT_VERSIONED.toInt())
+                    out.write(KIND_PUT_LOCKED.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.key.toByteArray())
                     out.putField(record.fileId.toByteArray(StandardCharsets.US_ASCII))
@@ -337,6 +361,9 @@ sealed interface IndexRecord {
                     out.putInt64(record.sequence)
                     out.putField(record.versionId.toByteArray(StandardCharsets.US_ASCII))
                     out.write(if (record.deleteMarker) 1 else 0)
+                    out.putText(record.retentionMode)
+                    out.putInt64(record.retentionUntilMillis)
+                    out.write(if (record.legalHold) 1 else 0)
                 }
             }
             return out.toByteArray()
@@ -442,21 +469,31 @@ sealed interface IndexRecord {
                     UploadEnded(buffer.text(), buffer.text())
                 }
 
-                KIND_PUT, KIND_PUT_WITH_PARTS, KIND_PUT_WITH_TAGS, KIND_PUT_VERSIONED -> {
+                KIND_BUCKET_OBJECT_LOCK -> {
+                    val bucket = buffer.text()
+                    val mode = buffer.optionalText()
+                    val days = buffer.long.toInt()
+                    val years = buffer.long.toInt()
+                    BucketObjectLock(bucket, mode, days.takeIf { it >= 0 }, years.takeIf { it >= 0 })
+                }
+
+                KIND_PUT, KIND_PUT_WITH_PARTS, KIND_PUT_WITH_TAGS, KIND_PUT_VERSIONED, KIND_PUT_LOCKED -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
                     val fileId = buffer.text()
                     val size = buffer.long
                     val lastModified = buffer.long
                     val eTag = buffer.text()
-                    val withTags = kind == KIND_PUT_WITH_TAGS || kind == KIND_PUT_VERSIONED
+                    val withTags =
+                        kind == KIND_PUT_WITH_TAGS || kind == KIND_PUT_VERSIONED || kind == KIND_PUT_LOCKED
                     val metadata = buffer.metadata(withTags = withTags)
                     val parts = if (kind == KIND_PUT_WITH_PARTS || withTags) buffer.parts() else emptyList()
                     // The older kinds carry no version at all, and decode to what they meant: the
                     // one entry a key had, called `null`, holding bytes. The store recognises that
                     // by [ObjectStore.NULL_VERSION] and replaces it on the next write, which is
                     // exactly the behaviour those logs were written under.
-                    val versioned = kind == KIND_PUT_VERSIONED
+                    val versioned = kind == KIND_PUT_VERSIONED || kind == KIND_PUT_LOCKED
+                    val lockable = kind == KIND_PUT_LOCKED
                     Put(
                         bucket = bucket,
                         key = key,
@@ -469,6 +506,9 @@ sealed interface IndexRecord {
                         sequence = if (versioned) buffer.long else 0,
                         versionId = if (versioned) buffer.text() else ObjectStore.NULL_VERSION,
                         deleteMarker = versioned && buffer.get().toInt() == 1,
+                        retentionMode = if (lockable) buffer.optionalText() else null,
+                        retentionUntilMillis = if (lockable) buffer.long else 0,
+                        legalHold = lockable && buffer.get().toInt() == 1,
                     )
                 }
 

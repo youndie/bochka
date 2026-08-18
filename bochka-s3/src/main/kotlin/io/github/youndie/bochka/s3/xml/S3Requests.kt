@@ -126,6 +126,102 @@ object S3Requests {
         }
     }
 
+    /**
+     * `<ObjectLockConfiguration>` — `s3-service-2.json`, `PutObjectLockConfigurationRequest`.
+     *
+     * Three refusals, and they are three different codes because the client fixes three different
+     * things. A status that is not `Enabled`, a mode that is not one of the two, or both `Days`
+     * and `Years` — the document is wrong, `MalformedXML`. A period that is zero or negative — the
+     * document is well-formed and the number is nonsense, `InvalidRetentionPeriod`
+     * (`test_object_lock_put_obj_lock_invalid_days:13378`).
+     */
+    fun parseObjectLock(body: ByteArray): ObjectStore.ObjectLock {
+        var status: String? = null
+        var mode: String? = null
+        var days: Int? = null
+        var years: Int? = null
+        val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
+        reader.root("ObjectLockConfiguration") { name ->
+            when (name) {
+                "ObjectLockEnabled" -> {
+                    status = reader.textOf(name).trim()
+                }
+
+                "Rule" -> {
+                    reader.children { rule ->
+                        if (rule != "DefaultRetention") return@children
+                        reader.children { field ->
+                            when (field) {
+                                "Mode" -> mode = reader.textOf(field).trim()
+                                "Days" -> days = reader.textOf(field).trim().toIntOrNull() ?: 0
+                                "Years" -> years = reader.textOf(field).trim().toIntOrNull() ?: 0
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (status != "Enabled") throw XmlReader.MalformedXmlException("ObjectLockEnabled must be Enabled")
+        if (mode != null && mode !in RETENTION_MODES) throw XmlReader.MalformedXmlException("bad Mode: '$mode'")
+        if (days != null && years != null) throw XmlReader.MalformedXmlException("both Days and Years")
+        days?.let { if (it <= 0) throw InvalidRetentionPeriod("Days must be positive, not $it") }
+        years?.let { if (it <= 0) throw InvalidRetentionPeriod("Years must be positive, not $it") }
+        return ObjectStore.ObjectLock(mode, days, years)
+    }
+
+    /** A period that parses and cannot be meant: separate from a malformed document on purpose. */
+    class InvalidRetentionPeriod(
+        override val message: String,
+    ) : RuntimeException(message)
+
+    val RETENTION_MODES = setOf("GOVERNANCE", "COMPLIANCE")
+
+    /** `<Retention><Mode>…<RetainUntilDate>…` — an empty document means "take the retention off". */
+    fun parseRetention(body: ByteArray): ObjectStore.Retention? {
+        var mode: String? = null
+        var until: String? = null
+        val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
+        reader.root("Retention") { name ->
+            when (name) {
+                "Mode" -> mode = reader.textOf(name).trim()
+                "RetainUntilDate" -> until = reader.textOf(name).trim()
+            }
+        }
+        if (mode == null && until == null) return null
+        if (mode !in RETENTION_MODES) throw XmlReader.MalformedXmlException("bad Mode: '$mode'")
+        val stated = until ?: throw XmlReader.MalformedXmlException("Retention without RetainUntilDate")
+        // Both spellings arrive: botocore sends an offset date-time, and
+        // `test_object_lock_get_obj_retention_iso8601:13567` pins that a plain `Z` instant is read
+        // back the same way it was written.
+        val instant =
+            try {
+                java.time.OffsetDateTime
+                    .parse(stated)
+                    .toInstant()
+            } catch (_: java.time.format.DateTimeParseException) {
+                try {
+                    java.time.Instant.parse(stated)
+                } catch (_: java.time.format.DateTimeParseException) {
+                    throw XmlReader.MalformedXmlException("RetainUntilDate is not a date: '$stated'")
+                }
+            }
+        return ObjectStore.Retention(mode!!, instant.toEpochMilli())
+    }
+
+    /** `<LegalHold><Status>ON|OFF</Status></LegalHold>`. */
+    fun parseLegalHold(body: ByteArray): Boolean {
+        var status: String? = null
+        val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
+        reader.root("LegalHold") { name ->
+            if (name == "Status") status = reader.textOf(name).trim()
+        }
+        return when (status) {
+            "ON" -> true
+            "OFF" -> false
+            else -> throw XmlReader.MalformedXmlException("LegalHold Status must be ON or OFF, not '$status'")
+        }
+    }
+
     /** `<CORSConfiguration><CORSRule>…` — `s3-service-2.json:2241`, `:2253`. */
     fun parseCors(body: ByteArray): CorsRules {
         val rules = ArrayList<CorsRules.Rule>()

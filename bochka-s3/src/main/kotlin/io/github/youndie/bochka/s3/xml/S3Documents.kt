@@ -54,6 +54,15 @@ object S3Documents {
         val key: ObjectKey,
         val code: String,
         val message: String,
+        /**
+         * Which version was refused, when the request named one.
+         *
+         * Read by the caller, not decoration: `nuke_bucket` in `ceph/s3-tests` takes an
+         * `AccessDenied` here and asks `GetObjectRetention` about `err['VersionId']` to find out
+         * how long to wait. Without it the cleanup raises `KeyError` and every following test
+         * fails in its own fixture.
+         */
+        val versionId: String? = null,
     )
 
     /**
@@ -302,6 +311,44 @@ object S3Documents {
                 ObjectStore.Versioning.SUSPENDED -> text("Status", "Suspended")
                 ObjectStore.Versioning.NONE -> Unit
             }
+        }
+
+    fun objectLockResult(lock: ObjectStore.ObjectLock): ByteArray =
+        XmlWriter(256).document("ObjectLockConfiguration") {
+            text("ObjectLockEnabled", "Enabled")
+            if (lock.defaultMode != null) {
+                element("Rule") {
+                    element("DefaultRetention") {
+                        text("Mode", lock.defaultMode)
+                        lock.days?.let { text("Days", it.toLong()) }
+                        lock.years?.let { text("Years", it.toLong()) }
+                    }
+                }
+            }
+        }
+
+    /**
+     * `<Retention>` — and an object with none answers with an **empty** one rather than a `404`.
+     *
+     * The object is there; what is absent is a rule about it, and those are different facts. The
+     * same distinction the bucket sub-resources already draw.
+     */
+    fun retentionResult(retention: ObjectStore.Retention?): ByteArray =
+        XmlWriter(192).document("Retention") {
+            if (retention != null) {
+                text("Mode", retention.mode)
+                text(
+                    "RetainUntilDate",
+                    java.time.Instant
+                        .ofEpochMilli(retention.untilMillis)
+                        .toString(),
+                )
+            }
+        }
+
+    fun legalHoldResult(held: Boolean): ByteArray =
+        XmlWriter(128).document("LegalHold") {
+            text("Status", if (held) "ON" else "OFF")
         }
 
     fun listAllMyBucketsResult(
@@ -600,6 +647,7 @@ object S3Documents {
             for (entry in errors) {
                 element("Error") {
                     raw("Key", entry.key.toByteArray())
+                    entry.versionId?.let { text("VersionId", it) }
                     text("Code", entry.code)
                     text("Message", entry.message)
                 }
