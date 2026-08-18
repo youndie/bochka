@@ -37,6 +37,9 @@ object Measurements {
     private const val MIB = 1024 * KIB
     private const val GIB = 1024 * MIB
 
+    /** Where the two-machine measurement meets. Above the ephemeral range, and not a service port. */
+    private const val PORT = 9101
+
     @JvmStatic
     fun main(args: Array<String>) {
         val what = args.firstOrNull() ?: "all"
@@ -71,6 +74,17 @@ object Measurements {
                     index(dir)
                 }
 
+                // Two halves of one measurement that needs two machines. `serve-network` is the
+                // sender and holds the numbers; `drain` is the other end of the wire and prints
+                // nothing worth reading.
+                "serve-network" -> {
+                    serveOverNetwork(dir, bytes, args.getOrNull(1) ?: "0.0.0.0", args.getOrNull(2)?.toInt() ?: PORT)
+                }
+
+                "drain" -> {
+                    drain(args.getOrNull(1) ?: "127.0.0.1", args.getOrNull(2)?.toInt() ?: PORT)
+                }
+
                 else -> {
                     serve(dir, bytes)
                     println()
@@ -82,8 +96,15 @@ object Measurements {
                 }
             }
         } finally {
-            Files.walk(dir).use { walk ->
-                walk.sorted(Comparator.reverseOrder()).forEach { runCatching { Files.deleteIfExists(it) } }
+            // Guarded, and not out of tidiness: an exception thrown while cleaning up **replaces**
+            // the one being cleaned up after, and the report becomes `NoSuchFileException` from
+            // the walk instead of whatever actually broke the measurement. Cost me a run.
+            runCatching {
+                if (Files.exists(dir)) {
+                    Files.walk(dir).use { walk ->
+                        walk.sorted(Comparator.reverseOrder()).forEach { runCatching { Files.deleteIfExists(it) } }
+                    }
+                }
             }
         }
     }
@@ -132,6 +153,132 @@ object Measurements {
         println(zeroCopy)
         println(throughHeap)
         println("  ${Measurement.compare(zeroCopy.median, throughHeap.median)}")
+    }
+
+    /**
+     * M-61 again, with a network card in the path.
+     *
+     * The loopback measurement above answers "does `transferTo` cost less processor per byte than
+     * reading into the heap", and it answers it on a path with **no device in it**: no driver, no
+     * DMA, no interrupts, no segmentation. Every architectural decision in this project that rests
+     * on zero-copy — the response-as-file-slice, the refusal to wrap the socket, TLS terminated
+     * outside (Р5) — rests on the ratio surviving a real one.
+     *
+     * So: same file, same two variants, same buffer sizes, same repeats. The only thing that
+     * changes is where the other end of the socket is. Changing one thing at a time is why this is
+     * a separate mode rather than a flag on the old one.
+     *
+     * The reader is the same drain the loopback measurement uses, running on the other machine
+     * ([drain]). It reconnects after every transfer, so the two sides need no agreement about how
+     * many transfers there will be.
+     */
+    private fun serveOverNetwork(
+        dir: Path,
+        bytes: Long,
+        bindHost: String,
+        port: Int,
+    ) {
+        println("== M-61 over a network card: serving an object ==")
+        val file = fill(dir.resolve("serve.bin"), bytes)
+
+        ServerSocketChannel.open().use { server ->
+            server.bind(InetSocketAddress(bindHost, port))
+            println("  listening on $bindHost:$port — start the drain on the other machine")
+
+            val zeroCopy =
+                Measurement.repeated("transferTo (zero-copy)", bytes, repeats) {
+                    overNetwork(server, "transferTo (zero-copy)", bytes) { socket ->
+                        FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                            var position = 0L
+                            while (position < bytes) position += source.transferTo(position, bytes - position, socket)
+                        }
+                    }
+                }
+            val throughHeap =
+                Measurement.repeated("read into heap, then write", bytes, repeats) {
+                    overNetwork(server, "read into heap, then write", bytes) { socket ->
+                        FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                            val buffer = ByteBuffer.allocate(8 * KIB.toInt())
+                            while (true) {
+                                buffer.clear()
+                                if (source.read(buffer) < 0) break
+                                buffer.flip()
+                                while (buffer.hasRemaining()) socket.write(buffer)
+                            }
+                        }
+                    }
+                }
+
+            println(zeroCopy)
+            println(throughHeap)
+            println("  ${Measurement.compare(zeroCopy.median, throughHeap.median)}")
+        }
+    }
+
+    /**
+     * One transfer to a reader that is somewhere else.
+     *
+     * `accept` sits outside the measured region, exactly as the loopback version keeps its thread
+     * start outside: what is being timed is sending the bytes, not waiting for somebody to ask.
+     */
+    private fun overNetwork(
+        server: ServerSocketChannel,
+        name: String,
+        bytes: Long,
+        send: (SocketChannel) -> Unit,
+    ): Measurement =
+        server.accept().use { socket ->
+            val measured = Measurement.of(name, bytes) { send(socket) }
+            socket.shutdownOutput()
+            measured
+        }
+
+    /**
+     * The other end of the wire: connect, read until the sender is done, connect again.
+     *
+     * Deliberately the same drain as the loopback reader — a direct 256 KiB buffer and nothing
+     * else — so that moving the measurement onto a network card changes the path and not the
+     * reader too. It prints only what is needed to see that it is alive; the numbers live on the
+     * sending side, which is the side whose processor time is the question.
+     */
+    private fun drain(
+        host: String,
+        port: Int,
+    ) {
+        println("draining $host:$port — stop with Ctrl-C")
+        val sink = ByteBuffer.allocateDirect(256 * KIB.toInt())
+        var transfer = 0
+        var refused = 0
+        while (true) {
+            val socket =
+                try {
+                    SocketChannel.open(InetSocketAddress(host, port))
+                } catch (e: java.io.IOException) {
+                    // The sender is not listening yet, or has finished and gone. Neither is fatal
+                    // here — this side is a fixture, and one that dies on a closed port has to be
+                    // restarted by hand between variants — but it is **said out loud**, every
+                    // tenth attempt so a long wait does not drown the log.
+                    //
+                    // Silence here cost a run: a drain that could not connect printed exactly what
+                    // a drain that was connected and busy prints, which is nothing, and the two
+                    // were indistinguishable from the outside for ten minutes.
+                    if (refused++ % 10 == 0) println("  cannot connect to $host:$port (${e.message}); retrying")
+                    Thread.sleep(200)
+                    continue
+                }
+            refused = 0
+            var read = 0L
+            socket.use {
+                while (true) {
+                    sink.clear()
+                    val n = it.read(sink)
+                    if (n < 0) break
+                    read += n
+                }
+            }
+            transfer++
+            println("  transfer $transfer: ${"%.2f".format(read / GIB.toDouble())} GiB")
+        }
     }
 
     /**

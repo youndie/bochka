@@ -50,5 +50,22 @@ tasks.register<JavaExec>("measure") {
     description = "Runs the M8 measurements and prints what they found"
     mainClass.set("io.github.youndie.bochka.benchmark.Measurements")
     classpath = sourceSets["main"].runtimeClasspath
-    args = listOf(project.findProperty("bochka.measure") as String? ?: "all")
+    // Split, because the two-machine measurement needs a mode, a host and a port rather than one
+    // word: `-Pbochka.measure="serve-network 10.0.0.2 9101"`.
+    args = ((project.findProperty("bochka.measure") as String? ?: "all")).trim().split(Regex("\\s+"))
+}
+
+// Everything `measure` needs, in one directory that can be copied to a machine with nothing on it
+// but a JVM.
+//
+// The two-machine measurement (`serve-network` and `drain`) has to run on two hosts at once, and
+// neither of them is a development machine. Installing Gradle on a measuring box to launch one
+// class would put a build tool inside the thing being measured; this puts a classpath there and
+// nothing else.
+val measureDist by tasks.registering(Sync::class) {
+    group = "verification"
+    description = "Stages the measurements and their classpath for copying to a bench"
+    from(tasks.named("jar"))
+    from(configurations.named("runtimeClasspath"))
+    into(layout.buildDirectory.dir("measure"))
 }
