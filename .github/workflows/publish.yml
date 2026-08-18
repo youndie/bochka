@@ -59,6 +59,12 @@ jobs:
       # is there, the task is green, and the failure is a consumer's `Could not find
       # io.github.youndie.bochka:bochka-core`. Which is exactly what the `consume` job below said
       # the first time this ran, and the reason it exists.
+      # This step is **not** idempotent, and that is the repository being right rather than a bug
+      # to work around: Reposilite answers `409 Conflict` to a second PUT of an already-published
+      # release, because a release that can be rewritten is a version nobody can pin. A re-run of
+      # this job for a tag that already published will therefore fail, and the fix is a new tag,
+      # not a retry. (It also means a partial publish stops at the first module already present —
+      # which is how four of five modules came to be missing the first time.)
       - name: Publish every module a consumer has to resolve
         env:
           BOCHKA_REPO_URL: ${{ secrets.BOCHKA_REPO_URL }}
