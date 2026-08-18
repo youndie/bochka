@@ -137,7 +137,24 @@ class S3RouterTest {
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos", "acl"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "versioning"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos/a.txt", "acl"))
-        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos/a.txt", "tagging"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PATCH", "h", "/photos/a.txt", ""))
+    }
+
+    @Test
+    fun `а теги и CORS перехватываются до общего отказа`() {
+        // Эта строчка раньше стояла в тесте выше: `?tagging` отвергался по имени. Список отказов —
+        // это запись рамок, и когда рамки меняются, меняется он, а не поведение под него.
+        assertIs<S3Router.Route.ObjectTagging>(pathStyle.route("PUT", "h", "/photos/a.txt", "tagging"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "tagging"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "cors"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("DELETE", "h", "/photos", "cors"))
+    }
+
+    @Test
+    fun `preflight маршрутизируется одинаково от бакета и от объекта`() {
+        // Правила принадлежат бакету, а браузер шлёт `OPTIONS` на тот адрес, который собирается
+        // запросить, — то есть чаще на объект. Ключ здесь не нужен ни для чего.
+        assertIs<S3Router.Route.Preflight>(pathStyle.route("OPTIONS", "h", "/photos", ""))
+        assertIs<S3Router.Route.Preflight>(pathStyle.route("OPTIONS", "h", "/photos/a.txt", ""))
     }
 }

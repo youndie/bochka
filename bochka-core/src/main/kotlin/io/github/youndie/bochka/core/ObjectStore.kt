@@ -154,6 +154,15 @@ class ObjectStore(
      */
     private val buckets = ConcurrentHashMap<String, Instant>()
 
+    /**
+     * Именованные настройки бакета — теги, CORS и что появится дальше — байтами, как они пришли.
+     *
+     * Ядро знает, что у бакета есть настройки, и не знает, что означает `tagging`: разбирает их
+     * слой S3, которому и положено знать этот словарь. Ключ внешней карты — имя бакета, чтобы
+     * удаление бакета уносило настройки одним движением.
+     */
+    private val subresources = ConcurrentHashMap<String, ConcurrentHashMap<String, ByteArray>>()
+
     /** One writer at a time on the log: its records must land in the order they were decided. */
     private val writing = ReentrantLock()
 
@@ -203,8 +212,20 @@ class ObjectStore(
                         buckets[record.bucket] = Instant.ofEpochMilli(record.createdAtMillis)
                     }
 
+                    is IndexRecord.BucketSubresource -> {
+                        if (record.document == null) {
+                            subresources[record.bucket]?.remove(record.name)
+                        } else {
+                            subresources.computeIfAbsent(record.bucket) { ConcurrentHashMap() }[record.name] =
+                                record.document
+                        }
+                    }
+
                     is IndexRecord.BucketDeleted -> {
                         buckets.remove(record.bucket)
+                        // Настройки уходят вместе с бакетом: иначе бакет, созданный заново под тем
+                        // же именем, унаследовал бы чужие теги и CORS, и узнали бы об этом не сразу.
+                        subresources.remove(record.bucket)
                     }
 
                     is IndexRecord.Deleted -> {
@@ -293,6 +314,65 @@ class ObjectStore(
         val createdAt: Instant,
     )
 
+    /**
+     * Меняет теги существующего объекта, не трогая его байты.
+     *
+     * Это единственная операция, которая переписывает метаданные уже лежащего объекта, и потому
+     * она делается тем же `compute`, что и запись: между чтением и записью иначе появляется окно,
+     * в котором объект успевает смениться, и теги достанутся не тому.
+     *
+     * `false` — объекта нет; теги существуют только у него.
+     */
+    fun setTags(
+        bucket: String,
+        key: ObjectKey,
+        tags: Map<String, String>,
+    ): Boolean {
+        var updated: Stored? = null
+        objects.computeIfPresent(Located(bucket, key)) { _, existing ->
+            existing.copy(metadata = existing.metadata.copy(tags = tags)).also { updated = it }
+        }
+        val stored = updated ?: return false
+        write(
+            IndexRecord.Put(
+                bucket = bucket,
+                key = key,
+                fileId = stored.fileId,
+                size = stored.size,
+                eTag = stored.eTag,
+                lastModifiedMillis = stored.lastModified.toEpochMilli(),
+                metadata = stored.metadata,
+                parts = stored.parts,
+            ),
+        )
+        return true
+    }
+
+    /** Документ настройки, или `null`, если её не клали или сняли. */
+    fun bucketSubresource(
+        bucket: String,
+        name: String,
+    ): ByteArray? = subresources[bucket]?.get(name)
+
+    /**
+     * Кладёт настройку или снимает её (`document == null`).
+     *
+     * Пишется в журнал, потому что это состояние бакета: конфигурация, пережившая перезапуск
+     * только в памяти, — это конфигурация, о которой клиенту сказали неправду.
+     */
+    fun putBucketSubresource(
+        bucket: String,
+        name: String,
+        document: ByteArray?,
+    ) {
+        if (document == null) {
+            subresources[bucket]?.remove(name)
+        } else {
+            subresources.computeIfAbsent(bucket) { ConcurrentHashMap() }[name] = document
+        }
+        write(IndexRecord.BucketSubresource(bucket, name, document))
+    }
+
     /** Every bucket, in name order — which is the order `ListBuckets` pages through. */
     fun bucketList(): List<Bucket> = buckets.entries.map { Bucket(it.key, it.value) }.sortedBy { it.name }
 
@@ -301,6 +381,7 @@ class ObjectStore(
     fun deleteBucket(name: String): Boolean {
         if (firstKeyOf(name) != null) return false
         if (buckets.remove(name) == null) return false
+        subresources.remove(name)
         write(IndexRecord.BucketDeleted(name))
         return true
     }
@@ -1252,6 +1333,12 @@ class ObjectStore(
                 for ((bucket, createdAt) in buckets) {
                     fresh.append(IndexRecord.encode(IndexRecord.BucketCreated(bucket, createdAt.toEpochMilli())))
                     records++
+                    // Настройки — тоже живое состояние: уплотнение, потерявшее их, потеряло бы
+                    // конфигурацию, о которой клиенту уже ответили.
+                    for ((name, document) in subresources[bucket].orEmpty()) {
+                        fresh.append(IndexRecord.encode(IndexRecord.BucketSubresource(bucket, name, document)))
+                        records++
+                    }
                 }
                 for ((located, stored) in objects) {
                     fresh.append(

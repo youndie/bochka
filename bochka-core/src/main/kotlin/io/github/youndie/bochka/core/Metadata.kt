@@ -26,6 +26,15 @@ data class Metadata(
      * five gigabytes to answer a header.
      */
     val checksum: Checksum? = null,
+    /**
+     * Теги объекта — **не** то же, что [user], хотя оба выглядят как строки к строкам.
+     *
+     * У них своя пара операций (`PutObjectTagging`/`GetObjectTagging`), свои пределы (десять тегов
+     * против двух килобайт метаданных) и своя жизнь: теги меняют у существующего объекта, не
+     * трогая его байты, а `x-amz-meta-*` приезжают вместе с телом и без него не меняются. Хранить
+     * их в одной карте значило бы, что `PutObjectTagging` умеет переписать `x-amz-meta-*`.
+     */
+    val tags: Map<String, String> = emptyMap(),
 ) {
     data class Checksum(
         /** Lowercase, as it appears in the header name: `crc32`, `crc32c`, `sha1`, `sha256`. */

@@ -2,6 +2,7 @@ package io.github.youndie.bochka.s3
 
 import io.github.youndie.bochka.core.Metadata
 import io.github.youndie.bochka.s3.sigv4.S3Error
+import io.github.youndie.bochka.s3.xml.S3Requests
 import java.nio.charset.StandardCharsets
 
 /**
@@ -47,7 +48,13 @@ object ObjectHeaders {
             }
         }
 
+        // `x-amz-tagging: a=1&b=2` — теги формой запроса, а не документом
+        // (`s3-service-2.json:3158`). Клиент, положивший объект одним запросом, иначе вынужден
+        // делать второй только ради тегов.
+        val tags = one("x-amz-tagging")?.takeIf { it.isNotEmpty() }?.let(S3Requests::parseTaggingHeader).orEmpty()
+
         return Metadata(
+            tags = tags,
             contentType = one("content-type"),
             cacheControl = one("cache-control"),
             contentDisposition = one("content-disposition"),

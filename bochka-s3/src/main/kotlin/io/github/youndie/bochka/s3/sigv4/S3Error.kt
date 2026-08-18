@@ -163,6 +163,26 @@ enum class S3Error(
         416,
     ),
 
+    /**
+     * Набора тегов у бакета нет — и это **не** пустой набор.
+     *
+     * Клиент читает «нет настройки» и «настройка пустая» по-разному, и `test_set_bucket_tagging`
+     * проверяет именно код. У объекта, к слову, ответ обратный: там пустой `TagSet` и `200`,
+     * потому что объект-то есть.
+     */
+    NO_SUCH_TAG_SET(
+        "NoSuchTagSet",
+        "The TagSet does not exist",
+        404,
+    ),
+
+    /** То же для CORS: конфигурации нет — это ответ, а не отсутствие ответа. */
+    NO_SUCH_CORS_CONFIGURATION(
+        "NoSuchCORSConfiguration",
+        "The CORS configuration does not exist",
+        404,
+    ),
+
     /** `:604` — a header that is present, understood, and holds something impossible. */
     INVALID_ARGUMENT(
         "InvalidArgument",

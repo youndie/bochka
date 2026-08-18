@@ -853,15 +853,15 @@ JVM 25; проект без `foojay-resolver` не может выдать се�
 **Цель: и внешнее число, и ниша.** 24 кейса сьюта, и единственная работа в списке без единого
 конфликта с записанными решениями. Разбор — [ресёрч «куда двигаться дальше»](docs/research/research-suite-and-niche.md).
 
-- [ ] **M-91** Теги бакета: `PutBucketTagging`, `GetBucketTagging`, `DeleteBucketTagging`.
+- [x] **M-91** Теги бакета: `PutBucketTagging`, `GetBucketTagging`, `DeleteBucketTagging`.
       Отсутствующий набор — **`404 NoSuchTagSet`**, а не пустой документ: клиент читает отсутствие
       и наличие по-разному (`test_set_bucket_tagging:7148`)
-- [ ] **M-92** Теги объекта: те же три операции плюс `x-amz-tagging` на `PutObject` и
+- [x] **M-92** Теги объекта: те же три операции плюс `x-amz-tagging` на `PutObject` и
       `x-amz-tagging-count` на чтении. Ограничения — 10 тегов, 128/256 символов — из модели,
       а не из головы
-- [ ] **M-93** Конфигурация CORS: `PutBucketCors`, `GetBucketCors`, `DeleteBucketCors`;
+- [x] **M-93** Конфигурация CORS: `PutBucketCors`, `GetBucketCors`, `DeleteBucketCors`;
       `404` на отсутствующую, как у тегов
-- [ ] **M-94** Preflight: `OPTIONS` с `Origin` и `Access-Control-Request-Method`, ответ
+- [x] **M-94** Preflight: `OPTIONS` с `Origin` и `Access-Control-Request-Method`, ответ
       `Access-Control-Allow-*`. Единственная строчка CORS, где есть логика, а не хранение;
       подстановочный знак в `AllowedOrigins` сопоставляется по правилу S3, а не по регулярке
 

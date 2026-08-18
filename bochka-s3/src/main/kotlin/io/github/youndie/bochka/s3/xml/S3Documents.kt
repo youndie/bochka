@@ -259,6 +259,34 @@ object S3Documents {
             if (objectSize != null) text("ObjectSize", objectSize)
         }
 
+    /** `<Tagging><TagSet>` — тот же документ на чтении, что и на записи (`s3-service-2.json:13301`). */
+    fun taggingResult(tags: Map<String, String>): ByteArray =
+        XmlWriter(128 + tags.size * 64).document("Tagging") {
+            element("TagSet") {
+                for ((key, value) in tags) {
+                    element("Tag") {
+                        text("Key", key)
+                        text("Value", value)
+                    }
+                }
+            }
+        }
+
+    /** `<CORSConfiguration>` — `s3-service-2.json:2241`. */
+    fun corsResult(rules: io.github.youndie.bochka.s3.CorsRules): ByteArray =
+        XmlWriter(256 + rules.rules.size * 128).document("CORSConfiguration") {
+            for (rule in rules.rules) {
+                element("CORSRule") {
+                    text("ID", rule.id)
+                    for (method in rule.allowedMethods) text("AllowedMethod", method)
+                    for (origin in rule.allowedOrigins) text("AllowedOrigin", origin)
+                    for (header in rule.allowedHeaders) text("AllowedHeader", header)
+                    for (header in rule.exposeHeaders) text("ExposeHeader", header)
+                    rule.maxAgeSeconds?.let { text("MaxAgeSeconds", it.toLong()) }
+                }
+            }
+        }
+
     fun listAllMyBucketsResult(
         buckets: List<BucketEntry>,
         ownerId: String,

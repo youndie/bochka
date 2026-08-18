@@ -112,6 +112,36 @@ class S3Router(
             val key: ObjectKey,
         ) : Route
 
+        /**
+         * Именованная настройка бакета: `?tagging`, `?cors`.
+         *
+         * Одним маршрутом на три метода и на оба имени, потому что различаются они только тем,
+         * какой документ разбирать, — а это вопрос к слою, который знает документы.
+         */
+        data class BucketSubresource(
+            val bucket: String,
+            val name: String,
+            val method: String,
+        ) : Route
+
+        /** `?tagging` у объекта: те же три метода, но теги живут в метаданных объекта. */
+        data class ObjectTagging(
+            val bucket: String,
+            val key: ObjectKey,
+            val method: String,
+        ) : Route
+
+        /**
+         * `OPTIONS` — preflight, и он единственный не подписывается.
+         *
+         * Браузер шлёт его до всякой авторизации: у клиентского кода в этот момент нет ни ключа,
+         * ни повода его показывать. Проверка подписи для него отключается **по маршруту**, а не
+         * по методу вообще, чтобы «неподписанный» не расползлось.
+         */
+        data class Preflight(
+            val bucket: String,
+        ) : Route
+
         data class HeadObject(
             val bucket: String,
             val key: ObjectKey,
@@ -274,6 +304,10 @@ class S3Router(
                     // Everything else with a query on a bucket is a sub-resource we do not have —
                     // versioning, acl, policy, lifecycle. Falling through to ListObjects would
                     // answer a question nobody asked.
+                    params.keys.any { it in CONFIGURABLE_SUBRESOURCES } -> {
+                        Route.BucketSubresource(bucket, params.keys.first { it in CONFIGURABLE_SUBRESOURCES }, "GET")
+                    }
+
                     params.keys.any { it in BUCKET_SUBRESOURCES } -> {
                         Route.NotImplemented("GET /$bucket?${params.keys.first { it in BUCKET_SUBRESOURCES }}")
                     }
@@ -285,19 +319,39 @@ class S3Router(
             }
 
             "PUT" -> {
-                if (params.keys.any { it in BUCKET_SUBRESOURCES }) {
-                    Route.NotImplemented("PUT /$bucket?…")
-                } else {
-                    Route.CreateBucket(bucket)
+                when {
+                    params.keys.any { it in CONFIGURABLE_SUBRESOURCES } -> {
+                        Route.BucketSubresource(bucket, params.keys.first { it in CONFIGURABLE_SUBRESOURCES }, "PUT")
+                    }
+
+                    params.keys.any { it in BUCKET_SUBRESOURCES } -> {
+                        Route.NotImplemented("PUT /$bucket?…")
+                    }
+
+                    else -> {
+                        Route.CreateBucket(bucket)
+                    }
                 }
             }
 
             "DELETE" -> {
-                if (params.keys.any { it in BUCKET_SUBRESOURCES }) {
-                    Route.NotImplemented("DELETE /$bucket?…")
-                } else {
-                    Route.DeleteBucket(bucket)
+                when {
+                    params.keys.any { it in CONFIGURABLE_SUBRESOURCES } -> {
+                        Route.BucketSubresource(bucket, params.keys.first { it in CONFIGURABLE_SUBRESOURCES }, "DELETE")
+                    }
+
+                    params.keys.any { it in BUCKET_SUBRESOURCES } -> {
+                        Route.NotImplemented("DELETE /$bucket?…")
+                    }
+
+                    else -> {
+                        Route.DeleteBucket(bucket)
+                    }
                 }
+            }
+
+            "OPTIONS" -> {
+                Route.Preflight(bucket)
             }
 
             "HEAD" -> {
@@ -322,6 +376,11 @@ class S3Router(
     ): Route {
         val key = ObjectKey(UriCodec.decode(rawKey))
         val uploadId = params["uploadId"]
+
+        // Preflight приходит на тот адрес, который браузер собирается запросить, — то есть чаще
+        // на объект, чем на бакет. Правила при этом принадлежат бакету, поэтому ключ здесь
+        // не нужен и маршрут тот же.
+        if (method == "OPTIONS") return Route.Preflight(bucket)
 
         return when (method) {
             "PUT" -> {
@@ -348,6 +407,10 @@ class S3Router(
                         }
                     }
 
+                    "tagging" in params -> {
+                        Route.ObjectTagging(bucket, key, "PUT")
+                    }
+
                     params.keys.any { it in OBJECT_SUBRESOURCES } -> {
                         Route.NotImplemented("PUT object sub-resource")
                     }
@@ -362,7 +425,13 @@ class S3Router(
                     }
 
                     else -> {
-                        Route.PutObject(bucket, key)
+                        if ("tagging" in
+                            params
+                        ) {
+                            Route.ObjectTagging(bucket, key, "PUT")
+                        } else {
+                            Route.PutObject(bucket, key)
+                        }
                     }
                 }
             }
@@ -371,6 +440,7 @@ class S3Router(
                 when {
                     uploadId != null -> Route.ListParts(bucket, key, uploadId)
                     "attributes" in params -> Route.GetObjectAttributes(bucket, key)
+                    "tagging" in params -> Route.ObjectTagging(bucket, key, "GET")
                     params.keys.any { it in OBJECT_SUBRESOURCES } -> Route.NotImplemented("GET object sub-resource")
                     else -> Route.GetObject(bucket, key, params["partNumber"]?.toIntOrNull())
                 }
@@ -391,6 +461,7 @@ class S3Router(
             "DELETE" -> {
                 when {
                     uploadId != null -> Route.AbortMultipartUpload(bucket, key, uploadId)
+                    "tagging" in params -> Route.ObjectTagging(bucket, key, "DELETE")
                     params.keys.any { it in OBJECT_SUBRESOURCES } -> Route.NotImplemented("DELETE object sub-resource")
                     else -> Route.DeleteObject(bucket, key)
                 }
@@ -426,6 +497,15 @@ class S3Router(
             }
 
     private companion object {
+        /**
+         * Настройки, которые bochka **хранит**, а не отвергает.
+         *
+         * Список нарочно отдельный от [BUCKET_SUBRESOURCES] и проверяется раньше: то, что мы
+         * умеем, должно перехватываться до общего отказа, и добавление новой настройки — это
+         * строчка здесь, а не правка трёх ветвей маршрутизации.
+         */
+        val CONFIGURABLE_SUBRESOURCES = setOf("tagging", "cors")
+
         /** Sub-resources of a bucket that exist in S3 and not here. Listed so they can be refused by name. */
         val BUCKET_SUBRESOURCES =
             setOf(

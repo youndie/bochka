@@ -31,6 +31,37 @@ sealed interface IndexRecord {
         override val bucket: String,
     ) : IndexRecord
 
+    /**
+     * Настройка бакета под именем: теги, CORS, а завтра что-нибудь ещё.
+     *
+     * Документ хранится **непрозрачно**, байтами, и это граница слоёв: ядро знает, что у бакета
+     * есть именованные настройки, и не знает, что `tagging` — это `TagSet`. Разбирает их слой S3,
+     * которому и положено знать словарь S3. Побочно это значит, что следующая настройка не потребует
+     * ни нового вида записи, ни правки ядра.
+     *
+     * `document == null` — настройка снята. Отдельная запись, а не отсутствие: журнал переигрывается
+     * по порядку, и «снято» обязано быть событием, иначе снятие исчезнет при восстановлении.
+     */
+    data class BucketSubresource(
+        override val bucket: String,
+        val name: String,
+        val document: ByteArray?,
+    ) : IndexRecord {
+        // ByteArray в data class сравнивается по ссылке, а эта запись сравнивается в тестах
+        // round-trip. Написано руками ровно поэтому.
+        override fun equals(other: Any?): Boolean =
+            this === other ||
+                (
+                    other is BucketSubresource &&
+                        bucket == other.bucket &&
+                        name == other.name &&
+                        (document?.contentEquals(other.document) ?: (other.document == null))
+                )
+
+        override fun hashCode(): Int =
+            (bucket.hashCode() * 31 + name.hashCode()) * 31 + (document?.contentHashCode() ?: 0)
+    }
+
     data class Put(
         override val bucket: String,
         val key: ObjectKey,
@@ -141,6 +172,18 @@ sealed interface IndexRecord {
         /** A bucket that also remembers when it was created. Kind 1 decodes to "not recorded". */
         private const val KIND_BUCKET_CREATED_AT: Byte = 12
 
+        /** Именованная настройка бакета; документ непрозрачен для ядра. */
+        private const val KIND_BUCKET_SUBRESOURCE: Byte = 13
+
+        /**
+         * Те же две записи, но метаданные в них несут теги объекта.
+         *
+         * Четвёртый раз то же правило: новое поле — новый байт вида, а прежние декодируются ровно
+         * в то, чем были. Объект, записанный до тегов, тегов и не имел.
+         */
+        private const val KIND_PUT_WITH_TAGS: Byte = 14
+        private const val KIND_UPLOAD_STARTED_WITH_TAGS: Byte = 15
+
         /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
         private const val MAX_PARTS = 10_000L
 
@@ -160,6 +203,18 @@ sealed interface IndexRecord {
                     out.putInt64(record.createdAtMillis)
                 }
 
+                is BucketSubresource -> {
+                    out.write(KIND_BUCKET_SUBRESOURCE.toInt())
+                    out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
+                    out.putField(record.name.toByteArray(StandardCharsets.US_ASCII))
+                    if (record.document == null) {
+                        out.write(0)
+                    } else {
+                        out.write(1)
+                        out.putField(record.document)
+                    }
+                }
+
                 is BucketDeleted -> {
                     out.write(KIND_BUCKET_DELETED.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
@@ -172,7 +227,7 @@ sealed interface IndexRecord {
                 }
 
                 is UploadStarted -> {
-                    out.write(KIND_UPLOAD_STARTED_WITH_CHECKSUM.toInt())
+                    out.write(KIND_UPLOAD_STARTED_WITH_TAGS.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.key.toByteArray())
                     out.putField(record.uploadId.toByteArray(StandardCharsets.US_ASCII))
@@ -202,7 +257,7 @@ sealed interface IndexRecord {
                 }
 
                 is Put -> {
-                    out.write(KIND_PUT_WITH_PARTS.toInt())
+                    out.write(KIND_PUT_WITH_TAGS.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.key.toByteArray())
                     out.putField(record.fileId.toByteArray(StandardCharsets.US_ASCII))
@@ -234,6 +289,12 @@ sealed interface IndexRecord {
                     BucketCreated(buffer.text(), buffer.long)
                 }
 
+                KIND_BUCKET_SUBRESOURCE -> {
+                    val bucket = buffer.text()
+                    val name = buffer.text()
+                    BucketSubresource(bucket, name, if (buffer.get().toInt() == 1) buffer.bytes() else null)
+                }
+
                 KIND_BUCKET_DELETED -> {
                     BucketDeleted(buffer.text())
                 }
@@ -254,12 +315,15 @@ sealed interface IndexRecord {
                     )
                 }
 
-                KIND_UPLOAD_STARTED, KIND_UPLOAD_STARTED_WITH_CHECKSUM -> {
+                KIND_UPLOAD_STARTED, KIND_UPLOAD_STARTED_WITH_CHECKSUM, KIND_UPLOAD_STARTED_WITH_TAGS -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
                     val uploadId = buffer.text()
                     val startedAt = buffer.long
-                    val metadata = buffer.metadata()
+                    // Теги приехали с видом 15; виды 6 и 10 их не писали, и читать там нечего.
+                    val metadata = buffer.metadata(withTags = kind == KIND_UPLOAD_STARTED_WITH_TAGS)
+                    val carriesChecksum =
+                        kind == KIND_UPLOAD_STARTED_WITH_CHECKSUM || kind == KIND_UPLOAD_STARTED_WITH_TAGS
                     UploadStarted(
                         bucket = bucket,
                         key = key,
@@ -267,14 +331,12 @@ sealed interface IndexRecord {
                         startedAtMillis = startedAt,
                         metadata = metadata,
                         checksumAlgorithm =
-                            if (kind ==
-                                KIND_UPLOAD_STARTED_WITH_CHECKSUM
-                            ) {
+                            if (carriesChecksum) {
                                 buffer.optionalText()
                             } else {
                                 null
                             },
-                        checksumType = if (kind == KIND_UPLOAD_STARTED_WITH_CHECKSUM) buffer.optionalText() else null,
+                        checksumType = if (carriesChecksum) buffer.optionalText() else null,
                     )
                 }
 
@@ -311,15 +373,16 @@ sealed interface IndexRecord {
                     UploadEnded(buffer.text(), buffer.text())
                 }
 
-                KIND_PUT, KIND_PUT_WITH_PARTS -> {
+                KIND_PUT, KIND_PUT_WITH_PARTS, KIND_PUT_WITH_TAGS -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
                     val fileId = buffer.text()
                     val size = buffer.long
                     val lastModified = buffer.long
                     val eTag = buffer.text()
-                    val metadata = buffer.metadata()
-                    val parts = if (kind == KIND_PUT_WITH_PARTS) buffer.parts() else emptyList()
+                    val metadata = buffer.metadata(withTags = kind == KIND_PUT_WITH_TAGS)
+                    val parts =
+                        if (kind == KIND_PUT_WITH_PARTS || kind == KIND_PUT_WITH_TAGS) buffer.parts() else emptyList()
                     Put(
                         bucket = bucket,
                         key = key,
@@ -367,6 +430,10 @@ sealed interface IndexRecord {
          * byte above 0x7F on the way in, and the object would come back with a value it was never
          * given — `Hello WorldÃ©` for `Hello Worldé`, which is the shape of every mojibake anybody
          * has ever debugged.
+         *
+         * Теги пишутся всегда, потому что оба вида записи, которые этот файл ещё **пишет**, —
+         * новые (14 и 15); прежние виды только читаются, и там тегов нет — см. `withTags`
+         * у декодера.
          */
         private fun ByteArrayOutputStream.putMetadata(metadata: Metadata) {
             with(metadata) {
@@ -383,6 +450,11 @@ sealed interface IndexRecord {
                     putField(name.toByteArray(StandardCharsets.ISO_8859_1))
                     putField(value.toByteArray(StandardCharsets.ISO_8859_1))
                 }
+                putInt64(tags.size.toLong())
+                for ((name, value) in tags) {
+                    putField(name.toByteArray(StandardCharsets.UTF_8))
+                    putField(value.toByteArray(StandardCharsets.UTF_8))
+                }
             }
         }
 
@@ -391,7 +463,7 @@ sealed interface IndexRecord {
          * order of a decode is the order the calls are written, and a named-argument list is a
          * place where that order is easy to change by accident.
          */
-        private fun ByteBuffer.metadata(): Metadata {
+        private fun ByteBuffer.metadata(withTags: Boolean = true): Metadata {
             val contentType = optionalText()
             val cacheControl = optionalText()
             val disposition = optionalText()
@@ -404,6 +476,12 @@ sealed interface IndexRecord {
             require(userCount in 0..MAX_USER_METADATA) { "index record claims $userCount metadata entries" }
             val user = LinkedHashMap<String, String>()
             repeat(userCount.toInt()) { user[latin1()] = latin1() }
+            val tags = LinkedHashMap<String, String>()
+            if (withTags) {
+                val tagCount = long
+                require(tagCount in 0..MAX_USER_METADATA) { "index record claims $tagCount tags" }
+                repeat(tagCount.toInt()) { tags[text()] = text() }
+            }
             return Metadata(
                 contentType = contentType,
                 cacheControl = cacheControl,
@@ -413,6 +491,7 @@ sealed interface IndexRecord {
                 expires = expires,
                 user = user,
                 checksum = if (algorithm != null && checksum != null) Metadata.Checksum(algorithm, checksum) else null,
+                tags = tags,
             )
         }
 

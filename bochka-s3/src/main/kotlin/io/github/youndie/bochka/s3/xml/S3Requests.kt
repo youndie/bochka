@@ -1,6 +1,8 @@
 package io.github.youndie.bochka.s3.xml
 
 import io.github.youndie.bochka.core.ObjectKey
+import io.github.youndie.bochka.s3.CorsRules
+import io.github.youndie.bochka.s3.UriCodec
 import java.nio.charset.StandardCharsets
 
 /**
@@ -45,6 +47,86 @@ object S3Requests {
 
     /** Part numbers run 1..10 000 (`docs/spec/s3-service-2.json:1604`), so a list cannot be longer. */
     const val MAX_PARTS: Int = 10_000
+
+    /**
+     * `<Tagging><TagSet><Tag><Key/><Value/>` — `s3-service-2.json:13301`, `:13294`, `:13272`.
+     *
+     * Возвращается картой, а не списком: ключи тега уникальны, и карта не даёт положить два
+     * значения под одним ключом, о чём иначе пришлось бы помнить каждому, кто это читает.
+     */
+    fun parseTagging(body: ByteArray): Map<String, String> {
+        val tags = LinkedHashMap<String, String>()
+        val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
+        reader.root("Tagging") { name ->
+            if (name != "TagSet") return@root
+            reader.children { entry ->
+                if (entry != "Tag") return@children
+                var key: String? = null
+                var value: String? = null
+                reader.children { field ->
+                    when (field) {
+                        "Key" -> key = reader.textOf(field)
+                        "Value" -> value = reader.textOf(field)
+                    }
+                }
+                val k = key ?: throw XmlReader.MalformedXmlException("<Tag> без <Key>")
+                tags[k] = value ?: throw XmlReader.MalformedXmlException("<Tag> без <Value>")
+            }
+        }
+        if (tags.size > MAX_TAGS) throw XmlReader.MalformedXmlException("больше $MAX_TAGS тегов")
+        return tags
+    }
+
+    /**
+     * `x-amz-tagging: a=1&b=2` — те же теги, но формой запроса, а не документа
+     * (`s3-service-2.json:3158`). Значения процентно закодированы, как в query.
+     */
+    fun parseTaggingHeader(value: String): Map<String, String> {
+        val tags = LinkedHashMap<String, String>()
+        for (pair in value.split('&')) {
+            if (pair.isEmpty()) continue
+            val eq = pair.indexOf('=')
+            if (eq < 0) throw XmlReader.MalformedXmlException("тег без значения: '$pair'")
+            tags[decode(pair.substring(0, eq))] = decode(pair.substring(eq + 1))
+        }
+        if (tags.size > MAX_TAGS) throw XmlReader.MalformedXmlException("больше $MAX_TAGS тегов")
+        return tags
+    }
+
+    private fun decode(value: String): String = String(UriCodec.decode(value, plusIsSpace = true))
+
+    /** `<CORSConfiguration><CORSRule>…` — `s3-service-2.json:2241`, `:2253`. */
+    fun parseCors(body: ByteArray): CorsRules {
+        val rules = ArrayList<CorsRules.Rule>()
+        val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
+        reader.root("CORSConfiguration") { name ->
+            if (name != "CORSRule") return@root
+            var id: String? = null
+            val methods = ArrayList<String>()
+            val origins = ArrayList<String>()
+            val allowedHeaders = ArrayList<String>()
+            val exposeHeaders = ArrayList<String>()
+            var maxAge: Int? = null
+            reader.children { field ->
+                when (field) {
+                    "ID" -> id = reader.textOf(field)
+                    "AllowedMethod" -> methods += reader.textOf(field).trim()
+                    "AllowedOrigin" -> origins += reader.textOf(field).trim()
+                    "AllowedHeader" -> allowedHeaders += reader.textOf(field).trim()
+                    "ExposeHeader" -> exposeHeaders += reader.textOf(field).trim()
+                    "MaxAgeSeconds" -> maxAge = reader.textOf(field).trim().toIntOrNull()
+                }
+            }
+            if (methods.isEmpty() || origins.isEmpty()) {
+                throw XmlReader.MalformedXmlException("<CORSRule> без <AllowedMethod> или <AllowedOrigin>")
+            }
+            rules += CorsRules.Rule(id, methods, origins, allowedHeaders, exposeHeaders, maxAge)
+        }
+        return CorsRules(rules)
+    }
+
+    /** Десять тегов на объект и на бакет — предел из документации AWS; в модели величины нет. */
+    const val MAX_TAGS: Int = 10
 
     fun parseDelete(body: ByteArray): DeleteRequest {
         val targets = ArrayList<Target>()

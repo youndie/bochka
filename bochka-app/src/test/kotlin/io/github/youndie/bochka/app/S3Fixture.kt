@@ -143,6 +143,28 @@ class S3Fixture(
         return Answer(response.statusCode(), response.headers(), response.body())
     }
 
+    /**
+     * Неподписанный запрос — то, чем является preflight.
+     *
+     * Браузер шлёт `OPTIONS` до всякой авторизации и подписать его нечем: у клиентского кода
+     * в этот момент нет ни ключа, ни повода его показывать. Поэтому это отдельный метод, а не
+     * флаг у [send]: подписанный preflight не бывает, и возможность его отправить только сбивала
+     * бы с толку.
+     */
+    fun options(
+        path: String,
+        headers: List<Pair<String, String>> = emptyList(),
+    ): Answer {
+        val builder =
+            HttpRequest
+                .newBuilder(URI.create("http://127.0.0.1:$port$path"))
+                .method("OPTIONS", HttpRequest.BodyPublishers.noBody())
+                .header("Host", host)
+        for ((name, value) in headers) builder.header(name, value)
+        val response = client.send(builder.build(), BodyHandlers.ofByteArray())
+        return Answer(response.statusCode(), response.headers(), response.body())
+    }
+
     fun createBucket(bucket: String): Answer = send("PUT", "/$bucket")
 
     fun put(

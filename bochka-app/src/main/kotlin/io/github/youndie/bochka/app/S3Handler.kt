@@ -65,9 +65,14 @@ class S3Handler(
             return error(head, S3Error.NOT_IMPLEMENTED, detail = "not implemented: ${route.what}")
         }
 
-        when (val verification = verifier.verify(head.toSignedRequest())) {
-            is SignatureVerifier.Result.Failure -> return error(head, verification.error, verification)
-            is SignatureVerifier.Result.Ok -> Unit
+        // Preflight подписи не имеет и иметь не может: браузер шлёт `OPTIONS` до всякой
+        // авторизации. Исключение сделано **по маршруту**, а не по методу вообще, чтобы
+        // «неподписанный» не расползлось на что-нибудь ещё.
+        if (route !is S3Router.Route.Preflight) {
+            when (val verification = verifier.verify(head.toSignedRequest())) {
+                is SignatureVerifier.Result.Failure -> return error(head, verification.error, verification)
+                is SignatureVerifier.Result.Ok -> Unit
+            }
         }
 
         // A body whose length is stated nowhere is refused before it is read, like everything else
@@ -163,7 +168,10 @@ class S3Handler(
         body: HttpHandler.RequestBody,
     ): HttpResponse {
         val route = route(head)
-        val verification = verifier.verify(head.toSignedRequest()) as SignatureVerifier.Result.Ok
+        // Preflight сюда доходит неподписанным (см. `screen`), так что верификация ленивая:
+        // приведение типа на неподписанном запросе упало бы на маршруте, которому подпись
+        // не нужна.
+        val verification by lazy { verifier.verify(head.toSignedRequest()) as SignatureVerifier.Result.Ok }
 
         return when (route) {
             is S3Router.Route.ListBuckets -> {
@@ -212,6 +220,18 @@ class S3Handler(
 
             is S3Router.Route.GetObjectAttributes -> {
                 objectAttributes(head, route)
+            }
+
+            is S3Router.Route.BucketSubresource -> {
+                bucketSubresource(head, route, body)
+            }
+
+            is S3Router.Route.ObjectTagging -> {
+                objectTagging(head, route, body)
+            }
+
+            is S3Router.Route.Preflight -> {
+                preflight(head, route)
             }
 
             is S3Router.Route.HeadObject -> {
@@ -1072,6 +1092,15 @@ class S3Handler(
                     add("Last-Modified" to httpDate(stored.lastModified))
                     add("Accept-Ranges" to "bytes")
                     addAll(ObjectHeaders.write(stored.metadata))
+                    // Сколько тегов, а не какие: список отдаёт `?tagging`, а здесь клиенту нужно
+                    // знать, стоит ли за ним идти. S3 шлёт заголовок только когда теги есть.
+                    if (stored.metadata.tags.isNotEmpty()) {
+                        add(
+                            "x-amz-tagging-count" to
+                                stored.metadata.tags.size
+                                    .toString(),
+                        )
+                    }
                     // S3 answers with a content type whether or not one was given:
                     // `binary/octet-stream` is the model's own default, and a client that reads
                     // the header unconditionally gets an error rather than a default of its own.
@@ -1362,6 +1391,133 @@ class S3Handler(
         ).copy(headers = listOf("Content-Type" to "application/xml", "Last-Modified" to httpDate(stored.lastModified)))
     }
 
+    /**
+     * `?tagging` и `?cors` у бакета: положить, прочитать, снять.
+     *
+     * Документ разбирается **до** записи и хранится перерисованным, а не как пришёл: то, что
+     * нельзя разобрать, не должно попасть в журнал и вернуться клиенту как настройка, а
+     * перерисовка снимает вопрос, что делать с чужим форматированием.
+     */
+    private suspend fun bucketSubresource(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.BucketSubresource,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        val absent = if (route.name == "tagging") S3Error.NO_SUCH_TAG_SET else S3Error.NO_SUCH_CORS_CONFIGURATION
+        return when (route.method) {
+            "GET" -> {
+                val stored =
+                    store.bucketSubresource(route.bucket, route.name)
+                        ?: return error(head, absent, bucket = route.bucket)
+                xml(stored)
+            }
+
+            "DELETE" -> {
+                store.putBucketSubresource(route.bucket, route.name, null)
+                HttpResponse(204, "No Content")
+            }
+
+            else -> {
+                val collected = ByteArrayOutputStream()
+                body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+                val document =
+                    try {
+                        if (route.name == "tagging") {
+                            S3Documents.taggingResult(S3Requests.parseTagging(collected.toByteArray()))
+                        } else {
+                            S3Documents.corsResult(S3Requests.parseCors(collected.toByteArray()))
+                        }
+                    } catch (e: XmlReader.MalformedXmlException) {
+                        return error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
+                    }
+                store.putBucketSubresource(route.bucket, route.name, document)
+                HttpResponse(200, "OK")
+            }
+        }
+    }
+
+    /**
+     * `?tagging` у объекта — и ответ на отсутствие здесь **другой**, чем у бакета.
+     *
+     * У бакета без набора — `404 NoSuchTagSet`; у объекта без тегов — `200` с пустым `TagSet`,
+     * потому что сам объект есть, и `404` сказал бы неправду про него. Одно имя операции, два
+     * разных правильных ответа.
+     */
+    private suspend fun objectTagging(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.ObjectTagging,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        val stored =
+            store.get(route.bucket, route.key)
+                ?: return error(head, S3Error.NO_SUCH_KEY, key = route.key, bucket = route.bucket)
+
+        return when (route.method) {
+            "GET" -> {
+                xml(S3Documents.taggingResult(stored.metadata.tags))
+            }
+
+            "DELETE" -> {
+                store.setTags(route.bucket, route.key, emptyMap())
+                HttpResponse(204, "No Content")
+            }
+
+            else -> {
+                val collected = ByteArrayOutputStream()
+                body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+                val tags =
+                    try {
+                        S3Requests.parseTagging(collected.toByteArray())
+                    } catch (e: XmlReader.MalformedXmlException) {
+                        return error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
+                    }
+                store.setTags(route.bucket, route.key, tags)
+                HttpResponse(200, "OK")
+            }
+        }
+    }
+
+    /**
+     * `OPTIONS` — preflight, единственный неподписанный ответ этого сервера.
+     *
+     * Отказ здесь — `403`, а не `200` без заголовков доступа. Браузер прочтёт оба одинаково,
+     * а человек, отлаживающий CORS, — по-разному: «правило не подошло» против «правило подошло
+     * и ничего не разрешило».
+     */
+    private fun preflight(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.Preflight,
+    ): HttpResponse {
+        val origin = head.header("origin") ?: return error(head, S3Error.ACCESS_DENIED, bucket = route.bucket)
+        val method = head.header("access-control-request-method") ?: "GET"
+        val document =
+            store.bucketSubresource(route.bucket, "cors")
+                ?: return error(head, S3Error.ACCESS_DENIED, bucket = route.bucket)
+        val rule =
+            S3Requests
+                .parseCors(document)
+                .matching(origin, method)
+                ?: return error(head, S3Error.ACCESS_DENIED, bucket = route.bucket)
+
+        return HttpResponse(
+            200,
+            "OK",
+            headers =
+                buildList {
+                    add("Access-Control-Allow-Origin" to origin)
+                    add("Access-Control-Allow-Methods" to rule.allowedMethods.joinToString(", "))
+                    if (rule.allowedHeaders.isNotEmpty()) {
+                        add("Access-Control-Allow-Headers" to rule.allowedHeaders.joinToString(", "))
+                    }
+                    if (rule.exposeHeaders.isNotEmpty()) {
+                        add("Access-Control-Expose-Headers" to rule.exposeHeaders.joinToString(", "))
+                    }
+                    rule.maxAgeSeconds?.let { add("Access-Control-Max-Age" to it.toString()) }
+                },
+            contentLength = 0,
+        )
+    }
+
     /** `x-amz-checksum-<algorithm>`, echoed back exactly as the client stated it on upload. */
     private fun checksumHeaders(checksum: Metadata.Checksum?): List<Pair<String, String>> =
         checksum?.let {
@@ -1522,6 +1678,9 @@ class S3Handler(
             is S3Router.Route.DeleteObject -> route.bucket
             is S3Router.Route.CopyObject -> route.bucket
             is S3Router.Route.GetObjectAttributes -> route.bucket
+            is S3Router.Route.BucketSubresource -> route.bucket
+            is S3Router.Route.ObjectTagging -> route.bucket
+            is S3Router.Route.Preflight -> route.bucket
             is S3Router.Route.CreateMultipartUpload -> route.bucket
             is S3Router.Route.UploadPart -> route.bucket
             is S3Router.Route.UploadPartCopy -> route.bucket
@@ -1551,6 +1710,7 @@ class S3Handler(
             is S3Router.Route.DeleteObject -> route.key
             is S3Router.Route.CopyObject -> route.key
             is S3Router.Route.GetObjectAttributes -> route.key
+            is S3Router.Route.ObjectTagging -> route.key
             is S3Router.Route.CreateMultipartUpload -> route.key
             is S3Router.Route.UploadPart -> route.key
             is S3Router.Route.UploadPartCopy -> route.key
