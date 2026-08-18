@@ -261,6 +261,19 @@ enum class S3Error(
         400,
     ),
 
+    /**
+     * Reading a delete marker by its version id.
+     *
+     * `405` and not `404`, because the version is there — it just holds no bytes. A `404` would
+     * tell the client the version does not exist, and it would stop trying to delete the one thing
+     * standing between it and its object.
+     */
+    METHOD_NOT_ALLOWED(
+        "MethodNotAllowed",
+        "The specified method is not allowed against this resource.",
+        405,
+    ),
+
     MALFORMED_XML(
         "MalformedXML",
         "The XML you provided was not well-formed or did not validate against our published schema.",

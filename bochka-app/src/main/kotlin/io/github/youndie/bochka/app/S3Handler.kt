@@ -222,7 +222,7 @@ class S3Handler(
             }
 
             is S3Router.Route.GetObject -> {
-                getObject(head, route.bucket, route.key, partNumber = route.partNumber)
+                getObject(head, route.bucket, route.key, partNumber = route.partNumber, versionId = route.versionId)
             }
 
             is S3Router.Route.GetObjectAttributes -> {
@@ -242,11 +242,18 @@ class S3Handler(
             }
 
             is S3Router.Route.HeadObject -> {
-                getObject(head, route.bucket, route.key, withBody = false, partNumber = route.partNumber)
+                getObject(
+                    head,
+                    route.bucket,
+                    route.key,
+                    withBody = false,
+                    partNumber = route.partNumber,
+                    versionId = route.versionId,
+                )
             }
 
             is S3Router.Route.DeleteObject -> {
-                deleteObject(head, route.bucket, route.key)
+                deleteObject(head, route.bucket, route.key, route.versionId)
             }
 
             is S3Router.Route.DeleteObjects -> {
@@ -1109,7 +1116,11 @@ class S3Handler(
 
             val stored = store.commit(route.bucket, route.key, metadata, staged, writePrecondition(head))
             staged = null
-            HttpResponse(200, "OK", headers = checksumHeaders(metadata.checksum) + ("ETag" to stored.eTag))
+            HttpResponse(
+                200,
+                "OK",
+                headers = checksumHeaders(metadata.checksum) + ("ETag" to stored.eTag) + versionHeader(stored),
+            )
         } catch (e: AwsChunkedDecoder.MalformedBody) {
             error(head, e.error, detail = e.message)
         } catch (e: ObjectStore.CeilingExceeded) {
@@ -1253,6 +1264,53 @@ class S3Handler(
         }
 
     /**
+     * `x-amz-version-id`, when there is a version worth naming.
+     *
+     * Absent for [ObjectStore.NULL_VERSION], and that is S3's behaviour rather than a shortcut:
+     * every object in a bucket that never versioned is at version `null`, and a header repeating
+     * that on every response would tell a client its bucket is versioning when it is not.
+     */
+    private fun versionHeader(stored: ObjectStore.Stored): List<Pair<String, String>> =
+        if (stored.versionId == ObjectStore.NULL_VERSION) {
+            emptyList()
+        } else {
+            listOf("x-amz-version-id" to stored.versionId)
+        }
+
+    /**
+     * What a read lands on when the newest version is a tombstone.
+     *
+     * Two different answers, and the difference is which question was asked. Reading the key
+     * asked for the object: it is gone, so `404` — with `x-amz-delete-marker`, because a client
+     * that does not know a marker is there cannot know the object can be brought back. Reading the
+     * marker **by its id** asked for that version, and it is there; it just has no bytes, so the
+     * answer is `405` rather than `404`. Answering `404` to the second would say the version does
+     * not exist, and the client would stop trying to delete it.
+     */
+    private fun deleteMarkerRefusal(
+        head: HttpRequestParser.Head,
+        bucket: String,
+        key: ObjectKey,
+        marker: ObjectStore.Stored,
+        named: Boolean,
+    ): HttpResponse =
+        error(
+            head,
+            if (named) S3Error.METHOD_NOT_ALLOWED else S3Error.NO_SUCH_KEY,
+            key = key,
+            bucket = bucket,
+        ).let {
+            it.copy(
+                headers =
+                    it.headers +
+                        listOf(
+                            "x-amz-delete-marker" to "true",
+                            "x-amz-version-id" to marker.versionId,
+                        ),
+            )
+        }
+
+    /**
      * `GET` and `HEAD` of an object, which are the same answer with and without its body.
      *
      * The body never becomes a byte array: what goes back is the file and the stretch of it that
@@ -1266,8 +1324,14 @@ class S3Handler(
         key: ObjectKey,
         withBody: Boolean = true,
         partNumber: Int? = null,
+        versionId: String? = null,
     ): HttpResponse {
-        val stored = store.get(bucket, key) ?: return error(head, S3Error.NO_SUCH_KEY, key = key, bucket = bucket)
+        // A named version is fetched whatever it is; an unnamed one goes through `get`, which
+        // answers `null` for a tombstone. The two refusals below are different on purpose.
+        val found = if (versionId != null) store.get(bucket, key, versionId) else store.currentVersion(bucket, key)
+        if (found == null) return error(head, S3Error.NO_SUCH_KEY, key = key, bucket = bucket)
+        if (found.deleteMarker) return deleteMarkerRefusal(head, bucket, key, found, named = versionId != null)
+        val stored = found
         val path = store.pathOf(stored)
         val headers =
             overridden(
@@ -1275,6 +1339,7 @@ class S3Handler(
                 buildList {
                     add("ETag" to stored.eTag)
                     add("Last-Modified" to httpDate(stored.lastModified))
+                    addAll(versionHeader(stored))
                     add("Accept-Ranges" to "bytes")
                     addAll(ObjectHeaders.write(stored.metadata))
                     // Сколько тегов, а не какие: список отдаёт `?tagging`, а здесь клиенту нужно
@@ -1862,12 +1927,30 @@ class S3Handler(
         head: HttpRequestParser.Head,
         bucket: String,
         key: ObjectKey,
+        versionId: String? = null,
     ): HttpResponse =
         try {
             // Deleting what is not there is a success in S3, and the test for that lives in the
             // contract because intuition says otherwise. It carries over to the conditional form:
             // a precondition against a key that is not there cannot fail, because there is nothing
             // for it to protect (`s3-service-2.json`, `DeleteObjectRequest.members.IfMatchSize`).
+            // Naming a version is the one operation here that loses data, and it is not the
+            // conditional form of the other: a precondition describes the current object, and the
+            // version named may not be it. S3 has no conditional delete of a named version.
+            if (versionId != null) {
+                val removed =
+                    store.deleteVersion(bucket, key, versionId)
+                        ?: return HttpResponse(204, "No Content")
+                return HttpResponse(
+                    204,
+                    "No Content",
+                    headers =
+                        buildList {
+                            add("x-amz-version-id" to removed.versionId)
+                            if (removed.deleteMarker) add("x-amz-delete-marker" to "true")
+                        },
+                )
+            }
             val deletion = store.delete(bucket, key, writePrecondition(head))
             // A versioning bucket answers with the tombstone it just laid down, and says that is
             // what it is. A client that got a bare `204` here would have no way to undo the delete:

@@ -109,6 +109,13 @@ class S3Router(
              * compute an offset it would have to be told anyway.
              */
             val partNumber: Int? = null,
+            /**
+             * Which version to read, or `null` for the current one.
+             *
+             * A string and not an opaque token: `null` is a version id S3 hands out for objects
+             * in a bucket that never versioned, and clients pass it back verbatim.
+             */
+            val versionId: String? = null,
         ) : Route
 
         /**
@@ -166,11 +173,20 @@ class S3Router(
              * nothing rather than told wrongly, and read `KeyError: 'PartsCount'`.
              */
             val partNumber: Int? = null,
+            /**
+             * Which version to read, or `null` for the current one.
+             *
+             * A string and not an opaque token: `null` is a version id S3 hands out for objects
+             * in a bucket that never versioned, and clients pass it back verbatim.
+             */
+            val versionId: String? = null,
         ) : Route
 
         data class DeleteObject(
             val bucket: String,
             val key: ObjectKey,
+            /** Naming a version deletes **that** version for good, rather than laying a tombstone. */
+            val versionId: String? = null,
         ) : Route
 
         data class CreateMultipartUpload(
@@ -453,12 +469,12 @@ class S3Router(
                     "attributes" in params -> Route.GetObjectAttributes(bucket, key)
                     "tagging" in params -> Route.ObjectTagging(bucket, key, "GET")
                     params.keys.any { it in OBJECT_SUBRESOURCES } -> Route.NotImplemented("GET object sub-resource")
-                    else -> Route.GetObject(bucket, key, params["partNumber"]?.toIntOrNull())
+                    else -> Route.GetObject(bucket, key, params["partNumber"]?.toIntOrNull(), params["versionId"])
                 }
             }
 
             "HEAD" -> {
-                Route.HeadObject(bucket, key, params["partNumber"]?.toIntOrNull())
+                Route.HeadObject(bucket, key, params["partNumber"]?.toIntOrNull(), params["versionId"])
             }
 
             "POST" -> {
@@ -474,7 +490,7 @@ class S3Router(
                     uploadId != null -> Route.AbortMultipartUpload(bucket, key, uploadId)
                     "tagging" in params -> Route.ObjectTagging(bucket, key, "DELETE")
                     params.keys.any { it in OBJECT_SUBRESOURCES } -> Route.NotImplemented("DELETE object sub-resource")
-                    else -> Route.DeleteObject(bucket, key)
+                    else -> Route.DeleteObject(bucket, key, params["versionId"])
                 }
             }
 
