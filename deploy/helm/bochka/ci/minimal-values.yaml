@@ -1,0 +1,8 @@
+# The smallest install that is allowed to exist: keys and nothing else.
+#
+# Not a secret anybody uses — the harness installs this into a throwaway cluster. A real deployment
+# passes them with --set, --set-file or an existing Secret, and never from a file in a repository.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret

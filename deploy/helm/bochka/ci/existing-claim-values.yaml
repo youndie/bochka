@@ -1,0 +1,7 @@
+# A claim the chart neither creates nor deletes: no volumeClaimTemplate, a plain volume instead.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+persistence:
+  existingClaim: bochka-data

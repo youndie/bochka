@@ -1,0 +1,9 @@
+# bochka's own namespace: an unknown BOCHKA_* name is exit 2, a known one overrides the chart.
+# Must fail.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+extraEnv:
+  - name: BOCHKA_DATA_DIR
+    value: /somewhere/else

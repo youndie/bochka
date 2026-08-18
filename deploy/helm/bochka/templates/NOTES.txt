@@ -1,0 +1,152 @@
+bochka {{ include "bochka.imageTag" . }} is installed as {{ include "bochka.fullname" . }} in namespace {{ .Release.Namespace }}.
+
+  endpoint   http://{{ include "bochka.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+  region     {{ .Values.region }}
+
+The region is not cosmetic: the signature is compared on an exact match, and a client that signed a
+different one gets AuthorizationHeaderMalformed — which reads, from the client's side, as a problem
+with the keys rather than with a setting.
+
+Try it from your machine:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "bochka.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:{{ .Values.service.port }}/     # expect 403
+
+403 is the right answer, not a failure: a request with no credentials is well formed and simply
+belongs to nobody. It is also the only unauthenticated answer this server has, which is why the
+probes are `exec` and not `httpGet` — kubelet counts only 200-399 as success.
+
+ACCESS KEYS
+{{ if .Values.auth.existingSecret }}
+They come from the Secret you named, {{ .Values.auth.existingSecret }}, key {{ include "bochka.secretKey" . }}. This chart cannot see
+inside it, so two things are on you:
+
+  * if that key renders empty, the server starts with the built-in pairs bochkaadmin/bochkaalt,
+    which are published in this repository, and its log calls that a normal start. Run
+    `helm test {{ .Release.Name }}` — the test asserts those credentials are refused;
+  * rotating the Secret does not reach the running process. BOCHKA_KEYS is read once at startup:
+
+      kubectl -n {{ .Release.Namespace }} rollout restart statefulset/{{ include "bochka.fullname" . }}
+{{- else }}
+This chart rendered them into the Secret {{ include "bochka.fullname" . }}:
+
+  kubectl -n {{ .Release.Namespace }} get secret {{ include "bochka.fullname" . }} -o jsonpath='{.data.{{ include "bochka.secretKey" . | replace "." "\\." }}}' | base64 -d
+
+Changing auth.keys and running `helm upgrade` rolls the pod on its own.
+{{- end }}
+
+Either way, the server prints its whole configuration at startup and `keys` is printed verbatim. The
+secret is therefore in `kubectl logs` and in every collector reading it, from the first line of
+every start. A Secret is where the value is kept; it is not where the value stays.
+{{- if not .Values.auth.existingSecret }}
+
+And a second copy, in the release record: values passed to this chart are stored with the release
+whether they came from a file or from `--set`, so `helm get values {{ .Release.Name }}` prints the key back and
+`helm get manifest` prints the Secret. Revisions are kept — ten by default — so rotating the key does
+not retire the old one. `auth.existingSecret` is the only form that keeps the value out of there.
+{{- end }}
+
+HOW MANY OBJECTS FIT
+{{ if gt (int .Values.maxObjects) 0 }}
+  {{ .Values.maxObjects }}
+
+Because maxObjects says so, and it is the number the process will print as `object ceiling`. It is a
+ceiling *below* the one the heap derives, which is what this knob is for — the derived one on the
+shipped profile is 399215, and setting maxObjects above it buys index entries the heap cannot hold.
+{{- else if .Values.image.tag }}
+This release runs the tag you pinned, {{ .Values.image.tag }}, so the number this chart could quote —
+399215, for the appVersion it installs by default — is not necessarily this image's: a different
+build has a different runtime profile, and the ceiling is derived from the heap. The process prints
+its own on the first line of its log:
+
+  kubectl -n {{ .Release.Namespace }} logs sts/{{ include "bochka.fullname" . }} | head -1
+{{- else }}
+  399215
+
+That is what this appVersion prints on its first line as `object ceiling`, on the shipped heap. It
+is not a value you can raise: the runtime profile is baked into the start script (-Xmx512M) and the
+ceiling is derived from the heap, so raising resources.limits.memory changes nothing about it, and
+raising maxObjects past it buys index entries the heap cannot hold. A larger ceiling means
+rebuilding the distribution with -Pbochka.jvmArgs.
+{{- end }}
+
+Reaching the ceiling is not a crash and not a restart. A PUT that would add a NEW key answers
+507 InsufficientStorage (ObjectStore.kt:574), and it answers that for good — the condition does not
+change by itself. Everything else keeps working: overwrites of existing keys, reads, deletes,
+listings. The pod stays Ready, all three probes stay green, and nothing appears in the log. A store
+in that state looks healthy from Kubernetes and is refusing every new object.
+
+The refusal at startup (ObjectStore.kt:289) is the other path, and a rarer one: it fires when the
+index is ALREADY larger than the ceiling, which means the ceiling moved down under it — maxObjects
+set to a smaller number, or a smaller heap. In ordinary life the index never grows past the ceiling,
+because the writes were refused first.
+
+STORAGE
+{{ if not .Values.persistence.enabled }}
+persistence.enabled is false, so /var/lib/bochka is an emptyDir. The objects live until the pod is
+recreated — an upgrade, a node drain, an eviction — and disappear without a crash, an error or a
+line in the log. That failure looks like "the data vanished", not like a setting.
+{{- else if .Values.persistence.existingClaim }}
+The claim {{ .Values.persistence.existingClaim }} is yours: this chart neither created it nor will ever delete it.
+{{- else }}
+The volume is claimed by the StatefulSet, not by Helm:
+
+  kubectl -n {{ .Release.Namespace }} get pvc data-{{ include "bochka.fullname" . }}-0
+
+`helm uninstall` will not remove it, and neither will scaling — the retention policy says Retain
+both ways and Helm has no record of a claim its controller made. Deleting the data is a separate,
+deliberate command:
+
+  kubectl -n {{ .Release.Namespace }} delete pvc data-{{ include "bochka.fullname" . }}-0
+
+Growing it later is an edit to that PVC on a StorageClass with allowVolumeExpansion.
+
+Changing persistence.size on an installed release is not that, and it does not quietly do nothing
+either: a volumeClaimTemplate is immutable, so the API server rejects the whole StatefulSet patch
+("updates to statefulset spec for fields other than 'replicas', 'ordinals', 'template',
+'updateStrategy', 'persistentVolumeClaimRetentionPolicy' and 'minReadySeconds' are forbidden"),
+`helm upgrade` ends failed, and everything Helm applies before the StatefulSet — the Secret among
+them — is already in the cluster while the pod still runs the old spec. An upgrade that rotated a key
+in the same commit therefore leaves clients signing against a key the process has not read. The same
+holds for persistence.storageClass and persistence.accessModes, which live in the same template.
+Putting the old value back is what makes upgrades work again.
+{{- end }}
+{{- if .Values.ingress.enabled }}
+
+INGRESS
+{{ range .Values.ingress.hosts }}
+  https://{{ .host }}
+{{- end }}
+
+The annotations this chart defaults to are the four that deploy/nginx/nginx.conf calls
+non-optional — body size, request buffering, response buffering, timeouts. What is *not* verified
+through an ingress controller is `Expect: 100-continue` pass-through, so nothing here promises it:
+bochka answers 100 Continue itself, and a proxy that swallows the header costs an upload its early
+refusal rather than breaking it.
+{{- end }}
+
+{{ if eq .Values.probes.type "none" -}}
+NO PROBES
+
+probes.type is none, so the Service keeps an endpoint pointed at this pod whatever the pod is
+doing, and nothing restarts it when it stops answering.
+{{- else if eq .Values.probes.type "tcp" -}}
+WHAT THE PROBE DOES NOT PROVE
+
+probes.type is tcp, and a TCP connect succeeds against a JVM stuck in a full garbage collection
+that is answering nothing. It proves the port is open and that is all — this repository rejected
+exactly that check for its own smoke test. `exec` at least proves an answer came back. And what
+`exec` cannot see, this one cannot see either: a wedged disk, a stuck writer lock, a full volume,
+and a store at its object ceiling refusing every new key with 507 while it answers everything else.
+{{- else -}}
+WHAT THE PROBE DOES NOT PROVE
+
+It proves the server accepted a connection, parsed a request, ran signature verification and
+answered. It does not prove the storage path is alive: a wedged disk, a stuck writer lock and a
+full volume all answer the same 403. Neither does it see the object ceiling: a store refusing every
+new key with 507 answers this probe exactly as a healthy one does. There is no health endpoint in
+this server to ask a better question of.
+{{- end }}
+
+Finally, `helm test {{ .Release.Name }}` runs a round trip with somebody else's client (aws-cli) and asserts
+that the built-in credentials are refused. It needs to pull {{ .Values.tests.image }}.

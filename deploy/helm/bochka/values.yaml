@@ -1,0 +1,345 @@
+# bochka — values.
+#
+# Every comment below says why the default is what it is, because a default nobody can justify is
+# usually a field that should not exist. Three settings the server has are deliberately *not*
+# fields here, and the reasons are with the templates that render them:
+#
+#   BOCHKA_PORT          always 9000. A wrong value is the one configuration mistake this server
+#                        accepts in silence: `int()` returns null and the port falls back to 9000
+#                        while the startup dump prints what you asked for (Main.kt:32).
+#   BOCHKA_BIND_ADDRESS  always 0.0.0.0. The code's default is 127.0.0.1, which in a pod is a
+#                        server no Service and no probe can reach while the process looks healthy.
+#   BOCHKA_DATA_DIR      always /var/lib/bochka. Empty means `createTempDirectory` (Main.kt:34):
+#                        a store that works perfectly well inside the container, with the volume
+#                        mounted and empty beside it.
+#
+# And one the server has that this chart does not offer at all: BOCHKA_ACCEL_REDIRECT. It only
+# means anything when the terminator in front can *read the data directory* — same volume, same
+# node — and this chart puts no such process there. Turned on without one, whole-object reads
+# answer 200 with an empty body and an X-Accel-Redirect header, which reads as data loss. See
+# deploy/README.md for the scheme it belongs to.
+
+image:
+  repository: ghcr.io/youndie/bochka
+  # Empty on purpose: the tag comes from .Chart.AppVersion, which is `v0.1.1` — verbatim, with the
+  # letter, because that is what the release pushes to GHCR. Override to pin something else.
+  #
+  # Overriding it moves more than the image: the `app.kubernetes.io/version` label and the first line
+  # of NOTES follow this value rather than the appVersion, and the object ceiling NOTES would print
+  # (399215) belongs to the shipped profile, so for another build NOTES points at the first line of
+  # the process's own log instead of quoting a number that may not be that image's.
+  tag: ""
+  # IfNotPresent is safe here precisely because the default tag does not move. With `latest` this
+  # would have to be Always, and then every pod restart would depend on the registry being up.
+  pullPolicy: IfNotPresent
+
+# Empty because the package pulls anonymously — verified with a `docker pull` against an empty
+# ~/.docker/config.json. The field exists for mirrors and private forks.
+imagePullSecrets: []
+
+# Empty, so the names are `<release>-bochka` (or just `<release>` when it already contains the chart
+# name). Both exist because the resource name is what the operator types all day — `kubectl logs
+# sts/...`, the PVC name in NOTES — and not because anything in this chart reads them.
+#
+# One thing does depend on the name, though: kubelet's service links derive their prefix from it, and
+# a release called `bochka` gives exactly `BOCHKA_`. That is handled with `enableServiceLinks: false`
+# rather than by avoiding the name, so any name is safe here.
+nameOverride: ""
+fullnameOverride: ""
+
+# Access keys. One of the two forms below is required, and there is no third.
+#
+# Why required rather than defaulted: an empty or blank value is "unset" to this server
+# (Configuration.kt:130), and unset keys mean the two built-in pairs — `bochkaadmin:bochkasecret`
+# and `bochkaalt:bochkaaltsecret` (Main.kt:48). The log says `keys (unset)` and calls it nothing
+# worse. A chart with a path that ends there is a chart that installs a public store.
+#
+# Why no generated secret either: `randAlphaNum` without `lookup` reissues the key on every
+# `helm upgrade`, so an upgrade that changed nothing logs every client out; and `lookup` makes
+# `helm template`, `--dry-run` and every GitOps flow render something different from what installs.
+auth:
+  # The name of a Secret you already have. Nothing else in this block is used when it is set.
+  existingSecret: ""
+  # The key inside that Secret. Its value is passed to BOCHKA_KEYS verbatim, so it has to be
+  # `id:secret,id2:secret2` already — pairs separated by commas, id and secret by the first colon
+  # (Configuration.kt:73-74, Main.kt:44-46).
+  existingSecretKey: keys
+  # Or the pairs themselves, and then this chart renders the Secret. Never in a values file that
+  # lives in a repository: `--set` at install time, a values file that stays out of git, or
+  # `existingSecret` above pointing at whatever manages secrets here.
+  #
+  # `--set` keeps the value out of git and nowhere else. Whatever is passed here — file or --set —
+  # goes into the release record verbatim, and `helm get values` prints it back; `helm get manifest`
+  # prints the rendered Secret. That record is kept per revision (ten by default), so rotating a key
+  # does not remove the old one: `helm get values --revision N` still answers with it months later.
+  # The only form that keeps a secret out of the release record is `existingSecret` above.
+  #
+  # The template refuses a comma in either half, a colon in the id, an empty secret, leading or
+  # trailing whitespace (the server trims it, so the client would be signing with something else),
+  # and a repeated id — where the server silently keeps the last one and drops the rest.
+  keys: []
+  #   - id: youraccesskey
+  #     secret: yoursecretkey
+
+# The region name this deployment answers with, and it is not cosmetic: the signature is compared
+# on an exact match (SignatureVerifier.kt:196), and a client that signed another region gets
+# `AuthorizationHeaderMalformed` — which reads, on the client's side, as a problem with the keys.
+# us-east-1 because that is the server's own default and what every SDK assumes when told nothing.
+region: us-east-1
+
+# Domains under which the first label of the Host is a bucket name. Written without a leading dot —
+# the code adds it (S3Router.kt:477-486). Empty means path-style only, which is what every SDK
+# falls back to and the only thing that works without a wildcard certificate.
+virtualHostSuffixes: []
+
+# A line per request on stdout. Off, because it is one line per request on a store whose whole
+# point is throughput, and because `kubectl logs` is not where anybody wants their access log.
+# The template renders "1"/"0": the server compares BOCHKA_LOG to the string "1" and nothing else
+# (Main.kt:64), so a bare `true` would be logging quietly switched off.
+log: false
+
+# How often housekeeping runs; 0 disables it. 60 is the server's own default.
+#
+# Three jobs on this one interval, and only the first is about restarts (Main.kt:90-115):
+#
+#   compaction     recovery is proportional to the journal, not to the data — half a million objects
+#                  open in 3.5 s uncompacted against 0.76 s compacted (docs/measurements.md:306-330);
+#   sweepOrphans   object files nothing points at, which is what the write order leaves behind when a
+#                  PUT is interrupted (Р12) — the pod being replaced mid-upload is one;
+#   sweepUploads   multipart uploads a client began and never finished. A client that stops calling
+#                  says nothing, so there is no other moment to notice, and the parts stay on disk.
+#
+# So 0 is allowed and its price is not only a slower start: the volume then only grows, an abandoned
+# CI job or an SDK retry leaves its parts there for good, and nothing is logged about any of it. It
+# also takes away the reason the pod spec has no preStop hook (templates/statefulset.yaml), which
+# rests on the sweep collecting the orphan.
+housekeepingMinutes: 60
+
+# The ceiling on the number of objects. 0 leaves it derived from the heap, which is what the
+# shipped image prints: **399215**.
+#
+# This knob is only meaningful downwards. The heap is baked into the start script (-Xmx512M,
+# build.gradle.kts:26-48) and the ceiling is `Runtime.maxMemory() * 0.5 / 650`
+# (ObjectStore.kt:1543-1551), so raising this number past the derived one buys index entries the
+# heap cannot hold — the OOM kill arrives instead of the refusal the ceiling exists to give.
+# Raising the real ceiling means rebuilding the distribution with -Pbochka.jvmArgs, not a value.
+#
+# Reaching the ceiling is a 507 InsufficientStorage on every PUT of a new key (ObjectStore.kt:574)
+# and nothing else: overwrites, reads and deletes go on working, the pod stays Ready, and no probe
+# here can tell that state from a healthy one. Lowering this number under an index that is already
+# larger is the other path, and that one is a refusal at startup (ObjectStore.kt:289).
+maxObjects: 0
+
+# Extra environment variables for the container. Two kinds of name are refused by the template and
+# it is not tidiness. The start script concatenates `$DEFAULT_JVM_OPTS $JAVA_OPTS $BOCHKA_APP_OPTS`
+# and HotSpot takes the last -Xmx, so a JAVA_OPTS set by a platform silently replaces the heap the
+# published object ceiling is derived from (measured: 2395290 against 399215) — that is JAVA_OPTS,
+# JAVA_TOOL_OPTIONS, _JAVA_OPTIONS and JDK_JAVA_OPTIONS. And anything starting with BOCHKA_: an
+# unknown one stops the process with exit 2, a known one is this chart's own setting overwritten
+# from the side.
+extraEnv: []
+
+service:
+  # ClusterIP only, and `type` is not a field. Plain HTTP on port 9000 reachable from a network is
+  # a store whose signatures travel in the clear — the same reason deploy/README.md recommends
+  # `-p 127.0.0.1:9000:9000` and nothing wider. A LoadBalancer here would undo that in one line.
+  # Anybody who has a terminator can point their own Service or Gateway at this selector.
+  port: 9000
+  annotations: {}
+
+# TLS never terminates inside this process — a decision (research §1.7), not a gap — so an Ingress
+# without `tls` would publish signed requests in the clear. The template refuses that combination
+# rather than rendering it.
+ingress:
+  enabled: false
+  className: ""
+  # Defaults aimed at ingress-nginx, which is where these four requirements are already written
+  # down as non-optional (deploy/nginx/nginx.conf:28-86). Without proxy-body-size everything over
+  # a megabyte is a 413; with request buffering on, the proxy stores the whole upload on disk
+  # before bochka sees a byte, which doubles the write and makes `Expect: 100-continue` pointless.
+  # On another controller they are inert and you want its own equivalents.
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "0"
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  # Empty, because a Host is signed and this chart cannot guess one. A wildcard host here has to
+  # appear in `virtualHostSuffixes` as well, or virtual-hosted requests arrive as path-style and
+  # the signature disagrees with the routing; the template checks that rather than trusting it.
+  hosts: []
+  #   - host: s3.example.com
+  #     paths:
+  #       - path: /
+  #         pathType: Prefix
+  tls: []
+  #   - secretName: s3-example-com-tls
+  #     hosts:
+  #       - s3.example.com
+
+# The health check, and the shape of it is forced by the server having no health endpoint: the one
+# answer an unauthenticated request gets is `403 AccessDenied` on `GET /` (S3Handler.kt:71-76),
+# and kubelet counts 200-399 as success for httpGet — so an httpGet probe here is red forever and
+# the pod never becomes ready.
+#
+# What this probe proves: the server accepted a connection, parsed a request, ran it through
+# signature verification and answered. What it does NOT prove, and this is not hidden anywhere:
+# that the storage path is alive. A wedged disk, a stuck writer lock, a full volume and a store at
+# its object ceiling — refusing every new key with 507 while it still reads, overwrites and deletes
+# — all answer the same 403. It costs one bash fork per period inside a cgroup whose memory budget
+# is nearly exact (~700 MiB of 768), which is accounted for in `resources` below.
+#
+#   exec  the probe above; needs bash in the image, which the shipped one has (there is no curl,
+#         no wget and no nc — /dev/tcp is the whole toolkit).
+#   tcp   a plain TCP connect. Green against a JVM stuck in a full GC, which is the reason this
+#         repository rejected it for its own smoke test (ci/docker-smoke.sh:99-107). Here for a
+#         custom image without bash, and it does not distinguish answering from listening.
+#   none  no probes at all, and then the Service keeps an endpoint pointed at a pod that may not
+#         be answering.
+probes:
+  type: exec
+  # 3 x 20 = 60 s before the pod is called failed. The port opens only after the journal is
+  # replayed (Main.kt:52-65 -> HttpServer init), so a refused connection honestly means "still
+  # recovering": 919 ms on an empty directory, 3.5 s for half a million objects on an uncompacted
+  # journal. 60 s is headroom for a slow disk, and headroom costs nothing until it is spent.
+  startup:
+    periodSeconds: 3
+    failureThreshold: 20
+    timeoutSeconds: 3
+  # 30 s before the endpoint is withdrawn, and shorter than liveness on purpose: taking a pod out of
+  # the Service is reversible and cheap, restarting it is neither. With one replica the withdrawal
+  # buys nothing but an honest `kubectl get pods` — there is no second endpoint for traffic to go to,
+  # and that is the shape of this store rather than a gap in the chart.
+  #
+  # `initialDelaySeconds` and `successThreshold` are not fields on any of these three: the startup
+  # probe already covers the slow start, and a readiness `successThreshold` above 1 only delays
+  # recovery. The schema refuses them rather than accepting them and rendering nothing.
+  readiness:
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  # A minute of silence before a restart, and it stands behind the startupProbe: a liveness probe
+  # without one kills the pod in the middle of recovery, and the next pod starts recovering again.
+  liveness:
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+
+# 768Mi both ways, and this is the one number in the file with arithmetic behind it. The runtime
+# profile is baked into the start script — `-Xmx512M -XX:MaxMetaspaceSize=80M
+# -XX:ReservedCodeCacheSize=32M -XX:MaxDirectMemorySize=32M -Xss256k` (build.gradle.kts:26-48) —
+# and MaxRAMPercentage is not used, so the limit does not influence the heap at all. The sum is
+# about 700 MiB: below that the OOM kill arrives before the object ceiling does, which breaks the
+# exact property the ceiling exists to provide; above it nothing is gained. Because that is a
+# property and not a taste, the template refuses a `limits.memory` under 768Mi rather than rendering
+# it — the same refusal as JAVA_OPTS, seen from the other side. The sum is arithmetic from the
+# shipped profile and not a measured kill threshold; the measured one needs a cluster, a full index
+# and live traffic, and it is a task rather than a number here.
+#
+# Memory request == memory limit because a JVM with a fixed -Xmx does not shrink: a smaller request
+# would let the scheduler place this pod where the heap it will certainly reach does not fit, and
+# kubelet ranks eviction candidates by how far above their request they are — a pod whose usage
+# never exceeds its request sorts last. What it does *not* buy is the Guaranteed QoS class: that
+# needs cpu equal both ways too, and here it deliberately is not, so this pod is Burstable. Naming
+# it Guaranteed would be claiming an eviction order Kubernetes does not give it.
+#
+# `limits.cpu` also caps `availableProcessors`, and through it the number of Dispatchers.Default
+# threads — the "256k stacks" term of that same sum. With `-XX:+UseSerialGC` there is nothing for
+# extra cores to do anyway.
+resources:
+  requests:
+    cpu: 500m
+    memory: 768Mi
+  limits:
+    cpu: "2"
+    memory: 768Mi
+
+persistence:
+  # On, because off means an emptyDir, and an emptyDir means the objects live until the pod is
+  # recreated — a failure that looks like "the data vanished" rather than like a misconfiguration.
+  enabled: true
+  # Empty means the cluster's default StorageClass. Worth choosing deliberately: every PUT costs
+  # two fsync barriers (the object file, then the index record), so a network disk is not a
+  # cosmetic choice here.
+  storageClass: ""
+  # A list because that is the field's shape, but the schema allows exactly one entry and only two
+  # values: ReadWriteOnce and ReadWriteOncePod. Nothing guards the data directory against a second
+  # process — no FileLock, no lock file — so a volume two nodes can mount is a promise the server
+  # does not keep.
+  #
+  # The difference between the two is not strictness in the abstract, it is one named scenario. A
+  # node goes NotReady, taint eviction stamps the pod with a DeletionTimestamp, the kubelet cannot
+  # confirm the delete, and the pod stays Terminating — no replacement, ever, until a person acts.
+  # The command every search answers with is `kubectl delete pod --force --grace-period=0`, and if
+  # the node is merely partitioned rather than dead, the old process is still writing. Under
+  # ReadWriteOnce that window is real; ReadWriteOncePod closes it at the API, because the volume is
+  # bound to one pod and not one node. It needs a CSI driver that supports it (and Kubernetes 1.29
+  # for GA), which is the only reason it is not the default here.
+  accessModes:
+    - ReadWriteOnce
+  # 20Gi is the one number here that implicitly names an average object size: against a ceiling of
+  # 399215 objects it is about 52 KiB apiece. Below that the index runs out first — a store of small
+  # objects answers 507 with the volume half empty — and above it the volume does, long before the
+  # ceiling is anywhere near. The chart prints the object count at install and cannot print this one,
+  # so it is written here: pick it from what you store, not from the default.
+  #
+  # Applied at install and never again: this is a volumeClaimTemplate, and Kubernetes does not let a
+  # StatefulSet change one. Changing it on an installed release is not a no-op — the API server
+  # rejects the StatefulSet patch as forbidden, `helm upgrade` ends failed, and whatever Helm applied
+  # before the StatefulSet (the Secret, in particular) is already in the cluster while the pod runs
+  # the old spec. The same is true of storageClass and accessModes above. Growing later is an edit to
+  # the PVC itself, on a StorageClass with allowVolumeExpansion.
+  #
+  # That price is named rather than papered over, because the alternative — a PVC as a separate chart
+  # manifest — makes `helm upgrade --force` a path to delete-and-create, which is a path to losing
+  # the data.
+  size: 20Gi
+  # An existing claim instead of a template: the chart then creates no PVC at all and never deletes
+  # one, and the volume is entirely yours.
+  existingClaim: ""
+
+# amd64, because that is the only architecture published: `docker manifest inspect` returns a
+# single manifest rather than an index, and publish.yml has neither setup-qemu-action nor
+# setup-buildx-action. On an arm64 node (Graviton, Ampere, kind on Apple silicon) the pod gets
+# `exec format error`. This pin goes away the day the image becomes multi-arch.
+#
+# Removing it is `nodeSelector: null` or `--set nodeSelector=null`, and **not** `nodeSelector: {}`:
+# Helm merges maps, so an empty one leaves this default exactly where it was and the difference is
+# invisible until a pod does not schedule.
+nodeSelector:
+  kubernetes.io/arch: amd64
+
+# Empty, and unlike nodeSelector above there is no default worth having: a store is not a workload
+# anybody wants on a tainted node by default. It is here because the one node this pod can run on is
+# the one its volume is on, and a taint added to that node later is otherwise unanswerable without
+# editing the StatefulSet by hand.
+tolerations: []
+
+# Empty because the volume already decides where this lands: a ReadWriteOnce claim binds to one
+# node, and with one replica there is nothing to spread or to avoid.
+affinity: {}
+
+# Both empty, and both go on the pod rather than on the StatefulSet: they are for whatever else runs
+# in the cluster — a log collector's parser hint, a mesh's opt-out, a cost label. Nothing in this
+# chart reads them. One annotation is added regardless when the chart owns the Secret,
+# `checksum/secret`, and a key of that name here would be overwritten by it.
+podAnnotations: {}
+podLabels: {}
+
+tests:
+  # `helm test` asks another vendor's client, not this repository's — the project rule is that a
+  # green run against your own client is not a compatibility check. It is the only image this
+  # chart names besides the server, and `helm test` has to be able to pull it.
+  #
+  # Pinned, for the same reason the server's tag is pinned: a check whose outcome depends on somebody
+  # else's release schedule checks their schedule too. `amazon/aws-cli:latest` moves nearly every
+  # weekday, kubelet forces pullPolicy Always on the `latest` tag, and anonymous Docker Hub pulls are
+  # rate-limited per IP — so a red `helm test` on an untouched release would mean either "the server
+  # broke", "aws-cli changed what it puts on the wire" (its checksum defaults have broken
+  # S3-compatible stores before) or "somebody behind this NAT pulled too much today", with no way to
+  # tell which. Moving this tag is a deliberate edit to the chart.
+  #
+  # The compatibility harness in this repository (ci/live-clients.sh) keeps `latest` on purpose, and
+  # that is not an inconsistency: tracking the client people actually run is the whole job there,
+  # while this one is a health check on somebody's release and has to answer about the release.
+  image: amazon/aws-cli:2.36.25

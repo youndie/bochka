@@ -1,0 +1,2 @@
+# Nothing at all. Must fail: an unset BOCHKA_KEYS is the two built-in pairs, not an error.
+{}

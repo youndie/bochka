@@ -1,0 +1,9 @@
+# JAVA_OPTS wins over the baked heap (measured: object ceiling 2395290 against 399215), so the
+# published number would stop describing the running process. Must fail.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+extraEnv:
+  - name: JAVA_OPTS
+    value: -Xmx3G

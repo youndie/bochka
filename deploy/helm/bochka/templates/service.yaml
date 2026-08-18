@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "bochka.fullname" . }}
+  labels:
+    {{- include "bochka.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- /*
+  ClusterIP, and there is no `service.type` in values.
+
+  TLS never terminates inside this process — research §1.7, a decision rather than a gap — so the
+  port behind this Service speaks plain HTTP, and the recommended way to run the image is
+  `-p 127.0.0.1:9000:9000` for exactly that reason: a store reachable from a network with no TLS in
+  front is a store whose signatures travel in the clear. ClusterIP is the network equivalent of that
+  binding, and a LoadBalancer or NodePort field would undo it in one line. Anybody who does have a
+  terminator can point their own Service or Gateway at this selector.
+  */}}
+  type: ClusterIP
+  ports:
+    - name: s3
+      port: {{ .Values.service.port }}
+      {{- /* By name, so that the container port stays the one number the chart controls. */}}
+      targetPort: s3
+      protocol: TCP
+  selector:
+    {{- include "bochka.selectorLabels" . | nindent 4 }}

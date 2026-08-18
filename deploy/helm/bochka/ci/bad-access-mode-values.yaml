@@ -1,0 +1,9 @@
+# ReadWriteMany promises what the server does not keep: nothing stops a second writer. Must fail,
+# and in the schema rather than in a template.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+persistence:
+  accessModes:
+    - ReadWriteMany
