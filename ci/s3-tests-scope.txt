@@ -1,7 +1,9 @@
 # Why a ceph/s3-tests case fails, and what that means for bochka.
 #
 # One rule per line: <status> <tab> <substring of the test name> <tab> <reason>.
-# The first matching rule wins, so order is significance: put the narrow ones first.
+# The first matching rule wins, so order is significance: put the narrow ones first. A narrow rule
+# placed after a broad one that also matches is dead, and dies quietly — `object_raw_response_headers`
+# sat below `object_raw` for a milestone, classified as a defect and counted as out of scope.
 #
 # Status is one of:
 #   out-of-scope  — bochka does not have this and the backlog says it will not (README, "What
@@ -63,33 +65,14 @@ out-of-scope	_current_object	the fixture enables versioning first; versioning is
 out-of-scope	bucket_create_special_key_names	the fixture sets an ACL before it gets to the key names
 out-of-scope	list_multipart_upload_owner	the fixture sets an ACL; the owner needs an owner model anyway
 
-# --- in scope, in the backlog. The reasons here are what the suite says **now** ----------------
-deferred	if_match_size	x-amz-if-match-size: a precondition on the object's length, not on its ETag. A separate header and a separate feature from the conditional writes of M-80 (M-84)
-deferred	if_match_last_modified_time	x-amz-if-match-last-modified-time: a precondition on the object's timestamp. Separate from M-80 (M-84)
-
-# --- things bochka should do and does not. Each one names the task it becomes. -----------------
-deferred	if_match	conditional writes exist (M-80) and these cases still fail: a precondition on a key that is absent answers 404 rather than 412, and DeleteObjects reports no per-key <Error> (M-85)
-deferred	if_none_match	conditional writes exist (M-80); these cases still fail (M-85)
-deferred	ifmatch	conditional writes exist (M-80); these cases still fail (M-85)
-deferred	ifnonematch	conditional writes: If-Match / If-None-Match on PUT, DELETE and copy. Reads have them (M10)
-deferred	conditional_write	conditional writes, as above
-deferred	object_attributes	GetObjectAttributes exists (M-82); ObjectParts does not honour MaxParts and the multipart Checksum member is missing (M-86)
-deferred	multipart_copy	UploadPartCopy exists (M-81); a range past the source answers InvalidArgument where S3 answers InvalidRange (M-86)
-deferred	_get_part	partNumber on GET exists (M-82); the response is missing x-amz-mp-parts-count on some paths (M-86)
-deferred	list_buckets_paginated	ListBuckets with max-buckets and a continuation token
-deferred	buckets_list_ctime	buckets record no creation time; every one reports the epoch
-deferred	multipart_resend	resending a part while the upload is being completed
-deferred	multipart_reupload	re-uploading a part and what that does to the ETag
-deferred	use_cksum_helper	the composite checksum exists (M-83); the multipart responses do not carry ChecksumAlgorithm where the client reads it (M-87)
-deferred	multipart_checksum	the composite checksum exists (M-83); ChecksumAlgorithm is missing from the responses (M-87)
-deferred	checksum_object_attributes	GetObjectAttributes does not answer Checksum for a multipart object (M-86)
-deferred	object_checksum	a checksum sent as a trailer rather than a header on a whole-body upload
-deferred	special_key_names	keys holding characters this server has not been shown to handle end to end
-deferred	special_names	keys holding characters this server has not been shown to handle end to end
-deferred	bucket_list_prefix_unreadable	a prefix that is not valid UTF-8, end to end through the query string
-deferred	list_multipart_upload_owner	the owner of an upload in flight, which needs an owner model
-deferred	atomic_dual_conditional_write	conditional writes, as above
-deferred	multipart_upload	an upload the suite completes in a way this server refuses; unreproduced so far
+# --- in scope and not done. `deferred` is a task: it is either in BACKLOG.md or this file has
+# --- quietly become a second backlog that only its author knows about ---------------------------
+#
+# M13 emptied this section down to two, and both of them are here because the **decision** is not
+# made rather than because the work is not done. Each one names what would settle it, because a
+# `deferred` with no criterion is a `deferred` for ever.
+deferred	object_read_unreadable	the premise of the original task was wrong and that was the finding: the key arrives as %C2%AE%C2%8A-, which is well-formed UTF-8, so this is not a malformed key but a key holding C1 control characters, and S3 refuses it at the URI with "Couldn't parse the specified URI." Refusing those here contradicts a documented decision (Р2: keys are not restricted, and encoding-type=url exists because a listing must carry bytes XML cannot). Settled by a source that says which bytes are invalid in a request line, not by one case
+deferred	unicode_metadata	measured rather than guessed, and the earlier reason here was wrong: botocore does send non-ASCII metadata, as UTF-8, and reads the response back as latin-1. Passing this case means decoding the value as UTF-8 on the way in and re-encoding it as latin-1 on the way out, which makes metadata lossy above U+00FF — today it round-trips byte for byte. Settled by a source on what S3 stores, not by one case that only pins the asymmetry of one client
 
 out-of-scope	access_bucket	the matrix of ACL combinations; ACLs are out of scope
 out-of-scope	expected_bucket_owner	x-amz-expected-bucket-owner needs an owner model, which needs IAM
@@ -118,6 +101,14 @@ out-of-scope	ifnonmatch	conditional writes, as above
 out-of-scope	upload_part_copy	UploadPartCopy, as above
 
 # --- defects: bochka should pass these and does not. Each names what to do. --------------------
-deferred	unicode_metadata	the signature half of this was a defect and is fixed (the canonical request is hashed as bytes now); what is left is the value round trip, and current botocore refuses to send non-ASCII metadata at all, so what to match is not established
-deferred	object_read_unreadable	the premise was wrong: the key arrives as %C2%AE%C2%8A-, which is well-formed UTF-8, so this is not a malformed key but a key holding C1 control characters. Rejecting those contradicts a documented decision (Р2: keys are not restricted, and `encoding-type=url` exists because a listing must carry bytes XML cannot) and needs a better source than one case. The UTF-8 rule itself was a real gap and is now checked
-defect	object_raw_response_headers	a content type set at upload came back as the default; not reproduced through the fixture yet
+#
+# Empty, and it was not empty by accident before: the one line here named
+# `object_raw_response_headers`, which the broad `object_raw` rule above matches first — so it
+# could never fire, and the case it was about was counted out of scope for a milestone. A narrow
+# rule placed **after** a broad one is a rule that does nothing, and nothing says so. That is the
+# same trap as reading the test name instead of the message, one level up: here the classification
+# was right and unreachable.
+#
+# (The case itself is fixed. It was never about a content type set at upload — that was a
+# misreading of `assert 'binary/octet-stream' == 'foo/bar'`. The client asked for the type in the
+# query, `response-content-type`, and this server ignored the parameter. M-79.)

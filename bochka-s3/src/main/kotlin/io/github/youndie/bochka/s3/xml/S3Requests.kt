@@ -14,8 +14,24 @@ import java.nio.charset.StandardCharsets
 object S3Requests {
     /** `shapes.Delete.members`: `Objects` is flattened as `Object`, plus an optional `Quiet`. */
     data class DeleteRequest(
-        val keys: List<ObjectKey>,
+        val targets: List<Target>,
         val quiet: Boolean,
+    )
+
+    /**
+     * One entry of a batch delete: a key, and what the client believes about the object under it.
+     *
+     * `shapes.ObjectIdentifier.members` carries `ETag`, `LastModifiedTime` (`rfc822`) and `Size`
+     * beside the key, and they are the same three conditions the single `DELETE` takes as headers.
+     * Kept as text here: whether a condition is well formed is a question for the layer that knows
+     * what a timestamp is, and answering it in the parser would make an unreadable date a
+     * malformed **document**, which fails the whole batch instead of the one key it is about.
+     */
+    data class Target(
+        val key: ObjectKey,
+        val eTag: String? = null,
+        val lastModifiedTime: String? = null,
+        val size: String? = null,
     )
 
     /** `shapes.CompletedMultipartUpload.members`: `Parts` flattened as `Part`. */
@@ -31,7 +47,7 @@ object S3Requests {
     const val MAX_PARTS: Int = 10_000
 
     fun parseDelete(body: ByteArray): DeleteRequest {
-        val keys = ArrayList<ObjectKey>()
+        val targets = ArrayList<Target>()
         var quiet = false
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
 
@@ -39,16 +55,24 @@ object S3Requests {
             when (name) {
                 "Object" -> {
                     var key: ObjectKey? = null
+                    var eTag: String? = null
+                    var lastModifiedTime: String? = null
+                    var size: String? = null
                     reader.children { field ->
                         // VersionId is read and dropped: versioning is out of scope, and refusing a
                         // member the client is allowed to send would break it for no gain.
-                        if (field == "Key") key = ObjectKey(reader.textOf(field).toByteArray())
+                        when (field) {
+                            "Key" -> key = ObjectKey(reader.textOf(field).toByteArray())
+                            "ETag" -> eTag = reader.textOf(field).trim()
+                            "LastModifiedTime" -> lastModifiedTime = reader.textOf(field).trim()
+                            "Size" -> size = reader.textOf(field).trim()
+                        }
                     }
                     val parsed = key ?: throw XmlReader.MalformedXmlException("<Object> without <Key>")
-                    if (keys.size >= MAX_DELETE_KEYS) {
+                    if (targets.size >= MAX_DELETE_KEYS) {
                         throw XmlReader.MalformedXmlException("more than $MAX_DELETE_KEYS objects in one delete")
                     }
-                    keys.add(parsed)
+                    targets.add(Target(parsed, eTag, lastModifiedTime, size))
                 }
 
                 "Quiet" -> {
@@ -56,7 +80,7 @@ object S3Requests {
                 }
             }
         }
-        return DeleteRequest(keys, quiet)
+        return DeleteRequest(targets, quiet)
     }
 
     /**

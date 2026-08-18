@@ -41,6 +41,8 @@ object S3Documents {
         val lastModified: String,
         val eTag: String,
         val size: Long,
+        /** What the part hashed to, when it carried one: `crc32` to a base64 value. */
+        val checksum: Pair<String, String>? = null,
     )
 
     data class DeletedEntry(
@@ -161,7 +163,15 @@ object S3Documents {
     ): ByteArray =
         XmlWriter(1024 + contents.size * 128).document("ListBucketResult") {
             text("Name", bucket)
-            encodedText("Prefix", prefix, encoding)
+            // **Not** encoded, alone among the fields of this document, and it is the client that
+            // decides that rather than the specification. botocore's `decode_list_object` lists
+            // `Delimiter`, `Marker` and `NextMarker` as the fields it percent-decodes for `v1` —
+            // its own comment above that list names `Prefix` too, and the list does not contain
+            // it. So a server that encodes this one hands a v1 client `%0A` where it asked for a
+            // newline. `v2` decodes `Prefix` and so gets it encoded; the two versions of one
+            // operation disagree, and both have to be answered the way they are read
+            // (`test_bucket_list_prefix_unreadable` against `test_bucket_listv2_prefix_unreadable`).
+            raw("Prefix", prefix)
             encodedText("Marker", marker ?: ByteArray(0), encoding)
             if (nextMarker != null) encodedText("NextMarker", nextMarker, encoding)
             text("MaxKeys", maxKeys.toLong())
@@ -197,10 +207,14 @@ object S3Documents {
     fun getObjectAttributesResult(
         eTag: String?,
         checksum: Pair<String, String>?,
+        checksumType: String?,
         objectSize: Long?,
         storageClass: String?,
         parts: List<PartEntry>?,
         partsCount: Int,
+        partNumberMarker: Int,
+        maxParts: Int,
+        isTruncated: Boolean,
     ): ByteArray =
         XmlWriter(256 + (parts?.size ?: 0) * 96).document("GetObjectAttributesOutput") {
             // The quotes come off here and only here: `ETag` is the one member of this document
@@ -209,8 +223,7 @@ object S3Documents {
             if (checksum != null) {
                 element("Checksum") {
                     text("Checksum${checksum.first.uppercase()}", checksum.second)
-                    // COMPOSITE when the value is a checksum of checksums, which the `-N` says.
-                    text("ChecksumType", if ('-' in checksum.second) "COMPOSITE" else "FULL_OBJECT")
+                    if (checksumType != null) text("ChecksumType", checksumType)
                 }
             }
             // Present only for an object that **was** assembled from parts. S3 omits the member
@@ -221,15 +234,23 @@ object S3Documents {
                     // `shapes.GetObjectAttributesParts` is a paginated shape, and its members are
                     // not optional to a generated client: botocore reads `IsTruncated` and
                     // `MaxParts` off it whether or not there is a second page.
+                    // `PartsCount` is the object's, not the page's: a client asking for one part
+                    // out of ten thousand still has to be told there are ten thousand, or it has
+                    // no way to know it is paginating (`test_get_paginated_multipart_object_attributes`
+                    // reads both off this one document).
                     text("PartsCount", partsCount.toLong())
-                    text("PartNumberMarker", 0L)
+                    text("PartNumberMarker", partNumberMarker.toLong())
                     text("NextPartNumberMarker", parts.lastOrNull()?.partNumber?.toLong() ?: 0L)
-                    text("MaxParts", partsCount.toLong())
-                    text("IsTruncated", false)
+                    text("MaxParts", maxParts.toLong())
+                    text("IsTruncated", isTruncated)
                     for (part in parts) {
                         element("Part") {
                             text("PartNumber", part.partNumber.toLong())
                             text("Size", part.size)
+                            // Only when the part actually carried one: an SDK reads the absence of
+                            // this element as "this part was not checksummed", and the suite
+                            // asserts exactly that for an upload that stated no algorithm.
+                            part.checksum?.let { text("Checksum${it.first.uppercase()}", it.second) }
                         }
                     }
                 }
@@ -242,6 +263,15 @@ object S3Documents {
         buckets: List<BucketEntry>,
         ownerId: String,
         ownerDisplayName: String,
+        /**
+         * Where the next page starts, when there is one.
+         *
+         * The member is called `ContinuationToken` on the way out as well as on the way in
+         * (`shapes.ListBucketsOutput.members`), which reads as an echo and is not one: it is the
+         * **next** token, and its absence is how a client knows it has seen everything.
+         */
+        nextContinuationToken: String? = null,
+        prefix: String? = null,
     ): ByteArray =
         XmlWriter(256 + buckets.size * 96).document("ListAllMyBucketsResult") {
             element("Owner") {
@@ -259,6 +289,8 @@ object S3Documents {
                     }
                 }
             }
+            text("ContinuationToken", nextContinuationToken)
+            text("Prefix", prefix)
         }
 
     /**
@@ -299,17 +331,31 @@ object S3Documents {
             text("UploadId", uploadId)
         }
 
+    /**
+     * `<CompleteMultipartUploadResult>`, and the checksum belongs in the **body** of it.
+     *
+     * Unlike `CreateMultipartUpload`, whose algorithm and type ride as headers,
+     * `CompleteMultipartUploadOutput.ChecksumCRC32` and `.ChecksumType` carry no `location` in
+     * `s3-service-2.json`, which makes them elements. An SDK reads them from there and nowhere
+     * else, so the same value in a header would be invisible to it.
+     */
     fun completeMultipartUploadResult(
         location: String,
         bucket: String,
         key: ObjectKey,
         eTag: String,
+        checksum: Pair<String, String>? = null,
+        checksumType: String? = null,
     ): ByteArray =
-        XmlWriter(256).document("CompleteMultipartUploadResult") {
+        XmlWriter(320).document("CompleteMultipartUploadResult") {
             text("Location", location)
             text("Bucket", bucket)
             raw("Key", key.toByteArray())
             text("ETag", eTag)
+            if (checksum != null) {
+                text("Checksum${checksum.first.uppercase()}", checksum.second)
+                if (checksumType != null) text("ChecksumType", checksumType)
+            }
         }
 
     @Suppress("LongParameterList")
@@ -343,6 +389,7 @@ object S3Documents {
                     text("LastModified", part.lastModified)
                     text("ETag", part.eTag)
                     text("Size", part.size)
+                    part.checksum?.let { text("Checksum${it.first.uppercase()}", it.second) }
                 }
             }
         }

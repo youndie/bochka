@@ -230,4 +230,69 @@ class MultipartTest {
         assertEquals(400, uploadPart(uploadId, 10_001, "x".toByteArray()).status)
         assertEquals(200, uploadPart(uploadId, 10_000, "x".toByteArray()).status)
     }
+
+    @Test
+    fun `a completion repeated after it succeeded answers the same thing`() {
+        // M-88. The suite calls `CompleteMultipartUpload` twice with the same upload id
+        // (`test_multipart_upload`, `# check extra client.complete_multipart_upload`), and so does
+        // every SDK whose connection drops while the answer is on its way back. Answering
+        // `NoSuchUpload` to the second call tells that client the upload was lost, when it is the
+        // one thing that certainly was not: the object is on the disk.
+        val uploadId = begin()
+        val part = uploadPart(uploadId, 1, ByteArray(fiveMiB) { (it % 251).toByte() })
+        val parts = listOf(1 to part.header("ETag")!!)
+
+        val first = complete(uploadId, parts)
+        assertEquals(200, first.status, first.text)
+
+        val again = complete(uploadId, parts)
+        assertEquals(200, again.status, again.text)
+        assertEquals(eTagOf(first), eTagOf(again), "the retry has to answer the ETag the first one did")
+    }
+
+    @Test
+    fun `a completion of an upload that never existed is still NoSuchUpload`() {
+        // The other half of the one above, and the reason the record is keyed by upload id rather
+        // than by key: "this upload finished" and "there is an object here" are different claims,
+        // and only the first one makes a retry safe to answer.
+        s3.createBucket("photos")
+        val answer = complete("00000000-0000-0000-0000-000000000000", listOf(1 to "\"whatever\""))
+        assertEquals(404, answer.status, answer.text)
+        assertContains(answer.text, "NoSuchUpload")
+    }
+
+    private fun eTagOf(answer: S3Fixture.Answer) = Regex("<ETag>(.*?)</ETag>").find(answer.text)!!.groupValues[1]
+
+    @Test
+    fun `a part number repeated in the completion list is one part, and the last one wins`() {
+        // M-89. `test_multipart_resend_first_finishes_last` resends a part **while** the first
+        // send is still being read, so the client ends up listing part 1 twice: once with the
+        // ETag of the send that lost the race, once with the ETag of the send that won. Refusing
+        // that as `InvalidPartOrder` reads the list as two parts, which it is not.
+        //
+        // Last wins, for the same reason `UploadPart` itself is last-wins on a repeated number:
+        // the later entry is the client's later knowledge of the same part. Strictly decreasing
+        // numbers are still an error — that really is a list in the wrong order.
+        val uploadId = begin()
+        val stale = uploadPart(uploadId, 1, ByteArray(fiveMiB) { 'x'.code.toByte() })
+        val winner = uploadPart(uploadId, 1, ByteArray(fiveMiB) { 'y'.code.toByte() })
+
+        val done = complete(uploadId, listOf(1 to stale.header("ETag")!!, 1 to winner.header("ETag")!!))
+        assertEquals(200, done.status, done.text)
+
+        val got = s3.get("photos", "big.bin")
+        assertEquals(fiveMiB, got.body.size, "one part, not two")
+        assertContentEquals(ByteArray(fiveMiB) { 'y'.code.toByte() }, got.body)
+    }
+
+    @Test
+    fun `a completion listing its parts backwards is still refused`() {
+        val uploadId = begin()
+        val a = uploadPart(uploadId, 1, ByteArray(fiveMiB))
+        val b = uploadPart(uploadId, 2, "tail".toByteArray())
+
+        val done = complete(uploadId, listOf(2 to b.header("ETag")!!, 1 to a.header("ETag")!!))
+        assertEquals(400, done.status, done.text)
+        assertContains(done.text, "InvalidPartOrder")
+    }
 }

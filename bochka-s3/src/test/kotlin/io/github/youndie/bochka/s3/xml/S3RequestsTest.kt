@@ -26,7 +26,7 @@ class S3RequestsTest {
 
         val parsed = S3Requests.parseDelete(body)
 
-        assertEquals(listOf(ObjectKey.of("a.txt"), ObjectKey.of("dir/b.txt")), parsed.keys)
+        assertEquals(listOf(ObjectKey.of("a.txt"), ObjectKey.of("dir/b.txt")), parsed.targets.map { it.key })
         assertFalse(parsed.quiet)
     }
 
@@ -44,7 +44,7 @@ class S3RequestsTest {
 
         val parsed = S3Requests.parseDelete(body)
 
-        assertEquals(listOf(ObjectKey.of("a.txt")), parsed.keys)
+        assertEquals(listOf(ObjectKey.of("a.txt")), parsed.targets.map { it.key })
         assertTrue(parsed.quiet)
     }
 
@@ -52,7 +52,12 @@ class S3RequestsTest {
     fun `a key keeps the bytes it arrived with`() {
         val body = "<Delete><Object><Key>a&amp;b&lt;c&gt;d</Key></Object></Delete>".toByteArray()
 
-        val key = S3Requests.parseDelete(body).keys.single()
+        val key =
+            S3Requests
+                .parseDelete(body)
+                .targets
+                .single()
+                .key
 
         assertContentEquals("a&b<c>d".toByteArray(), key.toByteArray())
     }
@@ -171,6 +176,24 @@ class S3RequestsTest {
                 append("</Delete>")
             }.toByteArray()
 
-        assertEquals(S3Requests.MAX_DELETE_KEYS, S3Requests.parseDelete(body).keys.size)
+        assertEquals(S3Requests.MAX_DELETE_KEYS, S3Requests.parseDelete(body).targets.size)
+    }
+
+    @Test
+    fun `an entry carries the conditions the client puts on that key`() {
+        // `shapes.ObjectIdentifier.members`: ETag, LastModifiedTime and Size sit beside the key,
+        // and they are the batch form of the three headers a single DELETE takes. They arrive as
+        // text: a date this parser cannot read is one key's problem, not a malformed document,
+        // and throwing here would fail the other 999 deletions with it.
+        val body =
+            "<Delete><Object><Key>a.txt</Key><ETag>\"abc\"</ETag>" +
+                "<LastModifiedTime>Thu, 01 Jan 2015 00:00:00 GMT</LastModifiedTime>" +
+                "<Size>12</Size></Object></Delete>"
+
+        val target = S3Requests.parseDelete(body.toByteArray()).targets.single()
+
+        assertEquals("\"abc\"", target.eTag)
+        assertEquals("Thu, 01 Jan 2015 00:00:00 GMT", target.lastModifiedTime)
+        assertEquals("12", target.size)
     }
 }

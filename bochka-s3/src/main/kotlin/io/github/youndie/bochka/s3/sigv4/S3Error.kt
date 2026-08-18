@@ -150,7 +150,13 @@ enum class S3Error(
         400,
     ),
 
-    /** `:539` — `416`, and the only place in the server that answers with that status. */
+    /**
+     * `:539` — `416`, the only status of its kind here.
+     *
+     * Answered from two places, and the second one is not a read: a `x-amz-copy-source-range` past
+     * the end of its source is a well-formed range the object does not have, which is this and not
+     * `InvalidArgument`. The difference is where it sends the client to look.
+     */
     INVALID_RANGE(
         "InvalidRange",
         "The requested range is not satisfiable",

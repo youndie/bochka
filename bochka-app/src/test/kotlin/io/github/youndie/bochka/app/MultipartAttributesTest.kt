@@ -194,18 +194,23 @@ class MultipartAttributesTest {
         val composite = asked.header("x-amz-checksum-crc32c")
         assertTrue(composite != null && composite.endsWith("-2"), "expected a composite checksum, got $composite")
 
-        // And it is the checksum of the parts' raw checksums, not of the object's bytes.
+        // And it is the checksum of the parts' **raw** checksums, not of the object's bytes.
+        // Computed here rather than by calling the server's own function with the same arguments:
+        // an expectation built out of the code under test agrees with it however wrong both are.
+        val raw =
+            java.util.Base64
+                .getDecoder()
+                .decode(crc32cOf(first)) +
+                java.util.Base64
+                    .getDecoder()
+                    .decode(crc32cOf(second))
+        val running = java.util.zip.CRC32C()
+        running.update(raw, 0, raw.size)
         val expected =
-            io.github.youndie.bochka.s3.PayloadChecksums
-                .ofParts(
-                    listOf(
-                        io.github.youndie.bochka.core.Metadata
-                            .Checksum("crc32c", crc32cOf(first)),
-                        io.github.youndie.bochka.core.Metadata
-                            .Checksum("crc32c", crc32cOf(second)),
-                    ),
-                )
-        assertEquals(expected?.value, composite)
+            java.util.Base64
+                .getEncoder()
+                .encodeToString(ByteArray(4) { i -> (running.value ushr ((3 - i) * 8)).toByte() }) + "-2"
+        assertEquals(expected, composite)
 
         val attributes =
             s3.send(
@@ -266,16 +271,19 @@ class MultipartAttributesTest {
         s3.put("photos", "source.bin", "short")
         val uploadId = begin("assembled.bin")
 
-        for (range in listOf("bytes=abc-def", "bytes=100-200", "bytes=0-1,3-4")) {
-            val refused =
-                s3.send(
-                    "PUT",
-                    "/photos/assembled.bin",
-                    query = "partNumber=1&uploadId=$uploadId",
-                    headers = listOf("x-amz-copy-source" to "/photos/source.bin", "x-amz-copy-source-range" to range),
-                )
+        // Two refusals, not one, and the split is the point (M-86). A header that does not parse
+        // is a bad **argument**; one that parses and names bytes this object does not have is a
+        // bad **range**, and the two send the client to look in different places. The suite pins
+        // the second (`test_multipart_copy_invalid_range`, source of five bytes, `bytes=0-21`).
+        for (range in listOf("bytes=abc-def", "bytes=0-1,3-4")) {
+            val refused = copyRange(uploadId, range)
             assertEquals(400, refused.status, "range '$range' should be refused, got ${refused.text}")
             assertContains(refused.text, "InvalidArgument")
+        }
+        for (range in listOf("bytes=100-200", "bytes=0-21")) {
+            val refused = copyRange(uploadId, range)
+            assertEquals(416, refused.status, "range '$range' should be refused, got ${refused.text}")
+            assertContains(refused.text, "InvalidRange")
         }
 
         // With no range at all the whole source is the part.
@@ -305,4 +313,15 @@ class MultipartAttributesTest {
                 ),
             )
     }
+
+    private fun copyRange(
+        uploadId: String,
+        range: String,
+    ): S3Fixture.Answer =
+        s3.send(
+            "PUT",
+            "/photos/assembled.bin",
+            query = "partNumber=1&uploadId=$uploadId",
+            headers = listOf("x-amz-copy-source" to "/photos/source.bin", "x-amz-copy-source-range" to range),
+        )
 }

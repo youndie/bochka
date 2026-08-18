@@ -115,6 +115,16 @@ class S3Router(
         data class HeadObject(
             val bucket: String,
             val key: ObjectKey,
+            /**
+             * `?partNumber=N` on a `HEAD`, which is how a client finds out how many parts an
+             * object has before downloading any of them.
+             *
+             * It was missing here while `GetObject` had it, and the shape of that bug is worth
+             * keeping in mind: the request succeeded, answered the whole object's headers, and
+             * carried no `x-amz-mp-parts-count` — so a client asking "how many parts" was told
+             * nothing rather than told wrongly, and read `KeyError: 'PartsCount'`.
+             */
+            val partNumber: Int? = null,
         ) : Route
 
         data class DeleteObject(
@@ -367,7 +377,7 @@ class S3Router(
             }
 
             "HEAD" -> {
-                Route.HeadObject(bucket, key)
+                Route.HeadObject(bucket, key, params["partNumber"]?.toIntOrNull())
             }
 
             "POST" -> {

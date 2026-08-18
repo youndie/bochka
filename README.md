@@ -3,7 +3,7 @@
 [![kotlin](https://img.shields.io/badge/Kotlin-2.4.10-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
-[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-244%2F744-yellow)](ci/s3-tests.sh)
+[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-274%2F744-yellow)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![release](https://img.shields.io/badge/release-v0.1.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.1.0)
 
@@ -167,22 +167,27 @@ of `ceph/s3-tests` a single-process JVM store passes is comparable with other im
 which is true of no benchmark this project could run on its own. So it is published as soon as it
 exists, ahead of everything else:
 
-> **244 of 744 passed (32%)** — `ceph/s3-tests` at `5522d1c`, 3m03s, `./ci/s3-tests.sh`.
+> **274 of 744 passed (36%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
 
-Low, and it should be: **470 of the 500 remaining failures** are things this store says in
+Low, and it should be: **468 of the 470 remaining failures** are things this store says in
 ["What bochka is not"](#what-bochka-is-not) that it will never have — encryption, ACLs,
 versioning, object lock, lifecycle, policies. Every failure is classified with a reason
 ([docs/s3-tests.md](docs/s3-tests.md)), and one nobody has classified is reported by name as
 `unclassified` rather than folded into a category. That count is zero.
 
-The other **30 are in scope and not done**, and they are milestone M13 in
-[BACKLOG.md](BACKLOG.md) rather than a footnote here. That distinction was itself a finding: they
-sat in the classification file marked "deferred" while the backlog said there was nothing to do,
-which is two documents disagreeing about the same thing. Counted against what is in scope the
-score is 244 of 274 — 89% — but that number is weaker precisely because its denominator is chosen
-here. 32% is the honest one because somebody else chose it. What the number is for is the direction it moves, which is why
-the count of tests that ran is printed beside it — a rising score and a shrinking suite look
-identical otherwise.
+**Two are in scope and not done**, and both are there because a decision is unmade rather than
+because work is: a key holding C1 control characters, and the round trip of non-ASCII metadata.
+Each names in the classification file what would settle it, because a "deferred" with no criterion
+is a "deferred" for ever. That whole distinction was itself a finding — those entries once sat in
+the classification file while the backlog said there was nothing to do, which is two documents
+disagreeing about the same thing.
+
+Counted against what is in scope the score is 274 of 276 — 99% — and that number is here as a
+warning rather than a boast: its denominator is chosen by this repository, and 99% of your own
+scope list is available to anyone willing to lengthen the list. **36% is the honest one because
+somebody else chose it.** What the number is for is the direction it moves, which is why the count
+of tests that ran is printed beside it — a rising score and a shrinking suite look identical
+otherwise.
 
 ## Running it
 

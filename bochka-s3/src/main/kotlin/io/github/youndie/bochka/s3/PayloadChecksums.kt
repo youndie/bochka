@@ -60,6 +60,18 @@ class PayloadChecksums private constructor(
         val detail: String,
     )
 
+    /**
+     * What one part of an assembled object contributes: how long it was, and what it hashed to.
+     *
+     * A type of its own rather than the store's `PartSummary`, so this file keeps knowing nothing
+     * about the store — and the length is here because `FULL_OBJECT` cannot be computed without
+     * it, which is not obvious from the name of a checksum.
+     */
+    data class Piece(
+        val size: Long,
+        val checksum: Metadata.Checksum?,
+    )
+
     private val md5 = if (md5Expected != null) MessageDigest.getInstance("MD5") else null
     private val running: Running? = algorithm?.let(::runningFor)
 
@@ -130,40 +142,85 @@ class PayloadChecksums private constructor(
                 )
             }
 
+            // `substringBefore('-')`, because a composite checksum is `<base64>-<count>` and a
+            // client sends one back on `CompleteMultipartUpload` to state what it expects the
+            // finished object to hash to. Counting the suffix as part of the value refused every
+            // checksum this server had itself produced. Standard base64 has no `-` in its
+            // alphabet — the URL-safe variant does, and S3 does not use it — so the split is exact
+            // rather than lucky.
             val chosen = present.firstOrNull()
-            if (chosen != null && decodeBase64(chosen.second, lengthOf(chosen.first)) == null) {
-                return refused(S3Error.INVALID_REQUEST, "${chosen.first.header} is not base64 of the right length")
+            if (chosen != null && decodeBase64(chosen.second.substringBefore('-'), lengthOf(chosen.first)) == null) {
+                // `BadDigest`, not `InvalidRequest`. A value that cannot be decoded is a value that
+                // does not describe the body — the same answer as one that decodes and disagrees,
+                // because from the client's side the fact is the same: what it stated about these
+                // bytes is not true of them. `InvalidRequest` would send it to check its header
+                // names (`test_object_checksum_sha256`).
+                return refused(S3Error.BAD_DIGEST, "${chosen.first.header} is not base64 of the right length")
             }
             return PayloadChecksums(md5, chosen?.first, chosen?.second)
         }
 
         /**
-         * The checksum of an assembled object: the algorithm run over its parts' **raw** checksums,
-         * base64, with `-<count>` after it.
+         * The checksum of an assembled object — one of two different answers.
          *
-         * The same shape as a multipart `ETag` and for the same reason. The object's bytes never
-         * went through a single hash, so a value that looked like an ordinary checksum would be one
-         * no client could reproduce from the bytes it holds; the suffix says which kind it is.
-         * `s3-service-2.json` names this `ChecksumType: COMPOSITE`.
+         * `s3-service-2.json` gives `ChecksumType` two values and they are two computations, not
+         * two labels:
          *
-         * `null` when the parts disagree about the algorithm, or name one this server does not
-         * have. Both are questions with no answer, and answering anyway is the failure mode this
-         * whole class exists to avoid.
+         * * **`COMPOSITE`** — the algorithm run over the parts' **raw** checksums, base64, with
+         *   `-<count>` after it. The same shape as a multipart `ETag` and for the same reason: the
+         *   object's bytes never went through a single hash, so a value that looked like an
+         *   ordinary checksum would be one no client could reproduce from the bytes it holds, and
+         *   the suffix says which kind it is. The only possible answer for a digest.
+         * * **`FULL_OBJECT`** — the checksum of the object's actual bytes, computed from the
+         *   parts' checksums and lengths ([CrcCombine]) rather than by reading it back. Offered
+         *   for the CRCs only, because only they compose. A client that downloads the object and
+         *   checksums it gets this value, which is the point of the type existing.
+         *
+         * `null` when there is no answer: the parts disagree about the algorithm, name one this
+         * server does not have, carry a value that is not base64, or ask for `FULL_OBJECT` of a
+         * digest. Answering anyway is the failure mode this whole class exists to avoid — a stated
+         * checksum nobody can reproduce is worse than none, because the client believes it.
          */
-        fun ofParts(parts: List<Metadata.Checksum>): Metadata.Checksum? {
+        fun ofParts(
+            parts: List<Piece>,
+            checksumType: String?,
+        ): Metadata.Checksum? {
             if (parts.isEmpty()) return null
-            val algorithm = parts.map { it.algorithm }.distinct().singleOrNull() ?: return null
-            val running = Algorithm.entries.firstOrNull { it.id == algorithm }?.let(::runningFor) ?: return null
-            for (part in parts) {
-                val raw =
+            val stated = parts.map { it.checksum }.takeIf { all -> all.all { it != null } } ?: return null
+            val name = stated.map { it!!.algorithm }.distinct().singleOrNull() ?: return null
+            val algorithm = Algorithm.entries.firstOrNull { it.id == name } ?: return null
+
+            val raw = ArrayList<ByteArray>(parts.size)
+            for (value in stated) {
+                raw +=
                     try {
-                        Base64.getDecoder().decode(part.value.substringBefore('-'))
+                        Base64.getDecoder().decode(value!!.value.substringBefore('-'))
                     } catch (_: IllegalArgumentException) {
                         return null
                     }
-                running.update(raw, 0, raw.size)
             }
-            return Metadata.Checksum(algorithm, Base64.getEncoder().encodeToString(running.digest()) + "-" + parts.size)
+
+            if (checksumType.equals("FULL_OBJECT", ignoreCase = true)) {
+                val combiner = CrcCombine.of(algorithm) ?: return null
+                var value = numberOf(raw.first())
+                for (index in 1 until raw.size) {
+                    value = combiner.combine(value, numberOf(raw[index]), parts[index].size)
+                }
+                val width = raw.first().size
+                val bytes = ByteArray(width) { i -> (value ushr ((width - 1 - i) * 8)).toByte() }
+                return Metadata.Checksum(name, Base64.getEncoder().encodeToString(bytes))
+            }
+
+            val running = runningFor(algorithm)
+            for (bytes in raw) running.update(bytes, 0, bytes.size)
+            return Metadata.Checksum(name, Base64.getEncoder().encodeToString(running.digest()) + "-" + parts.size)
+        }
+
+        /** A CRC travels big-endian, which is how [ZipChecksum] wrote it; this reads it back. */
+        private fun numberOf(bytes: ByteArray): Long {
+            var value = 0L
+            for (byte in bytes) value = (value shl 8) or (byte.toLong() and 0xFF)
+            return value
         }
 
         /** Whether the request stated a checksum of any kind — what `DeleteObjects` requires (M-45). */

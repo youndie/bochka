@@ -297,4 +297,47 @@ class ObjectOperationsTest {
         handle.close()
         assertEquals("first version", String(buffer.array()))
     }
+
+    @Test
+    fun `the response headers can be replaced for one answer without touching the object`() {
+        // M-79, and the task was written from a misread failure. `assert 'binary/octet-stream' ==
+        // 'foo/bar'` looks like "the type set at upload came back as the default"; the type was
+        // never set at upload, it was asked for in the query
+        // (`shapes.GetObjectRequest.members.ResponseContentType` and its five siblings).
+        s3.createBucket("photos")
+        s3.put("photos", "a.txt", "x", listOf("Content-Type" to "text/plain"))
+
+        val overridden =
+            s3.send(
+                "GET",
+                "/photos/a.txt",
+                query =
+                    "response-content-type=foo%2Fbar&response-content-disposition=bla" +
+                        "&response-content-encoding=aaa&response-content-language=esperanto" +
+                        "&response-cache-control=no-cache&response-expires=123",
+            )
+        assertEquals(200, overridden.status, overridden.text)
+        assertEquals("foo/bar", overridden.header("Content-Type"))
+        assertEquals("bla", overridden.header("Content-Disposition"))
+        assertEquals("aaa", overridden.header("Content-Encoding"))
+        assertEquals("esperanto", overridden.header("Content-Language"))
+        assertEquals("no-cache", overridden.header("Cache-Control"))
+        assertEquals("123", overridden.header("Expires"))
+
+        // And the object keeps what it was stored with: the override is this answer only.
+        assertEquals("text/plain", s3.get("photos", "a.txt").header("Content-Type"))
+    }
+
+    @Test
+    fun `a replaced header appears once, not twice`() {
+        // The stored value has to come **out** of the list rather than be appended after: two
+        // `Content-Type` headers is a response whose meaning depends on which one the client reads
+        // first, and they disagree.
+        s3.createBucket("photos")
+        s3.put("photos", "a.txt", "x", listOf("Content-Type" to "text/plain"))
+
+        val answer = s3.send("GET", "/photos/a.txt", query = "response-content-type=foo%2Fbar")
+
+        assertEquals(listOf("foo/bar"), answer.headers("Content-Type"))
+    }
 }

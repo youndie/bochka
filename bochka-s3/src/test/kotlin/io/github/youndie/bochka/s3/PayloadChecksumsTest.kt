@@ -91,14 +91,15 @@ class PayloadChecksumsTest {
     @Test
     fun `a malformed header is refused from the head alone`() {
         // The difference that matters: this is known before a byte of the body has been read, so
-        // the refusal costs nothing (§1.2). BadDigest cannot be — it is about the body.
+        // the refusal costs nothing (§1.2). What it is *called* is a separate question, and one
+        // this file got wrong — see the case below.
         assertEquals(
             S3Error.INVALID_DIGEST,
             PayloadChecksums.of(headOf("Content-MD5" to "not base64")).rejection?.error,
         )
         assertEquals(S3Error.INVALID_DIGEST, PayloadChecksums.of(headOf("Content-MD5" to "AAAA")).rejection?.error)
         assertEquals(
-            S3Error.INVALID_REQUEST,
+            S3Error.BAD_DIGEST,
             PayloadChecksums.of(headOf("x-amz-checksum-crc32" to "AAAAAAAA")).rejection?.error,
         )
     }
@@ -138,11 +139,18 @@ class PayloadChecksumsTest {
     }
 
     @Test
-    fun `a 64-bit checksum in a 32-bit field is refused before the body`() {
-        // Eight bytes base64-encoded, not four: a length check is the only thing between a
-        // truncated CRC and a BadDigest that blames the body.
+    fun `a checksum of the wrong length is BadDigest, decided before the body`() {
+        // This assertion used to read `INVALID_REQUEST`, on the reasoning that `BadDigest` is
+        // about the body and a header is not the body. The reasoning was sound and the answer was
+        // wrong: S3 says `BadDigest` here, and the suite pins it with a checksum of the literal
+        // string `bad` (`test_object_checksum_sha256`, `test_object_checksum_crc64nvme`).
+        //
+        // Reading it S3's way, the two are the same fact. The client stated something about these
+        // bytes; it is not true of them. That a length check can see it without reading them is a
+        // property of the check, not a different failure — and `InvalidRequest` would send the
+        // client off to look at how it spelled its header names.
         assertEquals(
-            S3Error.INVALID_REQUEST,
+            S3Error.BAD_DIGEST,
             PayloadChecksums.of(headOf("x-amz-checksum-crc64nvme" to "AAAAAA==")).rejection?.error,
         )
     }
@@ -175,5 +183,22 @@ class PayloadChecksumsTest {
             PayloadChecksums.of(headOf("x-amz-checksum-crc32c" to vector("testcontent", "x-amz-checksum-crc32c")))
         for (i in content.indices) checksums.update(content, i, 1)
         assertNull(checksums.verify())
+    }
+
+    @Test
+    fun `a composite checksum carries its part count and is still a checksum`() {
+        // `<base64>-<N>` is what this server hands out for a multipart object, and a client sends
+        // it straight back on `CompleteMultipartUpload` to say what it expects. The length check
+        // added for `BadDigest` counted the suffix as part of the value and refused every one of
+        // them — four suite cases, all reading `x-amz-checksum-sha256 is not base64 of the right
+        // length` about a checksum this server had just produced.
+        //
+        // Safe to split on, and not by luck: standard base64 has no `-` in its alphabet. The
+        // URL-safe variant does, and S3 does not use it.
+        val composite = "uWBwpe1dxI4Vw8Gf0X9ynOdw/SS6VBzfWm9giiv1sf4=-3"
+        val checksums = PayloadChecksums.of(headOf("x-amz-checksum-sha256" to composite))
+
+        assertNull(checksums.rejection)
+        assertEquals(Metadata.Checksum("sha256", composite), checksums.stored())
     }
 }

@@ -143,7 +143,16 @@ class ObjectStore(
     // Ordered, because a listing is defined by that order (§1.5) and rebuilding it per request
     // would make every listing a sort of the whole bucket.
     private val objects = ConcurrentSkipListMap<Located, Stored>()
-    private val buckets = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * The buckets, and when each was made.
+     *
+     * A map rather than a set because `ListAllMyBucketsResult` has a `CreationDate` and a server
+     * that does not keep one has to answer something: this one answered the epoch, for every
+     * bucket, for ever. That is not a missing feature so much as a wrong answer — a client sorting
+     * its buckets by age gets them in map order and no way to tell.
+     */
+    private val buckets = ConcurrentHashMap<String, Instant>()
 
     /** One writer at a time on the log: its records must land in the order they were decided. */
     private val writing = ReentrantLock()
@@ -151,6 +160,27 @@ class ObjectStore(
     // Declared here rather than beside the rest of the multipart code because property
     // initialisers run in declaration order and `init` replays the log into this one.
     private val uploads = ConcurrentHashMap<String, UploadState>()
+
+    /**
+     * What the last few completions produced, so a repeat of one can be answered.
+     *
+     * `CompleteMultipartUpload` is the one operation a client is most likely to send twice: it is
+     * the last call of an upload that may have run for minutes, and a connection that drops while
+     * the answer travels back leaves the client with no way to tell "it worked" from "it did not".
+     * Every SDK retries. Without this the retry gets `NoSuchUpload`, which says the upload is gone
+     * — the one thing that is certainly untrue, because the object is on the disk.
+     *
+     * Bounded and in memory, and both halves of that are a decision rather than an oversight. The
+     * alternative is a record in the index log, which would make every completed upload cost index
+     * space against the declared object ceiling (Р1) for ever, to answer a retry that arrives
+     * within seconds or never. So: the last [REMEMBERED_COMPLETIONS] of them, forgotten on
+     * restart. A retry that outlives either bound is answered `NoSuchUpload` again, which is what
+     * this server has always said and is what S3 says once an upload has aged out.
+     */
+    private val completions = ConcurrentHashMap<String, Completion>()
+
+    /** Insertion order for [completions], so the oldest can be dropped without scanning the map. */
+    private val completionOrder = java.util.concurrent.ConcurrentLinkedQueue<String>()
 
     /**
      * Records appended since the log last held only live ones. Drives [compactIfWorthwhile].
@@ -170,7 +200,7 @@ class ObjectStore(
             log.recover { payload ->
                 when (val record = IndexRecord.decode(payload)) {
                     is IndexRecord.BucketCreated -> {
-                        buckets.add(record.bucket)
+                        buckets[record.bucket] = Instant.ofEpochMilli(record.createdAtMillis)
                     }
 
                     is IndexRecord.BucketDeleted -> {
@@ -202,6 +232,8 @@ class ObjectStore(
                                     key = record.key,
                                     metadata = record.metadata,
                                     startedAt = Instant.ofEpochMilli(record.startedAtMillis),
+                                    checksumAlgorithm = record.checksumAlgorithm,
+                                    checksumType = record.checksumType,
                                 ),
                             )
                     }
@@ -217,6 +249,7 @@ class ObjectStore(
                                 size = record.size,
                                 eTag = record.eTag,
                                 lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
+                                checksum = record.checksum,
                             ),
                         )
                     }
@@ -246,18 +279,28 @@ class ObjectStore(
     val objectCount: Int get() = objects.size
 
     fun createBucket(name: String): Boolean {
-        if (!buckets.add(name)) return false
-        write(IndexRecord.BucketCreated(name))
+        val createdAt = Instant.now()
+        if (buckets.putIfAbsent(name, createdAt) != null) return false
+        write(IndexRecord.BucketCreated(name, createdAt.toEpochMilli()))
         return true
     }
 
-    fun hasBucket(name: String): Boolean = name in buckets
+    fun hasBucket(name: String): Boolean = buckets.containsKey(name)
 
-    fun bucketNames(): List<String> = buckets.sorted()
+    /** A bucket and the moment it was created, which is the pair a listing has to answer with. */
+    data class Bucket(
+        val name: String,
+        val createdAt: Instant,
+    )
+
+    /** Every bucket, in name order — which is the order `ListBuckets` pages through. */
+    fun bucketList(): List<Bucket> = buckets.entries.map { Bucket(it.key, it.value) }.sortedBy { it.name }
+
+    fun bucketNames(): List<String> = buckets.keys.sorted()
 
     fun deleteBucket(name: String): Boolean {
         if (firstKeyOf(name) != null) return false
-        if (!buckets.remove(name)) return false
+        if (buckets.remove(name) == null) return false
         write(IndexRecord.BucketDeleted(name))
         return true
     }
@@ -331,38 +374,69 @@ class ObjectStore(
      * pass their check and one loses. The comparison and the write are one step or the header is
      * a race with a promise attached.
      */
-    sealed interface Precondition {
-        data object None : Precondition
-
+    data class Precondition(
         /** The object must exist, and its `ETag` must be one of these. `*` means "must exist". */
-        data class IfMatch(
-            val eTags: List<String>,
-        ) : Precondition
-
+        val ifMatch: List<String>? = null,
         /** `*` means "must not exist"; a tag means "must not be this one". */
-        data class IfNoneMatch(
-            val eTags: List<String>,
-        ) : Precondition
+        val ifNoneMatch: List<String>? = null,
+        /** The object must be exactly this long (`x-amz-if-match-size`). */
+        val size: Long? = null,
+        /** The object must carry exactly this modification time, to the second. */
+        val lastModifiedMillis: Long? = null,
+    ) {
+        /**
+         * Whether anything here is a claim about an object that exists.
+         *
+         * `If-None-Match` is the one condition satisfied by absence, so a request carrying only
+         * that one has nothing to say about a missing key. Everything else does, and the caller
+         * needs to know which — a `PUT` turns "absent" into `NoSuchKey` and a `DELETE` turns it
+         * into success, and neither is `PreconditionFailed`.
+         */
+        val needsTheObject: Boolean get() = ifMatch != null || size != null || lastModifiedMillis != null
+
+        companion object {
+            val NONE = Precondition()
+        }
     }
 
+    /**
+     * How a precondition came out, and it has three answers rather than two.
+     *
+     * The third one is the whole of M-84 and M-85: a condition that fails because the object is
+     * **not there** is a different fact from one that fails because the object is not what the
+     * client thought, and the two operations that take these headers disagree about what to do
+     * with it. `s3-service-2.json` spells the delete side out — *"If the Size matches or if the
+     * object doesn't exist, the operation returns 204"* — and a model with two answers cannot
+     * express that without the caller guessing.
+     */
+    enum class Outcome { HELD, MISMATCH, ABSENT }
+
     class PreconditionFailed(
+        val outcome: Outcome,
         override val message: String,
     ) : RuntimeException(message)
 
-    private fun Precondition.holdsFor(existing: Stored?): Boolean =
-        when (this) {
-            is Precondition.None -> {
-                true
-            }
-
-            is Precondition.IfMatch -> {
-                existing != null && ("*" in eTags || eTags.any { it.trim('"') == existing.eTag.trim('"') })
-            }
-
-            is Precondition.IfNoneMatch -> {
-                existing == null || ("*" !in eTags && eTags.none { it.trim('"') == existing.eTag.trim('"') })
-            }
+    private fun Precondition.holdsFor(existing: Stored?): Outcome {
+        if (existing == null) {
+            return if (needsTheObject) Outcome.ABSENT else Outcome.HELD
         }
+        val matches =
+            (ifMatch == null || "*" in ifMatch || ifMatch.any { it.trim('"') == existing.eTag.trim('"') }) &&
+                (
+                    ifNoneMatch == null ||
+                        ("*" !in ifNoneMatch && ifNoneMatch.none { it.trim('"') == existing.eTag.trim('"') })
+                ) &&
+                (size == null || size == existing.size) &&
+                // To the second, because that is the resolution the object's timestamp is
+                // published at: `Last-Modified` and `rfc822` both drop the milliseconds, so a
+                // client can only ever have seen a whole second and comparing finer would make
+                // this condition impossible to satisfy from outside.
+                (
+                    lastModifiedMillis == null ||
+                        lastModifiedMillis / 1000 == existing.lastModified.toEpochMilli() / 1000
+                )
+        return if (matches) Outcome.HELD else Outcome.MISMATCH
+    }
 
     /** Makes [staged] the object at [key]. Everything before this point is invisible. */
     fun commit(
@@ -370,7 +444,7 @@ class ObjectStore(
         key: ObjectKey,
         metadata: Metadata,
         staged: Staged,
-        precondition: Precondition = Precondition.None,
+        precondition: Precondition = Precondition.NONE,
         parts: List<PartSummary> = emptyList(),
     ): Stored {
         val stored =
@@ -401,18 +475,30 @@ class ObjectStore(
         // The replaced value is captured **inside** the lambda: `compute` returns the new value,
         // and deriving the old one from the return is how the file of a replaced object quietly
         // stopped being deleted. Only a test that looked at the disk noticed.
-        var refused: String? = null
+        var refused: Outcome? = null
         var previous: Stored? = null
         objects.compute(located) { _, existing ->
-            if (!precondition.holdsFor(existing)) {
-                refused = "the object is ${existing?.eTag ?: "absent"}"
-                existing
-            } else {
+            val outcome = precondition.holdsFor(existing)
+            if (outcome == Outcome.HELD) {
                 previous = existing
                 stored
+            } else {
+                refused = outcome
+                existing
             }
         }
-        refused?.let { throw PreconditionFailed(it) }
+        refused?.let { outcome ->
+            throw PreconditionFailed(
+                outcome,
+                if (outcome ==
+                    Outcome.ABSENT
+                ) {
+                    "there is no object at this key"
+                } else {
+                    "the object is not the one described"
+                },
+            )
+        }
         write(
             IndexRecord.Put(
                 bucket = bucket,
@@ -537,18 +623,21 @@ class ObjectStore(
     fun delete(
         bucket: String,
         key: ObjectKey,
-        precondition: Precondition = Precondition.None,
+        precondition: Precondition = Precondition.NONE,
     ): Boolean {
         var refused: String? = null
         var removed: Stored? = null
         objects.compute(Located(bucket, key)) { _, existing ->
             when {
+                // Nothing to protect, so nothing the condition can be wrong about: deleting a key
+                // that is not there is already a success, and `s3-service-2.json` says the
+                // conditional form answers `204` too. This is why the outcome has three values.
                 existing == null -> {
                     null
                 }
 
-                !precondition.holdsFor(existing) -> {
-                    refused = "the object is ${existing.eTag}"
+                precondition.holdsFor(existing) != Outcome.HELD -> {
+                    refused = "the object is ${existing.eTag} and ${existing.size} bytes"
                     existing
                 }
 
@@ -558,7 +647,7 @@ class ObjectStore(
                 }
             }
         }
-        refused?.let { throw PreconditionFailed(it) }
+        refused?.let { throw PreconditionFailed(Outcome.MISMATCH, it) }
         val gone = removed ?: return false
         write(IndexRecord.Deleted(bucket, key))
         Files.deleteIfExists(pathOf(gone.fileId))
@@ -718,6 +807,16 @@ class ObjectStore(
         val key: ObjectKey,
         val metadata: Metadata,
         val startedAt: Instant,
+        /**
+         * What the parts are to be checksummed with, and how those combine into the object's.
+         *
+         * Chosen on the request that starts the upload and not on any later one, which is why it
+         * lives here: the completion happens minutes afterwards and has to answer the question the
+         * client asked at the beginning. Both are S3's own words, kept verbatim, because this
+         * module has no opinion about what `FULL_OBJECT` means — it stores it and hands it back.
+         */
+        val checksumAlgorithm: String? = null,
+        val checksumType: String? = null,
     )
 
     data class Part(
@@ -730,12 +829,35 @@ class ObjectStore(
         val checksum: Metadata.Checksum? = null,
     )
 
+    /**
+     * What a completion answered, kept so the same question gets the same answer.
+     *
+     * Deliberately not a [Stored]: that carries the part list, which for a ten-thousand-part
+     * object is the largest thing in the index, and none of it is in the response. What a repeat
+     * of `CompleteMultipartUpload` has to be told is where the object went and what it hashed to.
+     */
+    data class Completion(
+        val bucket: String,
+        val key: ObjectKey,
+        val eTag: String,
+        val checksum: Metadata.Checksum?,
+    )
+
     /** Why a completion cannot happen. The S3 layer turns each of these into a code and a status. */
     class CompletionRefused(
         val reason: Reason,
         override val message: String,
     ) : RuntimeException(message) {
-        enum class Reason { NO_SUCH_UPLOAD, NO_PARTS, INVALID_PART, INVALID_PART_ORDER, ENTITY_TOO_SMALL }
+        enum class Reason {
+            NO_SUCH_UPLOAD,
+            NO_PARTS,
+            INVALID_PART,
+            INVALID_PART_ORDER,
+            ENTITY_TOO_SMALL,
+
+            /** The client said what the finished object would hash to, and it does not. */
+            CHECKSUM_MISMATCH,
+        }
     }
 
     private class UploadState(
@@ -748,8 +870,19 @@ class ObjectStore(
         bucket: String,
         key: ObjectKey,
         metadata: Metadata,
+        checksumAlgorithm: String? = null,
+        checksumType: String? = null,
     ): Upload {
-        val upload = Upload(UUID.randomUUID().toString(), bucket, key, metadata, Instant.now())
+        val upload =
+            Upload(
+                id = UUID.randomUUID().toString(),
+                bucket = bucket,
+                key = key,
+                metadata = metadata,
+                startedAt = Instant.now(),
+                checksumAlgorithm = checksumAlgorithm,
+                checksumType = checksumType,
+            )
         uploads[upload.id] = UploadState(upload)
         write(
             IndexRecord.UploadStarted(
@@ -758,6 +891,8 @@ class ObjectStore(
                 uploadId = upload.id,
                 startedAtMillis = upload.startedAt.toEpochMilli(),
                 metadata = metadata,
+                checksumAlgorithm = checksumAlgorithm,
+                checksumType = checksumType,
             ),
         )
         return upload
@@ -804,6 +939,7 @@ class ObjectStore(
                 size = staged.size,
                 eTag = staged.eTag,
                 lastModifiedMillis = part.lastModified.toEpochMilli(),
+                checksum = checksum,
             ),
         )
         if (previous != null) Files.deleteIfExists(pathOf(previous.fileId))
@@ -834,14 +970,33 @@ class ObjectStore(
         uploadId: String,
         requested: List<Pair<Int, String>>,
         /**
-         * How to combine the parts' checksums into the object's, when they have any.
+         * How to combine the parts into the object's checksum, when they have one.
          *
          * A function rather than a computation, because the algorithms live one layer up: `crc32c`
-         * and its siblings are S3's vocabulary, and this module deliberately knows nothing about
-         * S3. What it does know is which parts went in and in what order, so it hands that over
-         * and takes back an answer or a `null`.
+         * and `FULL_OBJECT` are S3's vocabulary, and this module deliberately knows nothing about
+         * S3. What it does know is which parts went in, in what order and how long each was — the
+         * lengths matter, because combining CRCs into a checksum of the whole needs them — and
+         * which type the upload was started with. It hands all of that over and takes an answer or
+         * a `null`.
          */
-        combineChecksums: (List<Metadata.Checksum>) -> Metadata.Checksum? = { null },
+        combineChecksums: (parts: List<PartSummary>, checksumType: String?) -> Metadata.Checksum? = { _, _ -> null },
+        /**
+         * What has to be true of the key before the assembled object takes it.
+         *
+         * A completion is a write like any other, so `If-Match` and `If-None-Match` mean here what
+         * they mean on a `PUT` — and they have to be applied at the same instant the key changes
+         * hands, not before the parts are joined, or two uploads racing for one key with
+         * `If-None-Match: *` both pass their check.
+         */
+        precondition: Precondition = Precondition.NONE,
+        /**
+         * What the client says the finished object will hash to, when it says anything.
+         *
+         * Checked **before** a byte is joined, which is the rule this operation is built on: S3 has
+         * a second response shape for a completion whose outcome is not known when the status went
+         * out, and this server does not need it because everything refusable is refusable first.
+         */
+        expectedChecksum: Metadata.Checksum? = null,
     ): Stored {
         val state =
             uploads[uploadId] ?: throw CompletionRefused(CompletionRefused.Reason.NO_SUCH_UPLOAD, uploadId)
@@ -849,7 +1004,7 @@ class ObjectStore(
             throw CompletionRefused(CompletionRefused.Reason.NO_PARTS, "a completion with no parts in it")
         }
         for (i in 1 until requested.size) {
-            if (requested[i].first <= requested[i - 1].first) {
+            if (requested[i].first < requested[i - 1].first) {
                 throw CompletionRefused(
                     CompletionRefused.Reason.INVALID_PART_ORDER,
                     "part ${requested[i].first} came after ${requested[i - 1].first}",
@@ -857,8 +1012,15 @@ class ObjectStore(
             }
         }
 
+        // A number listed twice is one part described twice, and the last description wins — the
+        // same rule `commitPart` already applies to a resent part, and for the same reason: the
+        // later entry is the client's later knowledge of it. Refusing the repeat as "out of order"
+        // reads two entries as two parts, and a client that resent a part while the first send was
+        // still being read would be told its perfectly ordered list is backwards (M-89).
+        val listed = requested.associateTo(LinkedHashMap()) { it }.toList()
+
         val chosen =
-            requested.map { (number, eTag) ->
+            listed.map { (number, eTag) ->
                 val part =
                     state.parts[number]
                         ?: throw CompletionRefused(CompletionRefused.Reason.INVALID_PART, "no part $number")
@@ -877,6 +1039,25 @@ class ObjectStore(
                     "part ${part.number} is ${part.size} bytes, the minimum is $MIN_PART_SIZE",
                 )
             }
+        }
+
+        val summaries =
+            chosen.map { PartSummary(number = it.number, size = it.size, eTag = it.eTag, checksum = it.checksum) }
+
+        // Only when **every** part carried a checksum: a mixture has no answer, and inventing one
+        // would be worse than saying nothing.
+        val objectChecksum =
+            summaries
+                .takeIf { all -> all.all { it.checksum != null } }
+                ?.let { combineChecksums(it, state.upload.checksumType) }
+
+        // Before the join rather than after it, and that is the same rule the rest of this
+        // function follows: nothing is written until nothing can refuse it.
+        if (expectedChecksum != null && expectedChecksum != objectChecksum) {
+            throw CompletionRefused(
+                CompletionRefused.Reason.CHECKSUM_MISMATCH,
+                "the completion says ${expectedChecksum.value}, these parts make ${objectChecksum?.value}",
+            )
         }
 
         val fileId = UUID.randomUUID().toString()
@@ -900,30 +1081,64 @@ class ObjectStore(
         }
         Files.move(partial, target, StandardCopyOption.ATOMIC_MOVE)
 
-        val summaries =
-            chosen.map { PartSummary(number = it.number, size = it.size, eTag = it.eTag, checksum = it.checksum) }
         val stored =
-            commit(
+            commitAssembled(
                 bucket = state.upload.bucket,
                 key = state.upload.key,
-                metadata =
-                    state.upload.metadata.copy(
-                        // Only when **every** part carried a checksum: a mixture has no answer,
-                        // and inventing one would be worse than saying nothing.
-                        checksum =
-                            chosen
-                                .map { it.checksum }
-                                .takeIf { all -> all.all { it != null } }
-                                ?.filterNotNull()
-                                ?.let(combineChecksums),
-                    ),
+                metadata = state.upload.metadata.copy(checksum = objectChecksum),
                 staged = Staged(fileId, size, multipartETag(chosen)),
                 parts = summaries,
+                precondition = precondition,
             )
         uploads.remove(uploadId)
+        remember(uploadId, Completion(state.upload.bucket, state.upload.key, stored.eTag, stored.metadata.checksum))
         write(IndexRecord.UploadEnded(state.upload.bucket, uploadId))
         for (part in state.parts.values) Files.deleteIfExists(pathOf(part.fileId))
         return stored
+    }
+
+    /**
+     * [commit], with the joined file cleaned up if the key refuses it.
+     *
+     * A refused completion has already paid for the assembly, and what it leaves on the disk is a
+     * file nothing points at. The background sweep would collect it — but the sweep exists for
+     * what a crash leaves behind, and this is a refusal the server is awake for and can tidy after
+     * itself.
+     */
+    @Suppress("LongParameterList")
+    private fun commitAssembled(
+        bucket: String,
+        key: ObjectKey,
+        metadata: Metadata,
+        staged: Staged,
+        parts: List<PartSummary>,
+        precondition: Precondition,
+    ): Stored =
+        try {
+            commit(bucket, key, metadata, staged, precondition, parts)
+        } catch (e: Throwable) {
+            Files.deleteIfExists(pathOf(staged.fileId))
+            throw e
+        }
+
+    /**
+     * What [completeUpload] answered for this id, if it is still remembered.
+     *
+     * Answers nothing about the object at that key **now** — it may have been overwritten or
+     * deleted since, and this still says what the upload produced. That is the right claim to
+     * make: the question a retry asks is "did my completion happen", not "what is there".
+     */
+    fun completion(uploadId: String): Completion? = completions[uploadId]
+
+    private fun remember(
+        uploadId: String,
+        completion: Completion,
+    ) {
+        completions[uploadId] = completion
+        completionOrder.add(uploadId)
+        while (completionOrder.size > REMEMBERED_COMPLETIONS) {
+            completionOrder.poll()?.let(completions::remove)
+        }
     }
 
     /**
@@ -1024,8 +1239,8 @@ class ObjectStore(
 
             var records = 0L
             RecordLog(temp).use { fresh ->
-                for (bucket in buckets) {
-                    fresh.append(IndexRecord.encode(IndexRecord.BucketCreated(bucket)))
+                for ((bucket, createdAt) in buckets) {
+                    fresh.append(IndexRecord.encode(IndexRecord.BucketCreated(bucket, createdAt.toEpochMilli())))
                     records++
                 }
                 for ((located, stored) in objects) {
@@ -1056,6 +1271,8 @@ class ObjectStore(
                                 uploadId = state.upload.id,
                                 startedAtMillis = state.upload.startedAt.toEpochMilli(),
                                 metadata = state.upload.metadata,
+                                checksumAlgorithm = state.upload.checksumAlgorithm,
+                                checksumType = state.upload.checksumType,
                             ),
                         ),
                     )
@@ -1071,6 +1288,7 @@ class ObjectStore(
                                     size = part.size,
                                     eTag = part.eTag,
                                     lastModifiedMillis = part.lastModified.toEpochMilli(),
+                                    checksum = part.checksum,
                                 ),
                             ),
                         )
@@ -1168,6 +1386,17 @@ class ObjectStore(
          * project: two parts of one megabyte each answered `EntityTooSmall`.
          */
         private const val MIN_PART_SIZE = 5 * 1024 * 1024L
+
+        /**
+         * How many finished uploads are remembered so their completion can be repeated.
+         *
+         * Sized for the shape of the retry rather than for a workload: a client retries a
+         * completion seconds after the first attempt, not hours later, so what matters is that the
+         * window survives a burst of concurrent uploads rather than that it is long. A thousand of
+         * them is under a hundred kilobytes and does not count against the object ceiling, which
+         * is why this is not in the index log.
+         */
+        private const val REMEMBERED_COMPLETIONS = 1024
 
         /**
          * Measured, not guessed: 584 bytes for a forty-byte key and 646 for a hundred-byte one,

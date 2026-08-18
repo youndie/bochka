@@ -17,10 +17,24 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 log="$work/bochka.log"
 
+# Whether this run ever printed a number. The check at the bottom — "nothing ran is a failure
+# rather than a score" — only fires if control reaches it, and a `set -u` abort part way through
+# does not: an edit to the block below once ended a quoted string early, the rest of it ran in the
+# host shell, and the script died on an unbound variable having reported nothing at all. It exited
+# without a score and without complaining, which is the exact shape of failure this file exists to
+# refuse. So the guard moves into the exit trap, where nothing can step over it.
+scored=no
+
 cleanup() {
+  status=$?
   [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null
   chmod -R u+w "$work" 2>/dev/null
   rm -rf "$work" 2>/dev/null
+  if [ "$scored" = no ]; then
+    echo "this run ended without producing a score, which is a failure rather than a zero" >&2
+    [ "$status" -eq 0 ] && status=1
+  fi
+  exit "$status"
 }
 trap cleanup EXIT
 
@@ -86,6 +100,17 @@ docker run --rm --network host -v "$work:/work" \
   # bochka never answers otherwise burns a socket timeout, and a few dozen of those eat the whole
   # budget before pytest can print a summary — the one thing this script exists to produce.
   #
+  # Sixty seconds and not twenty, and that was measured rather than nudged. `test_multipart_get_part`
+  # started timing out once it got far enough to download anything, and the split is: the server
+  # does the whole upload, completion and download of sixteen mebibytes in 0.32 s, while the
+  # comparison loop inside the test — `data = data[len(chunk):]` over a sixteen-mebibyte string,
+  # once per kilobyte chunk — costs 11.57 s. A twenty-second bound on that measures quadratic
+  # slicing in the harness under whatever else the runner is doing, and calls the result a server
+  # failure. A hang is still a hang at sixty.
+  #
+  # The note below is not decoration. The first draft of this paragraph wrote "the test" with a
+  # possessive apostrophe, which ended the string and handed the rest of it to the host shell.
+  #
   # `signal` and not `thread`: the thread method kills the whole pytest process when a test hangs
   # in a way it cannot interrupt, and a run that dies has no summary — which this script then
   # correctly reports as "nothing ran". One hang must cost one test, not the score.
@@ -97,7 +122,7 @@ docker run --rm --network host -v "$work:/work" \
   python /work/make-conf.py '"$PORT"'
   S3TEST_CONF=/work/s3tests.conf timeout 5400 python -m pytest s3tests/functional/test_s3.py \
     -p no:cacheprovider -q --no-header -rN --continue-on-collection-errors \
-    --timeout=20 --timeout-method=signal --junit-xml=/work/results.xml \
+    --timeout=60 --timeout-method=signal --junit-xml=/work/results.xml \
     ${SELECT:+-k} ${SELECT:+"$SELECT"} --tb=${TRACEBACK} \
     > /work/pytest.out 2>&1 || true
   tail -${TAIL} /work/pytest.out
@@ -132,6 +157,7 @@ if [ "$ran" -eq 0 ]; then
 fi
 printf 'ceph/s3-tests: %d of %d passed (%d%%), %d failed, %d errored\n' \
   "$passed" "$ran" $((passed * 100 / ran)) "$failed" "$errors"
+scored=yes
 echo "the count of tests that ran is part of the number: a rising score and a shrinking suite look the same"
 
 # Why the rest fail, grouped. A bare percentage says how far there is to go and nothing about what

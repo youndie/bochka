@@ -89,8 +89,13 @@ class S3Handler(
         }
 
         // An upload nobody started cannot take a part, and refusing here costs no body (§1.2).
+        // The exception is a completion of an upload that already completed: that one is a retry
+        // rather than a mistake, and `handle` answers it with what the first attempt answered
+        // (M-88). Screening it out here would mean the retry never reaches the code that knows.
         uploadIdOf(route)?.let { uploadId ->
-            if (store.upload(uploadId) == null) {
+            val retriedCompletion =
+                route is S3Router.Route.CompleteMultipartUpload && store.completion(uploadId) != null
+            if (store.upload(uploadId) == null && !retriedCompletion) {
                 return error(head, S3Error.NO_SUCH_UPLOAD, key = keyOf(route), bucket = bucketOf(route))
             }
         }
@@ -146,29 +151,97 @@ class S3Handler(
         val verification = verifier.verify(head.toSignedRequest()) as SignatureVerifier.Result.Ok
 
         return when (route) {
-            is S3Router.Route.ListBuckets -> listBuckets()
-            is S3Router.Route.CreateBucket -> createBucket(route.bucket)
-            is S3Router.Route.DeleteBucket -> deleteBucket(head, route.bucket)
-            is S3Router.Route.HeadBucket -> HttpResponse(200, "OK")
-            is S3Router.Route.GetBucketLocation -> bucketLocation()
-            is S3Router.Route.ListObjectsV2 -> listObjectsV2(head, route.bucket)
-            is S3Router.Route.ListObjects -> listObjectsV1(head, route.bucket)
-            is S3Router.Route.ListObjectVersions -> listVersions(head, route.bucket)
-            is S3Router.Route.PutObject -> putObject(head, route, verification, body)
-            is S3Router.Route.CopyObject -> copyObject(head, route)
-            is S3Router.Route.GetObject -> getObject(head, route.bucket, route.key, partNumber = route.partNumber)
-            is S3Router.Route.GetObjectAttributes -> objectAttributes(head, route)
-            is S3Router.Route.HeadObject -> getObject(head, route.bucket, route.key, withBody = false)
-            is S3Router.Route.DeleteObject -> deleteObject(head, route.bucket, route.key)
-            is S3Router.Route.DeleteObjects -> deleteObjects(head, route.bucket, body)
-            is S3Router.Route.CreateMultipartUpload -> createUpload(head, route)
-            is S3Router.Route.UploadPart -> uploadPart(head, route, verification, body)
-            is S3Router.Route.UploadPartCopy -> uploadPartCopy(head, route)
-            is S3Router.Route.ListParts -> listParts(head, route)
-            is S3Router.Route.AbortMultipartUpload -> abortUpload(head, route)
-            is S3Router.Route.CompleteMultipartUpload -> completeUpload(head, route, body)
-            is S3Router.Route.ListMultipartUploads -> listUploads(head, route.bucket)
-            else -> error(head, S3Error.NOT_IMPLEMENTED, detail = "not implemented: $route")
+            is S3Router.Route.ListBuckets -> {
+                listBuckets(head)
+            }
+
+            is S3Router.Route.CreateBucket -> {
+                createBucket(route.bucket)
+            }
+
+            is S3Router.Route.DeleteBucket -> {
+                deleteBucket(head, route.bucket)
+            }
+
+            is S3Router.Route.HeadBucket -> {
+                HttpResponse(200, "OK")
+            }
+
+            is S3Router.Route.GetBucketLocation -> {
+                bucketLocation()
+            }
+
+            is S3Router.Route.ListObjectsV2 -> {
+                listObjectsV2(head, route.bucket)
+            }
+
+            is S3Router.Route.ListObjects -> {
+                listObjectsV1(head, route.bucket)
+            }
+
+            is S3Router.Route.ListObjectVersions -> {
+                listVersions(head, route.bucket)
+            }
+
+            is S3Router.Route.PutObject -> {
+                putObject(head, route, verification, body)
+            }
+
+            is S3Router.Route.CopyObject -> {
+                copyObject(head, route)
+            }
+
+            is S3Router.Route.GetObject -> {
+                getObject(head, route.bucket, route.key, partNumber = route.partNumber)
+            }
+
+            is S3Router.Route.GetObjectAttributes -> {
+                objectAttributes(head, route)
+            }
+
+            is S3Router.Route.HeadObject -> {
+                getObject(head, route.bucket, route.key, withBody = false, partNumber = route.partNumber)
+            }
+
+            is S3Router.Route.DeleteObject -> {
+                deleteObject(head, route.bucket, route.key)
+            }
+
+            is S3Router.Route.DeleteObjects -> {
+                deleteObjects(head, route.bucket, body)
+            }
+
+            is S3Router.Route.CreateMultipartUpload -> {
+                createUpload(head, route)
+            }
+
+            is S3Router.Route.UploadPart -> {
+                uploadPart(head, route, verification, body)
+            }
+
+            is S3Router.Route.UploadPartCopy -> {
+                uploadPartCopy(head, route)
+            }
+
+            is S3Router.Route.ListParts -> {
+                listParts(head, route)
+            }
+
+            is S3Router.Route.AbortMultipartUpload -> {
+                abortUpload(head, route)
+            }
+
+            is S3Router.Route.CompleteMultipartUpload -> {
+                completeUpload(head, route, body)
+            }
+
+            is S3Router.Route.ListMultipartUploads -> {
+                listUploads(head, route.bucket)
+            }
+
+            else -> {
+                error(head, S3Error.NOT_IMPLEMENTED, detail = "not implemented: $route")
+            }
         }
     }
 
@@ -233,10 +306,44 @@ class S3Handler(
         route: S3Router.Route.CreateMultipartUpload,
     ): HttpResponse {
         // The metadata travels on this request and not on the parts: the parts are bytes, the
-        // object is what they become, and only this request knows anything about the object.
-        val upload = store.createUpload(route.bucket, route.key, ObjectHeaders.read(head.headers))
+        // object is what they become, and only this request knows anything about the object. The
+        // checksum algorithm is the same kind of thing — chosen once, here, and binding on every
+        // part and on the completion minutes later.
+        val algorithm =
+            head.header("x-amz-checksum-algorithm")?.trim()?.lowercase()?.takeIf { name ->
+                PayloadChecksums.Algorithm.entries.any { it.id == name }
+            }
+        val checksumType = head.header("x-amz-checksum-type")?.trim()?.uppercase()
+        val upload =
+            store.createUpload(
+                route.bucket,
+                route.key,
+                ObjectHeaders.read(head.headers),
+                algorithm,
+                checksumType,
+            )
+
+        // Both go back as **headers**: `CreateMultipartUploadOutput` gives them
+        // `location: header` in `s3-service-2.json`, and an SDK reads them off the response before
+        // it sends a single part.
+        val headers =
+            buildList {
+                algorithm?.let { add("x-amz-checksum-algorithm" to it.uppercase()) }
+                add("x-amz-checksum-type" to typeOf(upload))
+            }.takeIf { algorithm != null } ?: emptyList()
         return xml(S3Documents.initiateMultipartUploadResult(route.bucket, route.key, upload.id))
+            .let { it.copy(headers = it.headers + headers) }
     }
+
+    /**
+     * Which of the two checksum types this upload is, stated rather than guessed.
+     *
+     * `COMPOSITE` is S3's default when a client names an algorithm and not a type, so an upload
+     * that said nothing gets the answer it would get from S3 — and the value is decided here, at
+     * the start, because the completion has to give the same answer and it happens much later.
+     */
+    private fun typeOf(upload: ObjectStore.Upload): String =
+        upload.checksumType?.takeIf { it == "FULL_OBJECT" } ?: "COMPOSITE"
 
     private suspend fun uploadPart(
         head: HttpRequestParser.Head,
@@ -273,7 +380,9 @@ class S3Handler(
 
             val part = store.commitPart(route.uploadId, route.partNumber, staged, checksums.stored())
             staged = null
-            HttpResponse(200, "OK", headers = listOf("ETag" to part.eTag))
+            // `UploadPartOutput.ChecksumSHA256` and its siblings are headers, and an SDK reads
+            // them straight back into the part list it will send at completion.
+            HttpResponse(200, "OK", headers = checksumHeaders(part.checksum) + ("ETag" to part.eTag))
         } catch (e: AwsChunkedDecoder.MalformedBody) {
             error(head, e.error, detail = e.message)
         } catch (e: ObjectStore.CompletionRefused) {
@@ -314,9 +423,14 @@ class S3Handler(
                     // it did not choose, and find out at completion or never.
                     is ByteRanges.Resolved.Satisfiable -> {
                         if (endsPastTheObject(requested, source.size)) {
+                            // `InvalidRange` and not `InvalidArgument`: the argument is a
+                            // well-formed range, it just is not one this object has. A client told
+                            // its argument is invalid looks at how it spelled the header; one told
+                            // the range is invalid looks at the object, which is where the answer
+                            // is (`test_multipart_copy_invalid_range`).
                             return error(
                                 head,
-                                S3Error.INVALID_ARGUMENT,
+                                S3Error.INVALID_RANGE,
                                 detail = "x-amz-copy-source-range '$requested' runs past ${source.size} bytes",
                                 key = route.key,
                                 bucket = route.bucket,
@@ -325,15 +439,26 @@ class S3Handler(
                         range.start to range.length
                     }
 
-                    // Both of the other outcomes are refusals here. `Whole` means the header did
-                    // not parse, and a copy of everything is not what "bytes=abc" asked for.
+                    // A range that parses and the object does not have. Same answer as the
+                    // clamped case above and for the same reason: the argument is fine, the object
+                    // is smaller than it says.
+                    is ByteRanges.Resolved.Unsatisfiable -> {
+                        return error(
+                            head,
+                            S3Error.INVALID_RANGE,
+                            detail = "x-amz-copy-source-range '$requested' is outside ${source.size} bytes",
+                            key = route.key,
+                            bucket = route.bucket,
+                        )
+                    }
+
+                    // `Whole` means the header did not parse at all, and a copy of everything is
+                    // not what "bytes=abc" asked for. That one really is a bad argument.
                     else -> {
                         return error(
                             head,
                             S3Error.INVALID_ARGUMENT,
-                            detail =
-                                "x-amz-copy-source-range '$requested' does not name a range " +
-                                    "of ${source.size} bytes",
+                            detail = "x-amz-copy-source-range '$requested' does not name a range",
                             key = route.key,
                             bucket = route.bucket,
                         )
@@ -383,8 +508,17 @@ class S3Handler(
                 isTruncated = false,
                 parts =
                     parts.map {
-                        S3Documents.PartEntry(it.number, timestamp(it.lastModified), it.eTag, it.size)
+                        S3Documents.PartEntry(
+                            partNumber = it.number,
+                            lastModified = timestamp(it.lastModified),
+                            eTag = it.eTag,
+                            size = it.size,
+                            checksum = it.checksum?.let { checksum -> checksum.algorithm to checksum.value },
+                        )
                     },
+                // Which algorithm the parts were checksummed with, so a client resuming an upload
+                // knows what to send for the ones it has not sent yet.
+                checksumAlgorithm = store.upload(route.uploadId)?.checksumAlgorithm,
             ),
         )
     }
@@ -423,27 +557,66 @@ class S3Handler(
                 return error(head, S3Error.MALFORMED_XML, detail = e.message, key = route.key, bucket = route.bucket)
             }
 
+        // The completion may state what the finished object will hash to, and that is checked
+        // rather than echoed: `test_multipart_checksum_sha256` sends `ChecksumSHA256: bad` and
+        // requires `400 BadDigest`, which is the only answer that tells the client its parts and
+        // its expectation disagree.
+        val stated = PayloadChecksums.of { head.header(it) }
+        stated.rejection?.let {
+            return error(head, it.error, detail = it.detail, key = route.key, bucket = route.bucket)
+        }
+
         return try {
             val stored =
                 store.completeUpload(
                     route.uploadId,
                     requested.map { it.partNumber to it.eTag },
-                    PayloadChecksums::ofParts,
+                    { parts, checksumType ->
+                        PayloadChecksums.ofParts(
+                            parts.map { PayloadChecksums.Piece(it.size, it.checksum) },
+                            checksumType,
+                        )
+                    },
+                    writePrecondition(head),
+                    stated.stored(),
                 )
-            xml(
-                S3Documents.completeMultipartUploadResult(
-                    location = "/${route.bucket}/${UriCodec.encodePath(route.key.toByteArray())}",
-                    bucket = route.bucket,
-                    key = route.key,
-                    eTag = stored.eTag,
-                ),
-            )
+            completed(route, stored.eTag, stored.metadata.checksum)
         } catch (e: ObjectStore.CompletionRefused) {
-            error(head, refusalOf(e.reason), detail = e.message, key = route.key, bucket = route.bucket)
+            // A repeat of a completion that already happened is answered with what it answered
+            // (M-88). The upload is gone by then, so the store cannot be asked again — but what it
+            // produced is remembered, and that is the question the client is really asking: an SDK
+            // whose connection dropped while the answer travelled back cannot tell success from
+            // failure, and `NoSuchUpload` tells it the upload was lost when the object is on disk.
+            val already = store.completion(route.uploadId)
+            if (e.reason == ObjectStore.CompletionRefused.Reason.NO_SUCH_UPLOAD && already != null) {
+                completed(route, already.eTag, already.checksum)
+            } else {
+                error(head, refusalOf(e.reason), detail = e.message, key = route.key, bucket = route.bucket)
+            }
+        } catch (e: ObjectStore.PreconditionFailed) {
+            error(head, refusalOf(e.outcome), detail = e.message, key = route.key, bucket = route.bucket)
+        } catch (e: MalformedCondition) {
+            error(head, S3Error.INVALID_ARGUMENT, detail = e.message, key = route.key, bucket = route.bucket)
         } catch (e: ObjectStore.CeilingExceeded) {
             error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = route.key, bucket = route.bucket)
         }
     }
+
+    private fun completed(
+        route: S3Router.Route.CompleteMultipartUpload,
+        eTag: String,
+        checksum: Metadata.Checksum?,
+    ): HttpResponse =
+        xml(
+            S3Documents.completeMultipartUploadResult(
+                location = "/${route.bucket}/${UriCodec.encodePath(route.key.toByteArray())}",
+                bucket = route.bucket,
+                key = route.key,
+                eTag = eTag,
+                checksum = checksum?.let { it.algorithm to it.value },
+                checksumType = checksum?.let(::typeOf),
+            ),
+        )
 
     private fun listUploads(
         head: HttpRequestParser.Head,
@@ -479,6 +652,7 @@ class S3Handler(
             ObjectStore.CompletionRefused.Reason.INVALID_PART -> S3Error.INVALID_PART
             ObjectStore.CompletionRefused.Reason.INVALID_PART_ORDER -> S3Error.INVALID_PART_ORDER
             ObjectStore.CompletionRefused.Reason.ENTITY_TOO_SMALL -> S3Error.ENTITY_TOO_SMALL
+            ObjectStore.CompletionRefused.Reason.CHECKSUM_MISMATCH -> S3Error.BAD_DIGEST
         }
 
     private fun ByteArray.startsWith(prefix: ByteArray): Boolean =
@@ -496,14 +670,37 @@ class S3Handler(
         cause: Throwable,
     ): HttpResponse = error(head, S3Error.INTERNAL_ERROR, detail = "${cause::class.simpleName}: ${cause.message}")
 
-    private fun listBuckets(): HttpResponse =
-        xml(
+    /**
+     * `GET /` — every bucket, in name order, a page at a time.
+     *
+     * The page is opt-in: without `max-buckets` the whole list goes out, which is what every
+     * client that predates the parameter expects. With it, the token is the name of the last
+     * bucket sent — buckets are ordered by name and names are unique, so a position in that order
+     * **is** a name and needs nothing opaque behind it.
+     */
+    private fun listBuckets(head: HttpRequestParser.Head): HttpResponse {
+        val params = rawQueryParams(head.query)
+        val prefix = params["prefix"]?.let { String(it) }
+        val after = params["continuation-token"]?.let { String(it) }
+        val maxBuckets = params["max-buckets"]?.let { String(it) }?.toIntOrNull()
+
+        val matching =
+            store
+                .bucketList()
+                .filter { prefix == null || it.name.startsWith(prefix) }
+                .filter { after == null || it.name > after }
+        val page = if (maxBuckets != null) matching.take(maxBuckets) else matching
+
+        return xml(
             S3Documents.listAllMyBucketsResult(
-                buckets = store.bucketNames().map { S3Documents.BucketEntry(it, timestamp(java.time.Instant.EPOCH)) },
+                buckets = page.map { S3Documents.BucketEntry(it.name, timestamp(it.createdAt)) },
                 ownerId = OWNER,
                 ownerDisplayName = OWNER,
+                nextContinuationToken = page.lastOrNull()?.name?.takeIf { matching.size > page.size },
+                prefix = prefix,
             ),
         )
+    }
 
     private fun createBucket(bucket: String): HttpResponse {
         store.createBucket(bucket)
@@ -692,18 +889,45 @@ class S3Handler(
 
             val stored = store.commit(route.bucket, route.key, metadata, staged, writePrecondition(head))
             staged = null
-            HttpResponse(200, "OK", headers = checksumHeaders(metadata) + ("ETag" to stored.eTag))
+            HttpResponse(200, "OK", headers = checksumHeaders(metadata.checksum) + ("ETag" to stored.eTag))
         } catch (e: AwsChunkedDecoder.MalformedBody) {
             error(head, e.error, detail = e.message)
         } catch (e: ObjectStore.CeilingExceeded) {
             error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = route.key, bucket = route.bucket)
         } catch (e: ObjectStore.PreconditionFailed) {
-            error(head, S3Error.PRECONDITION_FAILED, detail = e.message, key = route.key, bucket = route.bucket)
+            error(head, refusalOf(e.outcome), detail = e.message, key = route.key, bucket = route.bucket)
+        } catch (e: MalformedCondition) {
+            error(head, S3Error.INVALID_ARGUMENT, detail = e.message, key = route.key, bucket = route.bucket)
         } finally {
             // Anything still staged at this point is a body that was written and refused.
             staged?.let(store::discard)
         }
     }
+
+    /** The same three conditions as the headers of a single `DELETE`, read off one `<Object>`. */
+    private fun conditionOf(target: S3Requests.Target): ObjectStore.Precondition =
+        ObjectStore.Precondition(
+            ifMatch = target.eTag?.let(::tags),
+            size = target.size?.let { it.toLongOrNull() ?: throw MalformedCondition("<Size> is not a number: '$it'") },
+            lastModifiedMillis =
+                target.lastModifiedTime?.let {
+                    parseHttpDate(it) ?: throw MalformedCondition("<LastModifiedTime> is not a date: '$it'")
+                },
+        )
+
+    /**
+     * Which refusal a failed write precondition is.
+     *
+     * `MISMATCH` is `412`: the client described an object and described it wrongly. `ABSENT` is
+     * `404`, and the difference is not pedantry — a `412` tells a client to go and re-read the
+     * ETag of an object that does not exist, which is advice it cannot act on. The suite pins both
+     * (`test_put_object_if_match`, `test_put_object_ifmatch_nonexisted_failed`).
+     */
+    private fun refusalOf(outcome: ObjectStore.Outcome): S3Error =
+        when (outcome) {
+            ObjectStore.Outcome.ABSENT -> S3Error.NO_SUCH_KEY
+            else -> S3Error.PRECONDITION_FAILED
+        }
 
     /**
      * `If-Match` and `If-None-Match` on a write.
@@ -714,11 +938,47 @@ class S3Handler(
      * is only worth anything if the check and the write cannot be separated — which is why this
      * ends up in [ObjectStore.commit] rather than being decided here.
      */
-    private fun writePrecondition(head: HttpRequestParser.Head): ObjectStore.Precondition {
-        head.header("if-match")?.let { return ObjectStore.Precondition.IfMatch(tags(it)) }
-        head.header("if-none-match")?.let { return ObjectStore.Precondition.IfNoneMatch(tags(it)) }
-        return ObjectStore.Precondition.None
-    }
+    private fun writePrecondition(head: HttpRequestParser.Head): ObjectStore.Precondition =
+        ObjectStore.Precondition(
+            ifMatch = head.header("if-match")?.let(::tags),
+            ifNoneMatch = head.header("if-none-match")?.let(::tags),
+            // `x-amz-if-match-size` and `x-amz-if-match-last-modified-time` (M-84): conditions on
+            // what the object **is** rather than on the tag it was handed. They combine with
+            // `If-Match` and with each other — `s3-service-2.json` says so in the documentation of
+            // `DeleteObjectRequest.members.IfMatchSize` — which is why they are fields of one
+            // object and not a choice between three.
+            size =
+                head.header("x-amz-if-match-size")?.let {
+                    it.trim().toLongOrNull()
+                        ?: throw MalformedCondition("x-amz-if-match-size is not a number: '$it'")
+                },
+            lastModifiedMillis =
+                head.header("x-amz-if-match-last-modified-time")?.let {
+                    parseHttpDate(it)
+                        ?: throw MalformedCondition("x-amz-if-match-last-modified-time is not a date: '$it'")
+                },
+        )
+
+    /**
+     * A condition that cannot be read at all, which is not a condition that did not hold.
+     *
+     * Answering `412` to a malformed header tells the client its object changed underneath it, and
+     * sends it off to re-read an object that is exactly as it left it. `400` says what is true.
+     */
+    private class MalformedCondition(
+        override val message: String,
+    ) : RuntimeException(message)
+
+    /** `rfc822`, which is the format `s3-service-2.json` gives these timestamps and `Last-Modified` uses. */
+    private fun parseHttpDate(value: String): Long? =
+        try {
+            java.time.ZonedDateTime
+                .parse(value.trim(), DateTimeFormatter.RFC_1123_DATE_TIME)
+                .toInstant()
+                .toEpochMilli()
+        } catch (_: java.time.format.DateTimeParseException) {
+            null
+        }
 
     private fun tags(condition: String): List<String> = condition.split(',').map { it.trim().removePrefix("W/").trim() }
 
@@ -790,16 +1050,19 @@ class S3Handler(
         val stored = store.get(bucket, key) ?: return error(head, S3Error.NO_SUCH_KEY, key = key, bucket = bucket)
         val path = store.pathOf(stored)
         val headers =
-            buildList {
-                add("ETag" to stored.eTag)
-                add("Last-Modified" to httpDate(stored.lastModified))
-                add("Accept-Ranges" to "bytes")
-                addAll(ObjectHeaders.write(stored.metadata))
-                // S3 answers with a content type whether or not one was given: `binary/octet-stream`
-                // is the model's own default, and a client that reads the header unconditionally
-                // gets an error rather than a default of its own.
-                if (stored.metadata.contentType == null) add("Content-Type" to DEFAULT_CONTENT_TYPE)
-            }
+            overridden(
+                head,
+                buildList {
+                    add("ETag" to stored.eTag)
+                    add("Last-Modified" to httpDate(stored.lastModified))
+                    add("Accept-Ranges" to "bytes")
+                    addAll(ObjectHeaders.write(stored.metadata))
+                    // S3 answers with a content type whether or not one was given:
+                    // `binary/octet-stream` is the model's own default, and a client that reads
+                    // the header unconditionally gets an error rather than a default of its own.
+                    if (stored.metadata.contentType == null) add("Content-Type" to DEFAULT_CONTENT_TYPE)
+                },
+            )
 
         conditional(head, stored)?.let { status ->
             // `304` is the one status in this server that carries no body, because HTTP says a
@@ -835,7 +1098,12 @@ class S3Handler(
                 headers =
                     headers +
                         ("Content-Range" to "bytes ${slice.first}-${slice.first + slice.second - 1}/${stored.size}") +
-                        ("x-amz-mp-parts-count" to maxOf(stored.parts.size, 1).toString()),
+                        ("x-amz-mp-parts-count" to maxOf(stored.parts.size, 1).toString()) +
+                        // **That part's** checksum, not the object's. The rule is the one a `206`
+                        // already taught this server: a checksum beside a response describes the
+                        // bytes in that response, and the object's would be a true statement about
+                        // bytes the client did not receive.
+                        partChecksumIfAsked(head, stored, partNumber),
                 file = if (withBody) HttpResponse.FileSlice(path, slice.first, slice.second) else null,
                 contentLength = slice.second,
             )
@@ -953,6 +1221,38 @@ class S3Handler(
     }
 
     /**
+     * `response-content-type=foo/bar` and its five siblings, which replace the headers of **this**
+     * answer without touching the object (M-79).
+     *
+     * `shapes.GetObjectRequest.members.ResponseContentType` and the rest of the family are
+     * querystring parameters, and `HeadObjectRequest` has the same six. What they are for is a
+     * browser: a presigned link can hand out a stored `application/octet-stream` as
+     * `text/csv; charset=utf-8` with a `Content-Disposition` that names the file, and none of that
+     * is a property of the object — the next reader sees what was stored.
+     *
+     * This is what the case behind M-79 was actually about. The task read "a Content-Type set at
+     * upload came back as the default", which is what its failure message looks like
+     * (`assert 'binary/octet-stream' == 'foo/bar'`) if you have not seen the request: the type was
+     * never set at upload at all, it was asked for in the query.
+     */
+    private fun overridden(
+        head: HttpRequestParser.Head,
+        headers: List<Pair<String, String>>,
+    ): List<Pair<String, String>> {
+        // The common `GET` has no query at all, and this sits on the read path: splitting an empty
+        // string to find nothing is an allocation per request for a parameter almost nobody sends.
+        if (head.query.isEmpty()) return headers
+        val params = rawQueryParams(head.query)
+        val overrides =
+            RESPONSE_OVERRIDES.mapNotNull { (parameter, header) ->
+                params[parameter]?.let { header to String(it) }
+            }
+        if (overrides.isEmpty()) return headers
+        val replaced = overrides.map { it.first.lowercase() }.toSet()
+        return headers.filterNot { it.first.lowercase() in replaced } + overrides
+    }
+
+    /**
      * `GET /<bucket>/<key>?attributes` — the object's shape, without its bytes.
      *
      * `x-amz-object-attributes` names which members to answer, and only those are sent. A server
@@ -989,6 +1289,14 @@ class S3Handler(
             }
         }
 
+        // `x-amz-max-parts` and `x-amz-part-number-marker` page the part list, and they have to:
+        // `ObjectParts` on a ten-thousand-part object is a megabyte of document, which is the same
+        // reason the attribute list is opt-in in the first place.
+        val marker = head.header("x-amz-part-number-marker")?.trim()?.toIntOrNull() ?: 0
+        val maxParts = head.header("x-amz-max-parts")?.trim()?.toIntOrNull() ?: S3Requests.MAX_PARTS
+        val after = stored.parts.filter { it.number > marker }
+        val page = after.take(maxParts)
+
         return xml(
             S3Documents.getObjectAttributesResult(
                 eTag = stored.eTag.takeIf { "ETag" in asked },
@@ -996,20 +1304,80 @@ class S3Handler(
                     stored.metadata.checksum
                         ?.takeIf { "Checksum" in asked }
                         ?.let { it.algorithm to it.value },
+                checksumType =
+                    stored.metadata.checksum
+                        ?.takeIf { "Checksum" in asked }
+                        ?.let(::typeOf),
                 objectSize = stored.size.takeIf { "ObjectSize" in asked },
                 storageClass = "STANDARD".takeIf { "StorageClass" in asked },
                 parts =
-                    stored.parts
-                        .takeIf { "ObjectParts" in asked }
-                        ?.map { S3Documents.PartEntry(it.number, timestamp(stored.lastModified), it.eTag, it.size) },
+                    page
+                        .takeIf { "ObjectParts" in asked && stored.parts.isNotEmpty() }
+                        ?.map {
+                            S3Documents.PartEntry(
+                                partNumber = it.number,
+                                lastModified = timestamp(stored.lastModified),
+                                eTag = it.eTag,
+                                size = it.size,
+                                checksum = it.checksum?.let { checksum -> checksum.algorithm to checksum.value },
+                            )
+                        },
+                // The object's count, not the page's: a client that asked for one part still has
+                // to be told how many there are, or it cannot know it is paginating.
                 partsCount = stored.parts.size,
+                partNumberMarker = marker,
+                maxParts = maxParts,
+                isTruncated = after.size > page.size,
             ),
         ).copy(headers = listOf("Content-Type" to "application/xml", "Last-Modified" to httpDate(stored.lastModified)))
     }
 
     /** `x-amz-checksum-<algorithm>`, echoed back exactly as the client stated it on upload. */
-    private fun checksumHeaders(metadata: Metadata): List<Pair<String, String>> =
-        metadata.checksum?.let { listOf("x-amz-checksum-${it.algorithm}" to it.value) } ?: emptyList()
+    private fun checksumHeaders(checksum: Metadata.Checksum?): List<Pair<String, String>> =
+        checksum?.let {
+            listOf(
+                "x-amz-checksum-${it.algorithm}" to it.value,
+                // `GetObjectOutput.ChecksumType`: which of the two things the value is. Without it
+                // a client holding `a1b2c3==-3` has to infer from the suffix, and one holding a
+                // full-object CRC cannot tell it from an ordinary upload's at all.
+                "x-amz-checksum-type" to typeOf(it),
+            )
+        } ?: emptyList()
+
+    /**
+     * `COMPOSITE` when the value is a checksum of checksums, which the `-N` says, `FULL_OBJECT`
+     * otherwise — and that reading is exact rather than a heuristic. A checksum with the suffix
+     * describes the parts' checksums; one without describes the object's bytes, whether it was
+     * assembled from three parts or uploaded in one go, and both of those are `FULL_OBJECT`.
+     */
+    private fun typeOf(checksum: Metadata.Checksum): String = if ('-' in checksum.value) "COMPOSITE" else "FULL_OBJECT"
+
+    /** The checksum of the one part being read, when the object remembers one for it. */
+    private fun partChecksumIfAsked(
+        head: HttpRequestParser.Head,
+        stored: ObjectStore.Stored,
+        partNumber: Int,
+    ): List<Pair<String, String>> =
+        if (head.header("x-amz-checksum-mode").equals("ENABLED", ignoreCase = true)) {
+            // An object with no seams has one part and it is the object, so its own checksum is
+            // the right answer for `partNumber=1` — the same equivalence that lets a client use
+            // one download loop for both kinds of object.
+            val checksum =
+                stored.parts.firstOrNull { it.number == partNumber }?.checksum
+                    ?: stored.metadata.checksum.takeIf { stored.parts.isEmpty() }
+            // The **value** describes this part; the **type** describes the object. A part of a
+            // `COMPOSITE` object has an ordinary-looking checksum with no `-N`, and answering
+            // `FULL_OBJECT` beside it would tell the client the object's checksum is one it can
+            // reproduce by hashing what it downloads. It cannot.
+            checksum?.let {
+                listOf(
+                    "x-amz-checksum-${it.algorithm}" to it.value,
+                    "x-amz-checksum-type" to (stored.metadata.checksum?.let(::typeOf) ?: typeOf(it)),
+                )
+            } ?: emptyList()
+        } else {
+            emptyList()
+        }
 
     /**
      * The checksum, but only with the whole object.
@@ -1024,7 +1392,7 @@ class S3Handler(
         stored: ObjectStore.Stored,
     ): List<Pair<String, String>> =
         if (head.header("x-amz-checksum-mode").equals("ENABLED", ignoreCase = true)) {
-            checksumHeaders(stored.metadata)
+            checksumHeaders(stored.metadata.checksum)
         } else {
             emptyList()
         }
@@ -1054,13 +1422,31 @@ class S3Handler(
             }
 
         val deleted = mutableListOf<S3Documents.DeletedEntry>()
-        for (key in request.keys) {
-            store.delete(bucket, key)
-            // Deleting what is not there is a success in S3, so every key is reported deleted.
-            deleted += S3Documents.DeletedEntry(key)
+        val errors = mutableListOf<S3Documents.DeleteError>()
+        for (target in request.targets) {
+            // A refusal here belongs to **the key**, not to the request: the other 999 have to go
+            // on being deleted, and the client has to be told which one did not. Answering `412`
+            // for the batch would refuse work it never asked to be conditional. Without this the
+            // suite reads `Errors` off a response that says everything was deleted and finds
+            // nothing there, having been told an object it protected is gone (`KeyError: 'Errors'`).
+            val precondition =
+                try {
+                    conditionOf(target)
+                } catch (e: MalformedCondition) {
+                    errors += S3Documents.DeleteError(target.key, S3Error.INVALID_ARGUMENT.code, e.message)
+                    continue
+                }
+            try {
+                store.delete(bucket, target.key, precondition)
+                // Deleting what is not there is a success in S3, so every key that got this far is
+                // reported deleted.
+                deleted += S3Documents.DeletedEntry(target.key)
+            } catch (e: ObjectStore.PreconditionFailed) {
+                errors += S3Documents.DeleteError(target.key, S3Error.PRECONDITION_FAILED.code, e.message)
+            }
         }
-        // In quiet mode only failures are reported, and there are none to report.
-        return xml(S3Documents.deleteResult(if (request.quiet) emptyList() else deleted, emptyList()))
+        // In quiet mode only failures are reported.
+        return xml(S3Documents.deleteResult(if (request.quiet) emptyList() else deleted, errors))
     }
 
     private fun deleteObject(
@@ -1070,11 +1456,15 @@ class S3Handler(
     ): HttpResponse =
         try {
             // Deleting what is not there is a success in S3, and the test for that lives in the
-            // contract because intuition says otherwise.
+            // contract because intuition says otherwise. It carries over to the conditional form:
+            // a precondition against a key that is not there cannot fail, because there is nothing
+            // for it to protect (`s3-service-2.json`, `DeleteObjectRequest.members.IfMatchSize`).
             store.delete(bucket, key, writePrecondition(head))
             HttpResponse(204, "No Content")
         } catch (e: ObjectStore.PreconditionFailed) {
             error(head, S3Error.PRECONDITION_FAILED, detail = e.message, key = key, bucket = bucket)
+        } catch (e: MalformedCondition) {
+            error(head, S3Error.INVALID_ARGUMENT, detail = e.message, key = key, bucket = bucket)
         }
 
     private fun route(head: HttpRequestParser.Head): S3Router.Route =
@@ -1200,6 +1590,17 @@ class S3Handler(
 
         /** `s3-service-2.json`, `GetObjectOutput.members.ContentType`: what S3 says when nobody said. */
         const val DEFAULT_CONTENT_TYPE = "binary/octet-stream"
+
+        /** `response-<header>` query parameter to the header it replaces, in the model's order. */
+        private val RESPONSE_OVERRIDES =
+            listOf(
+                "response-cache-control" to "Cache-Control",
+                "response-content-disposition" to "Content-Disposition",
+                "response-content-encoding" to "Content-Encoding",
+                "response-content-language" to "Content-Language",
+                "response-content-type" to "Content-Type",
+                "response-expires" to "Expires",
+            )
 
         val ISO: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'").withZone(ZoneOffset.UTC)

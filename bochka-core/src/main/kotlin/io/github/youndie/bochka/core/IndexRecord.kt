@@ -18,6 +18,13 @@ sealed interface IndexRecord {
 
     data class BucketCreated(
         override val bucket: String,
+        /**
+         * When, so a listing can say. Zero for a bucket recorded before this field existed — the
+         * honest reading of a log that never wrote it, and the alternative is worse: filling in
+         * the time of the restart makes every bucket look newly created, and look different again
+         * after the next one.
+         */
+        val createdAtMillis: Long = 0,
     ) : IndexRecord
 
     data class BucketDeleted(
@@ -53,6 +60,18 @@ sealed interface IndexRecord {
         val uploadId: String,
         val startedAtMillis: Long,
         val metadata: Metadata,
+        /**
+         * What the client said the parts would be checksummed with, and how they combine.
+         *
+         * Both are S3's words carried verbatim — `crc32c`, `FULL_OBJECT` — because the choice is
+         * made once, on the request that starts the upload, and every later part and the
+         * completion have to agree with it. Forgetting it across a restart would answer a
+         * different question than the client asked: a `FULL_OBJECT` upload whose completion
+         * defaulted back to `COMPOSITE` hands out a value that describes nothing the client can
+         * check, and does it silently.
+         */
+        val checksumAlgorithm: String? = null,
+        val checksumType: String? = null,
     ) : IndexRecord
 
     data class UploadPart(
@@ -63,6 +82,15 @@ sealed interface IndexRecord {
         val size: Long,
         val eTag: String,
         val lastModifiedMillis: Long,
+        /**
+         * What the client stated about this part.
+         *
+         * In the log for the same reason as the part itself: the object's checksum is computed
+         * from these at completion, so an upload that survives a restart with its parts but
+         * without their checksums completes into an object whose checksum is missing — or, worse,
+         * computed from the subset that happened to be in memory.
+         */
+        val checksum: Metadata.Checksum? = null,
     ) : IndexRecord
 
     /** Completed or aborted — from the index's side those are the same event: the upload is over. */
@@ -99,6 +127,20 @@ sealed interface IndexRecord {
          */
         private const val KIND_PUT_WITH_PARTS: Byte = 9
 
+        /**
+         * The two upload records, once they carry checksums.
+         *
+         * Same rule again, third time: a new field is a new kind byte, and 6 and 7 keep decoding
+         * to exactly what they meant — an upload with no checksum stated and a part with none.
+         * That is the correct reading of an old record rather than a convenient one; those uploads
+         * really did carry no checksum.
+         */
+        private const val KIND_UPLOAD_STARTED_WITH_CHECKSUM: Byte = 10
+        private const val KIND_UPLOAD_PART_WITH_CHECKSUM: Byte = 11
+
+        /** A bucket that also remembers when it was created. Kind 1 decodes to "not recorded". */
+        private const val KIND_BUCKET_CREATED_AT: Byte = 12
+
         /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
         private const val MAX_PARTS = 10_000L
 
@@ -113,8 +155,9 @@ sealed interface IndexRecord {
             val out = ByteArrayOutputStream(128)
             when (record) {
                 is BucketCreated -> {
-                    out.write(KIND_BUCKET_CREATED.toInt())
+                    out.write(KIND_BUCKET_CREATED_AT.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
+                    out.putInt64(record.createdAtMillis)
                 }
 
                 is BucketDeleted -> {
@@ -129,16 +172,18 @@ sealed interface IndexRecord {
                 }
 
                 is UploadStarted -> {
-                    out.write(KIND_UPLOAD_STARTED.toInt())
+                    out.write(KIND_UPLOAD_STARTED_WITH_CHECKSUM.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.key.toByteArray())
                     out.putField(record.uploadId.toByteArray(StandardCharsets.US_ASCII))
                     out.putInt64(record.startedAtMillis)
                     out.putMetadata(record.metadata)
+                    out.putText(record.checksumAlgorithm)
+                    out.putText(record.checksumType)
                 }
 
                 is UploadPart -> {
-                    out.write(KIND_UPLOAD_PART.toInt())
+                    out.write(KIND_UPLOAD_PART_WITH_CHECKSUM.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.uploadId.toByteArray(StandardCharsets.US_ASCII))
                     out.putInt64(record.number.toLong())
@@ -146,6 +191,8 @@ sealed interface IndexRecord {
                     out.putInt64(record.size)
                     out.putField(record.eTag.toByteArray(StandardCharsets.US_ASCII))
                     out.putInt64(record.lastModifiedMillis)
+                    out.putText(record.checksum?.algorithm)
+                    out.putText(record.checksum?.value)
                 }
 
                 is UploadEnded -> {
@@ -183,6 +230,10 @@ sealed interface IndexRecord {
                     BucketCreated(buffer.text())
                 }
 
+                KIND_BUCKET_CREATED_AT -> {
+                    BucketCreated(buffer.text(), buffer.long)
+                }
+
                 KIND_BUCKET_DELETED -> {
                     BucketDeleted(buffer.text())
                 }
@@ -203,25 +254,56 @@ sealed interface IndexRecord {
                     )
                 }
 
-                KIND_UPLOAD_STARTED -> {
+                KIND_UPLOAD_STARTED, KIND_UPLOAD_STARTED_WITH_CHECKSUM -> {
+                    val bucket = buffer.text()
+                    val key = ObjectKey(buffer.bytes())
+                    val uploadId = buffer.text()
+                    val startedAt = buffer.long
+                    val metadata = buffer.metadata()
                     UploadStarted(
-                        bucket = buffer.text(),
-                        key = ObjectKey(buffer.bytes()),
-                        uploadId = buffer.text(),
-                        startedAtMillis = buffer.long,
-                        metadata = buffer.metadata(),
+                        bucket = bucket,
+                        key = key,
+                        uploadId = uploadId,
+                        startedAtMillis = startedAt,
+                        metadata = metadata,
+                        checksumAlgorithm =
+                            if (kind ==
+                                KIND_UPLOAD_STARTED_WITH_CHECKSUM
+                            ) {
+                                buffer.optionalText()
+                            } else {
+                                null
+                            },
+                        checksumType = if (kind == KIND_UPLOAD_STARTED_WITH_CHECKSUM) buffer.optionalText() else null,
                     )
                 }
 
-                KIND_UPLOAD_PART -> {
+                KIND_UPLOAD_PART, KIND_UPLOAD_PART_WITH_CHECKSUM -> {
+                    val bucket = buffer.text()
+                    val uploadId = buffer.text()
+                    val number = buffer.long.toInt()
+                    val fileId = buffer.text()
+                    val size = buffer.long
+                    val eTag = buffer.text()
+                    val lastModified = buffer.long
+                    val algorithm = if (kind == KIND_UPLOAD_PART_WITH_CHECKSUM) buffer.optionalText() else null
+                    val value = if (kind == KIND_UPLOAD_PART_WITH_CHECKSUM) buffer.optionalText() else null
                     UploadPart(
-                        bucket = buffer.text(),
-                        uploadId = buffer.text(),
-                        number = buffer.long.toInt(),
-                        fileId = buffer.text(),
-                        size = buffer.long,
-                        eTag = buffer.text(),
-                        lastModifiedMillis = buffer.long,
+                        bucket = bucket,
+                        uploadId = uploadId,
+                        number = number,
+                        fileId = fileId,
+                        size = size,
+                        eTag = eTag,
+                        lastModifiedMillis = lastModified,
+                        checksum =
+                            if (algorithm != null &&
+                                value != null
+                            ) {
+                                Metadata.Checksum(algorithm, value)
+                            } else {
+                                null
+                            },
                     )
                 }
 
