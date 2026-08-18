@@ -155,8 +155,8 @@ Three independent levels, because each is blind to what the others catch:
    The count of enabled tests is printed next to the percentage, because otherwise a rising score
    and a shrinking suite look identical.
 
-s3kn is in level 2 as well — `ci/s3kn.sh` runs its live tests against bochka, 15 of 21 today — but
-it is the one client whose result is never the metric. Its author is this project's author, and
+s3kn is in level 2 as well — `ci/s3kn.sh` runs its live tests against bochka, 21 of 21 today — but
+it is the one client whose result is never the metric, and passing all of them is exactly why. Its author is this project's author, and
 testing a server with your own client is the weakest check available — it signs its bodies the one simple
 way, so it never exercises the thing most likely to be broken, and it does that while looking
 green. It stays in the set as a second independent implementation of the signature and as presign
@@ -169,12 +169,18 @@ exists, ahead of everything else:
 
 > **244 of 744 passed (32%)** — `ceph/s3-tests` at `5522d1c`, 3m03s, `./ci/s3-tests.sh`.
 
-Low, and it should be: most of the 500 remaining failures are things this store says in
+Low, and it should be: **470 of the 500 remaining failures** are things this store says in
 ["What bochka is not"](#what-bochka-is-not) that it will never have — encryption, ACLs,
-versioning, lifecycle, policies. Every failure is classified with a reason
-([docs/s3-tests.md](docs/s3-tests.md)), and a failure nobody has classified is reported by name
-as `unclassified` rather than folded into a category. That count is zero, and so is the number of
-known defects: the remaining 43 in scope are deferred, each with a reason. What the number is for is the direction it moves, which is why
+versioning, object lock, lifecycle, policies. Every failure is classified with a reason
+([docs/s3-tests.md](docs/s3-tests.md)), and one nobody has classified is reported by name as
+`unclassified` rather than folded into a category. That count is zero.
+
+The other **30 are in scope and not done**, and they are milestone M13 in
+[BACKLOG.md](BACKLOG.md) rather than a footnote here. That distinction was itself a finding: they
+sat in the classification file marked "deferred" while the backlog said there was nothing to do,
+which is two documents disagreeing about the same thing. Counted against what is in scope the
+score is 244 of 274 — 89% — but that number is weaker precisely because its denominator is chosen
+here. 32% is the honest one because somebody else chose it. What the number is for is the direction it moves, which is why
 the count of tests that ran is printed beside it — a rising score and a shrinking suite look
 identical otherwise.
 
