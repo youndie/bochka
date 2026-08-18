@@ -340,4 +340,31 @@ class ObjectLockTest {
             assertTrue("<Version>" !in left, "осталось: $left")
         }
     }
+
+    @Test
+    fun `the document botocore actually sends is accepted`() {
+        // Мои тесты писали документ руками и потому не видели того, что видит сьют: настоящий
+        // клиент шлёт корневой элемент с пространством имён и дату со смещением, а не с `Z`.
+        // Лог прогона показал `PUT ?retention -> 400` там, где отказа быть не должно.
+        S3Fixture().use { s3 ->
+            s3.locked("photos")
+            s3.put("photos", "a.txt", "тело")
+
+            val answer =
+                s3.send(
+                    "PUT",
+                    "/photos/a.txt",
+                    query = "retention",
+                    body =
+                        (
+                            "<Retention xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">" +
+                                "<Mode>GOVERNANCE</Mode>" +
+                                "<RetainUntilDate>2030-01-01T00:00:00+00:00</RetainUntilDate></Retention>"
+                        ).toByteArray(),
+                )
+
+            assertEquals(200, answer.status, answer.text)
+            assertEquals("GOVERNANCE", s3.get("photos", "a.txt").header("x-amz-object-lock-mode"))
+        }
+    }
 }
