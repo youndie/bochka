@@ -254,4 +254,90 @@ class ObjectLockTest {
             assertTrue("InvalidRetentionPeriod" in answer.text, answer.text)
         }
     }
+
+    @Test
+    fun `the sequence test_object_lock_get_obj_metadata runs leaves nothing behind`() {
+        // Кейс убирает за собой сам: снимает legal hold и удаляет версию с обходом GOVERNANCE.
+        // Если после этого в бакете что-то остаётся, чужая фикстура упирается в retention до
+        // 2030 года и валит все следующие кейсы — 92 штуки.
+        S3Fixture().use { s3 ->
+            s3.locked("photos")
+            s3.put("photos", "file1", "abc")
+            s3.send(
+                "PUT",
+                "/photos/file1",
+                query = "legal-hold",
+                body = "<LegalHold><Status>ON</Status></LegalHold>".toByteArray(),
+            )
+            s3.send("PUT", "/photos/file1", query = "retention", body = retention("GOVERNANCE", "2030-01-01T00:00:00Z"))
+
+            val head = s3.send("HEAD", "/photos/file1")
+            assertEquals("GOVERNANCE", head.header("x-amz-object-lock-mode"))
+            assertEquals("ON", head.header("x-amz-object-lock-legal-hold-status"))
+            val version = head.header("x-amz-version-id")
+
+            s3.send(
+                "PUT",
+                "/photos/file1",
+                query = "legal-hold",
+                body = "<LegalHold><Status>OFF</Status></LegalHold>".toByteArray(),
+            )
+            val removed =
+                s3.send(
+                    "DELETE",
+                    "/photos/file1",
+                    query = "versionId=$version",
+                    headers = listOf("x-amz-bypass-governance-retention" to "true"),
+                )
+
+            assertEquals(204, removed.status, removed.text)
+            val left = s3.send("GET", "/photos", query = "versions").text
+            assertTrue("<Version>" !in left && "<DeleteMarker>" !in left, "осталось: $left")
+        }
+    }
+
+    @Test
+    fun `the batch delete the cleanup uses steps over GOVERNANCE when it says so`() {
+        // `nuke_bucket` не удаляет по одному: оно шлёт `POST ?delete` пачками по 128 с
+        // `BypassGovernanceRetention=True`. Кейсы, которые ставят retention до 2030 и не убирают
+        // за собой, рассчитывают именно на этот путь — если обход не доезжает досюда, бакет
+        // остаётся запертым на годы, и это валит весь прогон.
+        S3Fixture().use { s3 ->
+            s3.locked("photos")
+            val version = s3.put("photos", "a.txt", "тело").header("x-amz-version-id")!!
+            s3.send("PUT", "/photos/a.txt", query = "retention", body = retention("GOVERNANCE", "2030-01-01T00:00:00Z"))
+
+            val body =
+                (
+                    "<Delete><Quiet>true</Quiet><Object><Key>a.txt</Key>" +
+                        "<VersionId>$version</VersionId></Object></Delete>"
+                ).toByteArray()
+            // `Content-MD5` пакетное удаление требует, и требует правильно: тело называет
+            // объекты, которые исчезнут, и обрыв на проводе не должен обернуться удалением
+            // не того.
+            val md5 =
+                java.util.Base64.getEncoder().encodeToString(
+                    java.security.MessageDigest
+                        .getInstance("MD5")
+                        .digest(body),
+                )
+            val answer =
+                s3.send(
+                    "POST",
+                    "/photos",
+                    query = "delete",
+                    headers =
+                        listOf(
+                            "x-amz-bypass-governance-retention" to "true",
+                            "Content-MD5" to md5,
+                        ),
+                    body = body,
+                )
+
+            assertEquals(200, answer.status, answer.text)
+            assertTrue("<Error>" !in answer.text, answer.text)
+            val left = s3.send("GET", "/photos", query = "versions").text
+            assertTrue("<Version>" !in left, "осталось: $left")
+        }
+    }
 }

@@ -1181,9 +1181,9 @@ class S3Handler(
             // `x-amz-object-lock-*` on the upload itself: the object arrives already protected,
             // which is the only way to close the window between a write and the retention that was
             // meant to cover it.
-            lockOnUpload(head)?.let { (retention, held) ->
-                store.setRetention(route.bucket, route.key, stored.versionId, retention)
-                if (held) store.setLegalHold(route.bucket, route.key, stored.versionId, true)
+            lockOnUpload(head)?.let { stated ->
+                stated.retention?.let { store.setRetention(route.bucket, route.key, stored.versionId, it) }
+                stated.legalHold?.let { store.setLegalHold(route.bucket, route.key, stored.versionId, it) }
                 stored = store.get(route.bucket, route.key, stored.versionId) ?: stored
             }
             HttpResponse(
@@ -1195,6 +1195,8 @@ class S3Handler(
             error(head, e.error, detail = e.message)
         } catch (e: ObjectStore.CeilingExceeded) {
             error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = route.key, bucket = route.bucket)
+        } catch (e: ObjectStore.Locked) {
+            error(head, S3Error.ACCESS_DENIED, detail = e.message, key = route.key, bucket = route.bucket)
         } catch (e: ObjectStore.PreconditionFailed) {
             error(head, refusalOf(e.outcome), detail = e.message, key = route.key, bucket = route.bucket)
         } catch (e: MalformedCondition) {
@@ -2197,11 +2199,28 @@ class S3Handler(
      * become "no retention" — that would be a write quietly stripping the protection a default
      * rule put on the object.
      */
-    private fun lockOnUpload(head: HttpRequestParser.Head): Pair<ObjectStore.Retention?, Boolean>? {
-        val mode = head.header("x-amz-object-lock-mode")?.trim()
-        val until = head.header("x-amz-object-lock-retain-until-date")?.trim()
-        val held = head.header("x-amz-object-lock-legal-hold-status")?.trim().equals("ON", ignoreCase = true)
-        if (mode == null && until == null && !held) return null
+
+    /**
+     * What the upload **said** about locks, with "said nothing" kept distinct from "said none".
+     *
+     * Both fields are null when the header was absent, and that distinction is the whole type. An
+     * upload that mentions no retention must not remove the retention already on the object — a
+     * default rule may have put it there, and a write is not the place to take protection off.
+     */
+    private class StatedLock(
+        val retention: ObjectStore.Retention?,
+        val legalHold: Boolean?,
+    )
+
+    private fun lockOnUpload(head: HttpRequestParser.Head): StatedLock? {
+        fun stated(name: String) = head.header(name)?.trim()?.takeIf { it.isNotEmpty() }
+
+        val mode = stated("x-amz-object-lock-mode")
+        val until = stated("x-amz-object-lock-retain-until-date")
+        // `OFF` is a statement and `absent` is not, which is where this went wrong: an upload
+        // carrying only `ObjectLockLegalHoldStatus: OFF` used to arrive here as "no retention
+        // either" and strip one that was already in force.
+        val legalHold = stated("x-amz-object-lock-legal-hold-status")?.equals("ON", ignoreCase = true)
         val retention =
             if (mode != null && until != null) {
                 runCatching {
@@ -2214,7 +2233,8 @@ class S3Handler(
             } else {
                 null
             }
-        return retention to held
+        if (retention == null && legalHold == null) return null
+        return StatedLock(retention, legalHold)
     }
 
     /** The caller saying out loud that it means to step over a `GOVERNANCE` lock. */
