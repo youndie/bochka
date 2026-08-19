@@ -979,6 +979,14 @@ object Measurements {
                 ),
             )
             println(
+                "  processor   %.1f s of CPU for %,.2f GiB of garbage — %.2f cpu-s per GiB".format(
+                    load.cpuNanos / 1e9,
+                    load.allocated / GIB.toDouble(),
+                    (load.cpuNanos / 1e9) / (load.allocated / GIB.toDouble()),
+                ),
+            )
+            println("  by name     ${collections.byName()}")
+            println(
                 "  collections minor %,d (%,.0f ms) major %,d (%,.0f ms) — the collector's own count".format(
                     collections.minorCount() - minor,
                     collections.minorMillis(minor),
@@ -1003,7 +1011,7 @@ object Measurements {
                     "RESULT collector=%s xmx=%d max=%d ceiling=%d objects=%d open=%.3f live=%d " +
                         "forced_median=%.3f forced_max=%.3f felt_median=%.3f felt_max=%.3f minor=%d minor_ms=%.0f " +
                         "major=%d major_ms=%.0f p50=%.3f p99=%.3f p999=%.3f stall_max=%.3f " +
-                        "load=%.1f alloc=%.2f rss=%d concurrent=%b"
+                        "load=%.1f alloc=%.2f cpu=%.1f rss=%d concurrent=%b"
                 ).format(
                     collectorTag(),
                     ManagementRuntime.heapArgumentBytes() / MIB,
@@ -1026,6 +1034,7 @@ object Measurements {
                     stalls.max(loadFrom, loadTo) / 1e6,
                     load.nanos / 1e9,
                     load.allocated / GIB.toDouble(),
+                    load.cpuNanos / 1e9,
                     Rss.peak() / MIB,
                     isConcurrent(),
                 ),
@@ -1095,6 +1104,15 @@ object Measurements {
         val listings: Long,
         val allocated: Long,
         val nanos: Long,
+        /**
+         * Processor time of the **whole process**, not of the thread doing the work.
+         *
+         * A concurrent collector moves work off the request path rather than removing it, and a
+         * per-thread figure cannot see that: it would report the collector that spends four cores
+         * marking as the cheapest one in the table. This project decides on processor per unit of
+         * work everywhere else (`docs/measurements.md`), and a collector is not an exception.
+         */
+        val cpuNanos: Long,
     )
 
     /**
@@ -1121,6 +1139,7 @@ object Measurements {
         var lookups = 0L
         var listings = 0L
         val allocatedBefore = allocatedBytes()
+        val cpuBefore = processCpuNanos()
         val startedAt = System.nanoTime()
         while (true) {
             repeat(100) {
@@ -1134,10 +1153,22 @@ object Measurements {
             }
             if (allocatedBytes() - allocatedBefore >= budget) break
         }
-        return Churn(lookups, listings, allocatedBytes() - allocatedBefore, System.nanoTime() - startedAt)
+        return Churn(
+            lookups,
+            listings,
+            allocatedBytes() - allocatedBefore,
+            System.nanoTime() - startedAt,
+            processCpuNanos() - cpuBefore,
+        )
     }
 
     private fun gcKey(i: Int): String = "photos/%023d/img.jpg".format(i)
+
+    private fun processCpuNanos(): Long =
+        (
+            java.lang.management.ManagementFactory
+                .getOperatingSystemMXBean() as com.sun.management.OperatingSystemMXBean
+        ).processCpuTime
 
     private fun allocatedBytes(): Long =
         (
@@ -1395,6 +1426,7 @@ private class Hiccups(
 private class GcLog {
     private val minor = ArrayList<Long>()
     private val major = ArrayList<Long>()
+    private val named = LinkedHashMap<String, Int>()
     private val installed =
         ArrayList<Pair<javax.management.NotificationEmitter, javax.management.NotificationListener>>()
 
@@ -1412,6 +1444,10 @@ private class GcLog {
                                 .from(notification.userData as javax.management.openmbean.CompositeData)
                         val into = if (info.gcAction.contains("major")) major else minor
                         synchronized(into) { into.add(info.gcInfo.duration) }
+                        synchronized(named) {
+                            val label = "${info.gcName}/${info.gcAction.removePrefix("end of ")}"
+                            named[label] = (named[label] ?: 0) + 1
+                        }
                     }
                 }
             bean.addNotificationListener(listener, null, null)
@@ -1422,6 +1458,23 @@ private class GcLog {
     fun uninstall() {
         for ((bean, listener) in installed) runCatching { bean.removeNotificationListener(listener) }
     }
+
+    /**
+     * Every collector bean with what it reported, because the classification above is a guess made
+     * from a word in a string. `PS Scavenge` calling itself a minor collection and `PS MarkSweep` a
+     * major one is a convention, not an interface, and a table that said "139 major collections"
+     * without saying which bean said so would be unfalsifiable.
+     */
+    fun byName(): String =
+        synchronized(named) {
+            if (named.isEmpty()) {
+                "(nothing collected)"
+            } else {
+                named.entries.joinToString(
+                    ", ",
+                ) { "${it.key} x${it.value}" }
+            }
+        }
 
     fun minorCount(): Int = synchronized(minor) { minor.size }
 

@@ -80,10 +80,11 @@ awk '
     max_mem[key] = f["max"]; ceil[key] = f["ceiling"]; live[key] = f["live"]
     rss[key] = f["rss"]; conc[key] = f["concurrent"]
     major[key] = f["major"]; alloc[key] = f["alloc"]; load[key] = f["load"]
+    cpu[key] = f["cpu"]
   }
   END {
-    printf "%-7s %-9s %10s %9s %9s %9s %10s %9s %8s %7s\n", \
-      "-Xmx", "collector", "maxMemory", "ceiling", "live", "full gc", "felt as", "stall max", "rss", "spread"
+    printf "%-7s %-9s %10s %9s %9s %9s %10s %9s %8s %8s %7s\n", \
+      "-Xmx", "collector", "maxMemory", "ceiling", "live", "full gc", "felt as", "stall max", "rss", "cpu/GiB", "spread"
     for (key in n) {
       c = n[key]
       for (i = 1; i <= c; i++) { a[i] = forced[key "\t" i] + 0 }
@@ -95,8 +96,9 @@ awk '
       feltmax = 0
       for (i = 1; i <= c; i++) { if (felt[key "\t" i] + 0 > feltmax) feltmax = felt[key "\t" i] + 0 }
       split(key, k, "\t")
-      printf "%-7s %-9s %8s M %9s %7s M %8.3f s %8.0f ms %7.0f ms %6s M %6.2fx%s\n", \
-        k[1] "M", k[2], max_mem[key], ceil[key], live[key], med, feltmax, worst, rss[key], spread, \
+      printf "%-7s %-9s %8s M %9s %7s M %8.3f s %8.0f ms %7.0f ms %6s M %6.2f s %6.2fx%s\n", \
+        k[1] "M", k[2], max_mem[key], ceil[key], live[key], med, feltmax, worst, rss[key], \
+        (alloc[key] > 0 ? cpu[key] / alloc[key] : 0), spread, \
         (conc[key] == "true" ? "   <- cycle, not pause" : "")
     }
   }
