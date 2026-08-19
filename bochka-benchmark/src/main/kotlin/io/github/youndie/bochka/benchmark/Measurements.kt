@@ -761,7 +761,20 @@ object Measurements {
         // an object overwritten twice leaves behind.
         val generations = System.getenv("BOCHKA_MEASURE_GENERATIONS")?.toIntOrNull() ?: 3
 
-        for (keyLength in listOf(40, 100)) {
+        // Both lengths by default, because "bytes per object" is not a constant and publishing it
+        // as one would be the misleading half of a true statement. Overridable because a run that
+        // wants a **known** live set cannot have two stores in it: the peak live set of a two-length
+        // run is larger than any real store holds at that object count, so a pause measured against
+        // it compares collectors to each other and nothing else (M-159).
+        val lengths =
+            System
+                .getenv("BOCHKA_MEASURE_KEY_LENGTHS")
+                ?.split(",")
+                ?.mapNotNull { it.trim().toIntOrNull() }
+                ?.takeIf { it.isNotEmpty() }
+                ?: listOf(40, 100)
+
+        for (keyLength in lengths) {
             val home = Files.createDirectories(dir.resolve("index-$keyLength"))
             val log = home.resolve("index.log")
             Files.deleteIfExists(log)
