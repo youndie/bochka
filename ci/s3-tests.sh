@@ -210,8 +210,12 @@ if [ "$ran" -eq 0 ]; then
   tail -20 "$work/pytest.out" >&2
   exit 1
 fi
+# Rounded, not truncated: this line is the source of the number quoted in README.md, docs/README.md,
+# docs/s3-tests.md and CLAUDE.md, and the two conventions first disagreed at 431 of 744 — 57.93%,
+# which truncates to 57 and rounds to 58. A harness that prints a different percentage than the docs
+# it feeds turns every reader into a bug reporter.
 printf 'ceph/s3-tests: %d of %d passed (%d%%), %d failed, %d errored\n' \
-  "$passed" "$ran" $((passed * 100 / ran)) "$failed" "$errors"
+  "$passed" "$ran" $(((passed * 100 + ran / 2) / ran)) "$failed" "$errors"
 scored=yes
 # An errored case is not a failing case: it never reached its own assertions, which almost always
 # means a fixture was refused something. That is the run whose log is worth keeping.
