@@ -100,6 +100,10 @@ object Measurements {
                     readPath(dir)
                 }
 
+                "sse" -> {
+                    sse(dir, bytes)
+                }
+
                 "gc" -> {
                     gcPauses(dir)
                 }
@@ -189,6 +193,82 @@ object Measurements {
         println(zeroCopy)
         println(throughHeap)
         println("  ${Measurement.compare(zeroCopy.median, throughHeap.median)}")
+    }
+
+    /**
+     * M-190: что стоит отдать объект, зашифрованный ключом клиента.
+     *
+     * Три варианта, и третий — единственное новое число. Первые два уже измерены как следует на
+     * сетевом стенде (M-61: чтение в кучу стоит 7.6–8.0× процессора zero-copy на байт), и здесь они
+     * стоят затем, чтобы третий было с чем сравнивать **на этой же машине**: у петли нет драйвера
+     * и прерываний, поэтому отношение zero-copy к остальным она занижает, а отношение двух
+     * пользовательских путей друг к другу — нет. Оно и спрашивается.
+     *
+     * Вопрос, ради которого это меряется, записан в вехе как гипотеза: цена зашифрованной отдачи
+     * упрётся в AES, а не в копирование, то есть окажется **меньше**, чем «в восемь раз дороже».
+     */
+    private fun sse(
+        dir: Path,
+        bytes: Long,
+    ) {
+        println("== M-190: what an encrypted object costs to serve ==")
+        val file = fill(dir.resolve("sse.bin"), bytes)
+        val key = ByteArray(32) { (it * 7 + 1).toByte() }
+        val iv = ByteArray(16) { (it * 13 + 5).toByte() }
+
+        val zeroCopy =
+            Measurement.repeated("transferTo (an ordinary object)", bytes, repeats) {
+                overLoopback("transferTo (an ordinary object)", bytes) { socket ->
+                    FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                        var position = 0L
+                        while (position < bytes) position += source.transferTo(position, bytes - position, socket)
+                    }
+                }
+            }
+        val throughHeap =
+            Measurement.repeated("through the heap, no cipher", bytes, repeats) {
+                overLoopback("through the heap, no cipher", bytes) { socket ->
+                    FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                        val buffer = ByteBuffer.allocate(64 * KIB.toInt())
+                        while (true) {
+                            buffer.clear()
+                            if (source.read(buffer) < 0) break
+                            buffer.flip()
+                            while (buffer.hasRemaining()) socket.write(buffer)
+                        }
+                    }
+                }
+            }
+        val decrypted =
+            Measurement.repeated("through the heap, AES-256-CTR", bytes, repeats) {
+                overLoopback("through the heap, AES-256-CTR", bytes) { socket ->
+                    val cipher = javax.crypto.Cipher.getInstance("AES/CTR/NoPadding")
+                    cipher.init(
+                        javax.crypto.Cipher.DECRYPT_MODE,
+                        javax.crypto.spec.SecretKeySpec(key, "AES"),
+                        javax.crypto.spec.IvParameterSpec(iv),
+                    )
+                    FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                        // The same shape the server uses: one array, decrypted in place, then out.
+                        val chunk = ByteArray(64 * KIB.toInt())
+                        val buffer = ByteBuffer.wrap(chunk)
+                        while (true) {
+                            buffer.clear()
+                            val read = source.read(buffer)
+                            if (read < 0) break
+                            cipher.update(chunk, 0, read, chunk, 0)
+                            val out = ByteBuffer.wrap(chunk, 0, read)
+                            while (out.hasRemaining()) socket.write(out)
+                        }
+                    }
+                }
+            }
+
+        println(zeroCopy)
+        println(throughHeap)
+        println(decrypted)
+        println("  ${Measurement.compare(zeroCopy.median, decrypted.median)}")
+        println("  ${Measurement.compare(throughHeap.median, decrypted.median)}")
     }
 
     /**
