@@ -140,4 +140,91 @@ class CorsTest {
         assertEquals(403, preflight("https://appXexample.com"), "точка — это точка, а не любой символ")
         assertEquals(403, preflight("http://app.example.com"), "схема сопоставляется буквально")
     }
+
+    @Test
+    fun `preflight сверяет и запрошенные заголовки, а не только метод с источником`() {
+        // M-156, `test_cors_header_option:7016`. Правило разрешает метод и источник и **не
+        // называет ни одного заголовка** — а браузер спрашивает про `x-amz-meta-header2`.
+        // `ExposeHeaders` тут не при чём: он про то, что браузеру дадут прочитать в ответе,
+        // а preflight спрашивает про `AllowedHeaders`. Не глядя на них, сервер разрешал
+        // запрос, который S3 отвергает, — то есть открывал чуть шире, чем просили.
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+            s3.send(
+                "PUT",
+                "/photos",
+                query = "cors",
+                body =
+                    (
+                        "<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod>" +
+                            "<AllowedOrigin>*</AllowedOrigin>" +
+                            "<ExposeHeader>x-amz-meta-header1</ExposeHeader></CORSRule></CORSConfiguration>"
+                    ).toByteArray(),
+            )
+
+            val refused =
+                s3.options(
+                    "/photos/bar",
+                    headers =
+                        listOf(
+                            "Origin" to "example.origin",
+                            "Access-Control-Request-Method" to "GET",
+                            "Access-Control-Request-Headers" to "x-amz-meta-header2",
+                        ),
+                )
+            assertEquals(403, refused.status, refused.text)
+
+            // Без спрошенных заголовков то же правило по-прежнему подходит: правило не стало
+            // строже, строже стал вопрос.
+            val allowed =
+                s3.options(
+                    "/photos/bar",
+                    headers = listOf("Origin" to "example.origin", "Access-Control-Request-Method" to "GET"),
+                )
+            assertEquals(200, allowed.status, allowed.text)
+        }
+    }
+
+    @Test
+    fun `названный заголовок и звёздочка разрешают preflight`() {
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+
+            fun rules(allowed: String) =
+                s3.send(
+                    "PUT",
+                    "/photos",
+                    query = "cors",
+                    body =
+                        (
+                            "<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod>" +
+                                "<AllowedOrigin>*</AllowedOrigin>$allowed</CORSRule></CORSConfiguration>"
+                        ).toByteArray(),
+                )
+
+            fun ask(headers: String) =
+                s3.options(
+                    "/photos/bar",
+                    headers =
+                        listOf(
+                            "Origin" to "example.origin",
+                            "Access-Control-Request-Method" to "GET",
+                            "Access-Control-Request-Headers" to headers,
+                        ),
+                )
+
+            rules("<AllowedHeader>x-amz-meta-header2</AllowedHeader>")
+            // Имена заголовков сравниваются без учёта регистра — так их сравнивает HTTP.
+            assertEquals(200, ask("X-Amz-Meta-Header2").status)
+            // Спрошены два, разрешён один — этого мало.
+            assertEquals(403, ask("x-amz-meta-header2, x-amz-meta-header3").status)
+
+            rules("<AllowedHeader>*</AllowedHeader>")
+            assertEquals(200, ask("x-amz-meta-header2, anything-at-all").status)
+
+            rules("<AllowedHeader>x-amz-*</AllowedHeader>")
+            assertEquals(200, ask("x-amz-meta-header2").status)
+            assertEquals(403, ask("x-other").status)
+        }
+    }
 }

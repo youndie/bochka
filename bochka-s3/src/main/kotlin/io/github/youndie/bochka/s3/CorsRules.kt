@@ -21,14 +21,29 @@ data class CorsRules(
         val maxAgeSeconds: Int? = null,
     )
 
-    /** Первое правило, разрешающее этот источник и этот метод, или `null`, если такого нет. */
+    /**
+     * Первое правило, разрешающее этот источник, этот метод **и все спрошенные заголовки**.
+     *
+     * Третье условие добавлено в M-156, и без него сервер разрешал чуть шире, чем его просили:
+     * preflight спрашивает `Access-Control-Request-Headers`, и каждое имя оттуда обязано попасть
+     * под `AllowedHeader` (`test_cors_header_option:7016`). Правило, не назвавшее ни одного
+     * заголовка, не разрешает ни одного — `ExposeHeader` тут не помогает, он про другое: что
+     * браузеру дадут **прочитать в ответе**, а не что ему дадут спросить.
+     *
+     * Имена сравниваются без учёта регистра, потому что так их сравнивает HTTP, а образец
+     * со звёздочкой разбирается тем же [matches], что и источник.
+     */
     fun matching(
         origin: String,
         method: String,
+        requestedHeaders: List<String> = emptyList(),
     ): Rule? =
         rules.firstOrNull { rule ->
             rule.allowedMethods.any { it.equals(method, ignoreCase = true) } &&
-                rule.allowedOrigins.any { matches(it, origin) }
+                rule.allowedOrigins.any { matches(it, origin) } &&
+                requestedHeaders.all { asked ->
+                    rule.allowedHeaders.any { matches(it.lowercase(), asked.lowercase()) }
+                }
         }
 
     companion object {

@@ -1,6 +1,7 @@
 package io.github.youndie.bochka.app
 
 import kotlin.test.Test
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
@@ -386,6 +387,177 @@ class ObjectLockTest {
             // Кейс берёт версию из **этого** ответа, чтобы потом удалить её: без заголовка он
             // падает на `KeyError` до своей уборки, и legal hold остаётся навсегда.
             assertNotNull(head.header("x-amz-version-id"), "HEAD обязан назвать версию")
+        }
+    }
+
+    @Test
+    fun `режим retention нельзя сменить, оставив ту же дату`() {
+        // M-154. `test_object_lock_changing_mode_from_governance_without_bypass:13993` и
+        // `..._from_compliance:14010`. Проверка «ослабления» смотрела только на дату, а дата
+        // здесь не меняется — меняется режим, и это ровно то, чем один замок отличается от
+        // другого. `COMPLIANCE`, ставший `GOVERNANCE`, — это обещание, которое стало снимаемым.
+        S3Fixture().use { s3 ->
+            s3.locked("photos")
+            s3.put(
+                "photos",
+                "a.txt",
+                "abc",
+                headers =
+                    listOf(
+                        "x-amz-object-lock-mode" to "GOVERNANCE",
+                        "x-amz-object-lock-retain-until-date" to far,
+                    ),
+            )
+
+            val toCompliance =
+                s3.send("PUT", "/photos/a.txt", query = "retention", body = retention("COMPLIANCE", far))
+
+            assertEquals(403, toCompliance.status, toCompliance.text)
+            assertContains(toCompliance.text, "AccessDenied")
+            assertEquals("GOVERNANCE", s3.send("HEAD", "/photos/a.txt").header("x-amz-object-lock-mode"))
+        }
+    }
+
+    @Test
+    fun `а с обходом GOVERNANCE режим сменить можно — и обратно уже нельзя`() {
+        // Вторая половина того же правила, и без неё первая доказывала бы только, что смена
+        // режима запрещена всем. `GOVERNANCE` уступает тому, кто сказал об этом вслух;
+        // `COMPLIANCE` не уступает никому, включая его же.
+        S3Fixture().use { s3 ->
+            s3.locked("photos")
+            s3.put(
+                "photos",
+                "a.txt",
+                "abc",
+                headers =
+                    listOf(
+                        "x-amz-object-lock-mode" to "GOVERNANCE",
+                        "x-amz-object-lock-retain-until-date" to far,
+                    ),
+            )
+
+            val bypassed =
+                s3.send(
+                    "PUT",
+                    "/photos/a.txt",
+                    query = "retention",
+                    headers = listOf("x-amz-bypass-governance-retention" to "true"),
+                    body = retention("COMPLIANCE", far),
+                )
+            assertEquals(200, bypassed.status, bypassed.text)
+
+            val back =
+                s3.send(
+                    "PUT",
+                    "/photos/a.txt",
+                    query = "retention",
+                    headers = listOf("x-amz-bypass-governance-retention" to "true"),
+                    body = retention("GOVERNANCE", far),
+                )
+            assertEquals(403, back.status, back.text)
+            assertEquals("COMPLIANCE", s3.send("HEAD", "/photos/a.txt").header("x-amz-object-lock-mode"))
+        }
+    }
+
+    @Test
+    fun `замок, названный при старте многочастной загрузки, доживает до объекта`() {
+        // M-154. `test_object_lock_delete_multipart_object_with_retention:13708`. Заголовки
+        // замка едут на `CreateMultipartUpload`, а объект появляется минутами позже — и до этой
+        // задачи они просто терялись: загрузка завершалась объектом без всякой защиты, а клиенту
+        // отвечали успехом, потому что загрузка и правда удалась.
+        S3Fixture().use { s3 ->
+            s3.locked("photos")
+            val started =
+                s3.send(
+                    "POST",
+                    "/photos/big.bin",
+                    query = "uploads",
+                    headers =
+                        listOf(
+                            "x-amz-object-lock-mode" to "GOVERNANCE",
+                            "x-amz-object-lock-retain-until-date" to far,
+                        ),
+                )
+            val uploadId = Regex("<UploadId>(.*?)</UploadId>").find(started.text)!!.groupValues[1]
+            val part =
+                s3.send(
+                    "PUT",
+                    "/photos/big.bin",
+                    query = "partNumber=1&uploadId=$uploadId",
+                    body = "abc".toByteArray(),
+                )
+            val eTag = part.header("ETag")!!
+            val done =
+                s3.send(
+                    "POST",
+                    "/photos/big.bin",
+                    query = "uploadId=$uploadId",
+                    body =
+                        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>$eTag</ETag></Part></CompleteMultipartUpload>"
+                            .toByteArray(),
+                )
+            assertEquals(200, done.status, done.text)
+            val version = done.header("x-amz-version-id")!!
+
+            assertEquals("GOVERNANCE", s3.send("HEAD", "/photos/big.bin").header("x-amz-object-lock-mode"))
+            val refused = s3.send("DELETE", "/photos/big.bin", query = "versionId=$version")
+            assertEquals(403, refused.status, refused.text)
+
+            // И тот же запрос с обходом — успех: замок настоящий, а не отказ на всё подряд.
+            val allowed =
+                s3.send(
+                    "DELETE",
+                    "/photos/big.bin",
+                    query = "versionId=$version",
+                    headers = listOf("x-amz-bypass-governance-retention" to "true"),
+                )
+            assertEquals(204, allowed.status, allowed.text)
+        }
+    }
+
+    @Test
+    fun `legal hold, названный при старте многочастной загрузки, доживает тоже`() {
+        // `test_object_lock_delete_multipart_object_with_legal_hold_on:13909`.
+        S3Fixture().use { s3 ->
+            s3.locked("photos")
+            val started =
+                s3.send(
+                    "POST",
+                    "/photos/big.bin",
+                    query = "uploads",
+                    headers = listOf("x-amz-object-lock-legal-hold" to "ON"),
+                )
+            val uploadId = Regex("<UploadId>(.*?)</UploadId>").find(started.text)!!.groupValues[1]
+            val part =
+                s3.send(
+                    "PUT",
+                    "/photos/big.bin",
+                    query = "partNumber=1&uploadId=$uploadId",
+                    body = "abc".toByteArray(),
+                )
+            val eTag = part.header("ETag")!!
+            val done =
+                s3.send(
+                    "POST",
+                    "/photos/big.bin",
+                    query = "uploadId=$uploadId",
+                    body =
+                        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>$eTag</ETag></Part></CompleteMultipartUpload>"
+                            .toByteArray(),
+                )
+            val version = done.header("x-amz-version-id")!!
+
+            assertEquals("ON", s3.send("HEAD", "/photos/big.bin").header("x-amz-object-lock-legal-hold"))
+            assertEquals(403, s3.send("DELETE", "/photos/big.bin", query = "versionId=$version").status)
+
+            // Удержание снимается — и тогда версия удаляется. Обход governance тут ни при чём.
+            s3.send(
+                "PUT",
+                "/photos/big.bin",
+                query = "legal-hold",
+                body = "<LegalHold><Status>OFF</Status></LegalHold>".toByteArray(),
+            )
+            assertEquals(204, s3.send("DELETE", "/photos/big.bin", query = "versionId=$version").status)
         }
     }
 }

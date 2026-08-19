@@ -411,6 +411,11 @@ class S3Handler(
                 PayloadChecksums.Algorithm.entries.any { it.id == name }
             }
         val checksumType = head.header("x-amz-checksum-type")?.trim()?.uppercase()
+        // `x-amz-object-lock-*` on the request that **starts** the upload, held until the
+        // completion has something to put them on. Dropped until M-154, which made a locked
+        // multipart upload finish as an object anybody could delete — and the client was told the
+        // upload succeeded, which it had.
+        val lock = lockOnUpload(head)
         val upload =
             store.createUpload(
                 route.bucket,
@@ -418,6 +423,8 @@ class S3Handler(
                 ObjectHeaders.read(head.headers),
                 algorithm,
                 checksumType,
+                retention = lock?.retention,
+                legalHold = lock?.legalHold == true,
             )
 
         // Both go back as **headers**: `CreateMultipartUploadOutput` gives them
@@ -2152,13 +2159,22 @@ class S3Handler(
     ): HttpResponse {
         val origin = head.header("origin") ?: return error(head, S3Error.ACCESS_DENIED, bucket = route.bucket)
         val method = head.header("access-control-request-method") ?: "GET"
+        // Список, а не строка: браузер перечисляет через запятую всё, что собирается послать,
+        // и разрешено должно быть каждое.
+        val asked =
+            head
+                .header("access-control-request-headers")
+                ?.split(',')
+                ?.map { it.trim() }
+                ?.filter { it.isNotEmpty() }
+                .orEmpty()
         val document =
             store.bucketSubresource(route.bucket, "cors")
                 ?: return error(head, S3Error.ACCESS_DENIED, bucket = route.bucket)
         val rule =
             S3Requests
                 .parseCors(document)
-                .matching(origin, method)
+                .matching(origin, method, asked)
                 ?: return error(head, S3Error.ACCESS_DENIED, bucket = route.bucket)
 
         return HttpResponse(

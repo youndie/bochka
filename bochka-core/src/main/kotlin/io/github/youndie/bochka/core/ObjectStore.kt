@@ -361,6 +361,11 @@ class ObjectStore(
                                     startedAt = Instant.ofEpochMilli(record.startedAtMillis),
                                     checksumAlgorithm = record.checksumAlgorithm,
                                     checksumType = record.checksumType,
+                                    retention =
+                                        record.retentionMode?.let {
+                                            Retention(it, record.retentionUntilMillis)
+                                        },
+                                    legalHold = record.legalHold,
                                 ),
                             )
                     }
@@ -599,6 +604,12 @@ class ObjectStore(
      * dropping the mode is what the lock exists to prevent. `GOVERNANCE` yields to a caller who
      * passes [bypass]; `COMPLIANCE` yields to nobody, so [bypass] is deliberately not consulted
      * for it.
+     *
+     * **Changing the mode is weakening too, and that is the half this missed** (M-154). The first
+     * version of this compared only dates, so `GOVERNANCE` → `COMPLIANCE` with the same date was
+     * not "weakened" and went through — and so did `COMPLIANCE` → `GOVERNANCE`, which turns a
+     * promise nobody can break into one anybody can. The date was unchanged in both, which is
+     * exactly why comparing dates saw nothing.
      */
     fun setRetention(
         bucket: String,
@@ -612,7 +623,10 @@ class ObjectStore(
             val entry = versionEntry(bucket, key, versionId) ?: return@withLock false
             val existing = entry.value.retention
             if (existing != null && existing.untilMillis > now.toEpochMilli()) {
-                val weakened = retention == null || retention.untilMillis < existing.untilMillis
+                val weakened =
+                    retention == null ||
+                        retention.untilMillis < existing.untilMillis ||
+                        retention.mode != existing.mode
                 if (weakened && (existing.mode == "COMPLIANCE" || !bypass)) {
                     throw Locked("the version is under ${existing.mode} retention until ${existing.untilMillis}")
                 }
@@ -830,6 +844,7 @@ class ObjectStore(
      * The lock is on index mutation only: the bytes are already on disk by the time this is
      * called, so what it serialises is a map insert and a journal append.
      */
+    @Suppress("LongParameterList")
     fun commit(
         bucket: String,
         key: ObjectKey,
@@ -837,6 +852,16 @@ class ObjectStore(
         staged: Staged,
         precondition: Precondition = Precondition.NONE,
         parts: List<PartSummary> = emptyList(),
+        /**
+         * A lock the version is born with, rather than one put on it a moment later.
+         *
+         * One index record instead of two, and no window: a crash between "the object exists" and
+         * "the object is protected" leaves an unprotected object, which is the one outcome a lock
+         * is bought to prevent. Used by the multipart completion, where the lock was stated
+         * minutes earlier on the request that started the upload (M-154).
+         */
+        retention: Retention? = null,
+        legalHold: Boolean = false,
     ): Stored =
         writing.withLock {
             val state = versioning(bucket)
@@ -875,6 +900,8 @@ class ObjectStore(
                     metadata = metadata,
                     parts = parts,
                     versionId = if (state == Versioning.ENABLED) mintVersionId() else NULL_VERSION,
+                    retention = retention,
+                    legalHold = legalHold,
                 )
 
             // Not versioning means the write **replaces** the null version rather than joining it,
@@ -1504,6 +1531,17 @@ class ObjectStore(
          */
         val checksumAlgorithm: String? = null,
         val checksumType: String? = null,
+        /**
+         * The lock stated on the request that started the upload, held until there is something to
+         * put it on.
+         *
+         * `CreateMultipartUpload` takes `x-amz-object-lock-*` exactly as `PutObject` does, and the
+         * object it locks does not exist for another few minutes. Dropping them here — which is
+         * what happened until M-154 — produces a finished object with no lock at all, and the
+         * client that asked for one is told the upload succeeded.
+         */
+        val retention: Retention? = null,
+        val legalHold: Boolean = false,
     )
 
     data class Part(
@@ -1559,6 +1597,8 @@ class ObjectStore(
         metadata: Metadata,
         checksumAlgorithm: String? = null,
         checksumType: String? = null,
+        retention: Retention? = null,
+        legalHold: Boolean = false,
     ): Upload {
         val upload =
             Upload(
@@ -1569,6 +1609,8 @@ class ObjectStore(
                 startedAt = Instant.now(),
                 checksumAlgorithm = checksumAlgorithm,
                 checksumType = checksumType,
+                retention = retention,
+                legalHold = legalHold,
             )
         uploads[upload.id] = UploadState(upload)
         write(
@@ -1580,6 +1622,9 @@ class ObjectStore(
                 metadata = metadata,
                 checksumAlgorithm = checksumAlgorithm,
                 checksumType = checksumType,
+                retentionMode = retention?.mode,
+                retentionUntilMillis = retention?.untilMillis ?: 0,
+                legalHold = legalHold,
             ),
         )
         return upload
@@ -1776,6 +1821,8 @@ class ObjectStore(
                 staged = Staged(fileId, size, multipartETag(chosen)),
                 parts = summaries,
                 precondition = precondition,
+                retention = state.upload.retention,
+                legalHold = state.upload.legalHold,
             )
         uploads.remove(uploadId)
         remember(uploadId, Completion(state.upload.bucket, state.upload.key, stored.eTag, stored.metadata.checksum))
@@ -1800,9 +1847,11 @@ class ObjectStore(
         staged: Staged,
         parts: List<PartSummary>,
         precondition: Precondition,
+        retention: Retention?,
+        legalHold: Boolean,
     ): Stored =
         try {
-            commit(bucket, key, metadata, staged, precondition, parts)
+            commit(bucket, key, metadata, staged, precondition, parts, retention, legalHold)
         } catch (e: Throwable) {
             Files.deleteIfExists(pathOf(staged.fileId))
             throw e

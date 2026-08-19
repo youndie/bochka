@@ -33,6 +33,32 @@ class IndexRecordTest {
                     ),
             ),
         )
+        // Загрузка с замком (M-154). Поля новые, у них есть значения по умолчанию, и именно
+        // поэтому круговой ход надо проверять с непустыми: запись, где всё по умолчанию, проходит
+        // и тогда, когда её вовсе не пишут.
+        roundTrip(
+            IndexRecord.UploadStarted(
+                bucket = "photos",
+                key = ObjectKey.of("big.bin"),
+                uploadId = "0e2b9c34-6a1f-4a7d-9b8e-2f5c1d0a7e33",
+                startedAtMillis = 1_755_400_000_000L,
+                metadata = Metadata(contentType = "application/octet-stream", tags = mapOf("k" to "v")),
+                checksumAlgorithm = "crc32c",
+                checksumType = "FULL_OBJECT",
+                retentionMode = "COMPLIANCE",
+                retentionUntilMillis = 1_900_000_000_000L,
+                legalHold = true,
+            ),
+        )
+        roundTrip(
+            IndexRecord.UploadStarted(
+                bucket = "photos",
+                key = ObjectKey.of("plain.bin"),
+                uploadId = "1f3c0d45-7b2e-4c8a-8d9f-3a6b2e1c8f44",
+                startedAtMillis = 1_755_400_000_001L,
+                metadata = Metadata(),
+            ),
+        )
     }
 
     @Test

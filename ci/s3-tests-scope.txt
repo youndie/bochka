@@ -21,14 +21,6 @@ out-of-scope	encryption	server-side encryption touches the bytes on the read pat
 # being a reason. What is left of the family is three different things, and lumping them under one
 # stale line would hide all three.
 out-of-scope	bucket_logging	bucket logging is out of the v1 scope; these name a version only because their fixture does
-# Object lock is implemented (M18), so "out of scope" stopped being a reason for these four and
-# started being a label over a defect. Each one is the same shape: the case expects a refusal and
-# gets a success ("ClientError not raised"), which for a lock means it failed **open**. Reproduce
-# before fixing — a suite message is a hypothesis, not a diagnosis (M-154).
-defect	object_lock_changing_mode_from_compliance	COMPLIANCE mode can be changed, and it must not be changeable at all (M-154)
-defect	object_lock_changing_mode_from_governance_without_bypass	GOVERNANCE mode changes without x-amz-bypass-governance-retention (M-154)
-defect	object_lock_delete_multipart_object_with_legal_hold_on	a multipart object under legal hold can be deleted (M-154)
-defect	object_lock_delete_multipart_object_with_retention	a multipart object under retention can be deleted (M-154)
 deferred	_version_if_match	conditional delete of a **named** version: S3 has no conditional form for it and neither have we (M-137)
 deferred	versioned_object_acl	the case reads an object ACL of a version; ACLs are out of scope, but the version half is ours (M-138)
 deferred	versioning_multi_object_delete_with_marker	batch delete must report the markers it created in <Deleted> (M-139)
@@ -67,7 +59,6 @@ out-of-scope	cors_presigned_put_object_tenant_v2	the case presigns with SigV2, w
 out-of-scope	cors_presigned_put_object_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned	the case reads a presigned URL from another origin unsigned; anonymous access needs public-read ACLs
 out-of-scope	cors_origin	the case fetches across origins without a signature; anonymous access needs public-read ACLs
-defect	cors_header_option	a preflight this server allows and S3 refuses: the rule set does not cover the asked-for header (M-156)
 out-of-scope	notification	bucket notifications are out of the v1 scope
 out-of-scope	replication	replication needs more than one node, which is the whole niche this is not
 out-of-scope	logging	server access logging is out of the v1 scope

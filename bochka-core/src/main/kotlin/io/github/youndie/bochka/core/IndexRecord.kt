@@ -152,6 +152,16 @@ sealed interface IndexRecord {
          */
         val checksumAlgorithm: String? = null,
         val checksumType: String? = null,
+        /**
+         * The lock the client asked for on the request that starts the upload.
+         *
+         * Same shape and same reason as the fields of a [Put]: the object it protects appears
+         * minutes later, at the completion, and an upload that forgot them across a restart
+         * finishes as an unlocked object while the client believes otherwise (M-154).
+         */
+        val retentionMode: String? = null,
+        val retentionUntilMillis: Long = 0,
+        val legalHold: Boolean = false,
     ) : IndexRecord
 
     data class UploadPart(
@@ -248,6 +258,16 @@ sealed interface IndexRecord {
         private const val KIND_PUT_LOCKED: Byte = 19
         private const val KIND_BUCKET_OBJECT_LOCK: Byte = 20
 
+        /**
+         * An upload that remembers the lock its client asked for (M-154).
+         *
+         * Sixth time the same rule, and the first time an old kind decoding to "no lock" is worth
+         * saying out loud: it is the truth about those uploads and also the safe reading. An
+         * unlocked upload read back as locked would be a lock nobody asked for, on an object
+         * nobody can then delete.
+         */
+        private const val KIND_UPLOAD_STARTED_LOCKED: Byte = 21
+
         /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
         private const val MAX_PARTS = 10_000L
 
@@ -291,7 +311,7 @@ sealed interface IndexRecord {
                 }
 
                 is UploadStarted -> {
-                    out.write(KIND_UPLOAD_STARTED_WITH_TAGS.toInt())
+                    out.write(KIND_UPLOAD_STARTED_LOCKED.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.key.toByteArray())
                     out.putField(record.uploadId.toByteArray(StandardCharsets.US_ASCII))
@@ -299,6 +319,9 @@ sealed interface IndexRecord {
                     out.putMetadata(record.metadata)
                     out.putText(record.checksumAlgorithm)
                     out.putText(record.checksumType)
+                    out.putText(record.retentionMode)
+                    out.putInt64(record.retentionUntilMillis)
+                    out.write(if (record.legalHold) 1 else 0)
                 }
 
                 is UploadPart -> {
@@ -411,15 +434,22 @@ sealed interface IndexRecord {
                     )
                 }
 
-                KIND_UPLOAD_STARTED, KIND_UPLOAD_STARTED_WITH_CHECKSUM, KIND_UPLOAD_STARTED_WITH_TAGS -> {
+                KIND_UPLOAD_STARTED,
+                KIND_UPLOAD_STARTED_WITH_CHECKSUM,
+                KIND_UPLOAD_STARTED_WITH_TAGS,
+                KIND_UPLOAD_STARTED_LOCKED,
+                -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
                     val uploadId = buffer.text()
                     val startedAt = buffer.long
                     // Теги приехали с видом 15; виды 6 и 10 их не писали, и читать там нечего.
-                    val metadata = buffer.metadata(withTags = kind == KIND_UPLOAD_STARTED_WITH_TAGS)
-                    val carriesChecksum =
-                        kind == KIND_UPLOAD_STARTED_WITH_CHECKSUM || kind == KIND_UPLOAD_STARTED_WITH_TAGS
+                    val withTags = kind == KIND_UPLOAD_STARTED_WITH_TAGS || kind == KIND_UPLOAD_STARTED_LOCKED
+                    val metadata = buffer.metadata(withTags = withTags)
+                    val carriesChecksum = kind != KIND_UPLOAD_STARTED
+                    // Замок приехал с видом 21. Загрузка, начатая до него, замка и не несла —
+                    // и это верное чтение старой записи, а не удобное.
+                    val lockable = kind == KIND_UPLOAD_STARTED_LOCKED
                     UploadStarted(
                         bucket = bucket,
                         key = key,
@@ -433,6 +463,9 @@ sealed interface IndexRecord {
                                 null
                             },
                         checksumType = if (carriesChecksum) buffer.optionalText() else null,
+                        retentionMode = if (lockable) buffer.optionalText() else null,
+                        retentionUntilMillis = if (lockable) buffer.long else 0,
+                        legalHold = lockable && buffer.get().toInt() == 1,
                     )
                 }
 
