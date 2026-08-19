@@ -251,9 +251,16 @@ than a convenience, because terminating TLS inside the JVM would cost the read p
 project is built around. [deploy/](deploy/) has the configuration and the reasoning.
 
 There is a Helm chart in [deploy/helm/bochka](deploy/helm/bochka) with a harness that installs it
-into a real kubelet. It is **not published anywhere** — no repository, no OCI push — and that is
-the current state rather than an omission: publishing it would be a promise about upgrade paths
-that nobody has been asked for yet.
+into a real kubelet, and from the next release it is published as an OCI package beside the image.
+What it is for is stated rather than left to be inferred: production on one machine. Helm is not
+how anybody runs a store in a test — that is the section below — so there is no mode in which the
+volume is optional.
+
+**`GET /-/healthy` answers `200` to anyone who can reach the port, with no signature.** It is the
+one handle of this kind, it exists for an orchestrator, and the path is `-` because no bucket may
+be called that. What it proves is narrow and worth stating: the process parsed a request, routed it
+and answered, and it could not have started answering before the journal was replayed. It does not
+prove the disk is writable.
 
 **A setting bochka does not recognise stops it from starting.** `BOCHKA_DATADIR` instead of
 `BOCHKA_DATA_DIR` means the objects are in a temporary directory and nothing about the running
