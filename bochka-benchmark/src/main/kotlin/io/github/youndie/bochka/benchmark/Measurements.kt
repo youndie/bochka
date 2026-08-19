@@ -45,6 +45,15 @@ object Measurements {
     /** Where the two-machine measurement meets. Above the ephemeral range, and not a service port. */
     private const val PORT = 9101
 
+    /** The bucket the collector measurement fills. Named once, because the fill and the load must agree. */
+    private const val GC_BUCKET = "photos"
+
+    /**
+     * How many full collections are forced per variant. Odd, so the median is a run rather than a
+     * mean of two, and more than three because the first one after a fill is not like the others.
+     */
+    private const val FORCED_COLLECTIONS = 5
+
     @JvmStatic
     fun main(args: Array<String>) {
         val what = args.firstOrNull() ?: "all"
@@ -89,6 +98,14 @@ object Measurements {
 
                 "readpath" -> {
                     readPath(dir)
+                }
+
+                "gc" -> {
+                    gcPauses(dir)
+                }
+
+                "ceiling" -> {
+                    ceiling()
                 }
 
                 // Two halves of one measurement that needs two machines. `serve-network` is the
@@ -840,6 +857,312 @@ object Measurements {
         }
     }
 
+    /**
+     * M-151/M-152: what a collector costs when the live set is the index.
+     *
+     * The axis is the collector and nothing else. Heap, object count, operation sequence and the
+     * volume of garbage are identical in every variant; the collector is chosen by the JVM that
+     * launches this, which is why the matrix lives in `ci/gc-measure.sh` and this prints one
+     * variant. The live set is built once per heap into a seed directory and read by every variant
+     * after it, because a fill repeated twenty-seven times measures the disk.
+     *
+     * Two instruments, because they disagree by construction and the disagreement is the finding.
+     *
+     * **A forced full collection.** `System.gc()` against a known live set, timed. For Serial,
+     * Parallel and G1 that is a stop-the-world compaction and the number is the pause; for ZGC it
+     * is a mostly concurrent cycle and the number is its duration, which is not what a request
+     * waits for. Reported either way and labelled either way — a table that put them in one column
+     * would say ZGC is the slowest collector here, which is the opposite of true.
+     *
+     * **A thread that only sleeps.** One millisecond at a time, recording how much longer than a
+     * millisecond it took. It measures what a request would feel — every safepoint, not only the
+     * ones a collector reports — and it does not care what a collector calls its phases. Its
+     * median is the stand's own noise and is printed for that reason: a maximum without it is a
+     * number with no scale.
+     */
+    private fun gcPauses(dir: Path) {
+        val maxMemory = Runtime.getRuntime().maxMemory()
+        val keys = System.getenv("BOCHKA_MEASURE_KEYS")?.toIntOrNull() ?: ObjectStore.ceilingForHeap(maxMemory)
+        val garbage = (System.getenv("BOCHKA_MEASURE_GARBAGE_GIB")?.toDoubleOrNull() ?: 8.0) * GIB
+        val seed = System.getenv("BOCHKA_MEASURE_SEED")?.let { Path.of(it) } ?: dir.resolve("gc-$keys")
+
+        println("== M-151: the collector against a live set that is the index ==")
+        println("  collector   ${collectorNames()}")
+        println(
+            "  heap        -Xmx %s, maxMemory %,.1f MiB (%.1f%% of it)".format(
+                ManagementRuntime.heapArgument(),
+                maxMemory / MIB.toDouble(),
+                100.0 * maxMemory / ManagementRuntime.heapArgumentBytes().coerceAtLeast(1),
+            ),
+        )
+        // M-152: the published ceiling is a function of the collector, because `maxMemory()` is.
+        // The fill is **not** — every variant holds the same objects, or the pauses below would be
+        // comparing live sets rather than collectors.
+        println(
+            "  ceiling     %,d versions of its own; filled with %,d".format(
+                ObjectStore.ceilingForHeap(maxMemory),
+                keys,
+            ),
+        )
+
+        fill(seed, keys)
+
+        val collections = GcLog().also { it.install() }
+        val openedAt = System.nanoTime()
+        val store = ObjectStore(seed, ObjectStore.Durability.NONE, maxObjects = keys)
+        val openNanos = System.nanoTime() - openedAt
+        check(store.objectCount == keys) { "the seed holds ${store.objectCount} objects, not $keys" }
+
+        val stalls = Hiccups().also { it.start() }
+        try {
+            // Its first samples are the thread starting, not the machine stalling: on a loaded box
+            // that showed up as 123 ms of "pause" beside a 27 ms collection.
+            Thread.sleep(500)
+            // Long enough to leave the collector nothing to hide behind, and forced rather than
+            // waited for: a full collection that happens by itself happens at a moment nobody
+            // chose, and timing it means timing the wait as well.
+            val forced = LongArray(FORCED_COLLECTIONS)
+            val felt = LongArray(FORCED_COLLECTIONS)
+            for (i in forced.indices) {
+                val from = stalls.mark()
+                val before = System.nanoTime()
+                System.gc()
+                forced[i] = System.nanoTime() - before
+                // The stalled thread writes its sample **after** it is let go, so a window closed
+                // the instant `System.gc()` returns is closed before the number it is asking for
+                // exists. It read a median of zero beside a thirty-millisecond collection.
+                Thread.sleep(100)
+                felt[i] = stalls.max(from, stalls.mark())
+            }
+            forced.sort()
+            felt.sort()
+
+            val live = usedHeap()
+            println("  open        %.3f s for %,d objects".format(openNanos / 1e9, store.objectCount))
+            println(
+                "  live set    %,.1f MiB after a full collection — %.1f%% of maxMemory, %.0f bytes an object".format(
+                    live / MIB.toDouble(),
+                    100.0 * live / maxMemory,
+                    live.toDouble() / keys,
+                ),
+            )
+            println(
+                "  forced full median %7.3f s   min %7.3f   max %7.3f   (%s)".format(
+                    forced[forced.size / 2] / 1e9,
+                    forced.first() / 1e9,
+                    forced.last() / 1e9,
+                    if (isConcurrent()) "a cycle, not a pause — this collector is concurrent" else "stop-the-world",
+                ),
+            )
+            // Per collection rather than over all of them, because the first full collection after
+            // a fill is not like the ones after it and a single window would publish that one.
+            println(
+                "  felt as     median %,.1f ms of stall, worst %,.1f".format(
+                    felt[felt.size / 2] / 1e6,
+                    felt.last() / 1e6,
+                ),
+            )
+
+            val loadFrom = stalls.mark()
+            val minor = collections.minorCount()
+            val major = collections.majorCount()
+            val load = churn(store, keys, garbage)
+            val loadTo = stalls.mark()
+
+            println(
+                "  load        %,d lookups, %,d listings, %,.2f GiB allocated in %.1f s (%,.0f MiB/s)".format(
+                    load.lookups,
+                    load.listings,
+                    load.allocated / GIB.toDouble(),
+                    load.nanos / 1e9,
+                    load.allocated / MIB.toDouble() / (load.nanos / 1e9),
+                ),
+            )
+            println(
+                "  collections minor %,d (%,.0f ms) major %,d (%,.0f ms) — the collector's own count".format(
+                    collections.minorCount() - minor,
+                    collections.minorMillis(minor),
+                    collections.majorCount() - major,
+                    collections.majorMillis(major),
+                ),
+            )
+            println(
+                "  stalls      p50 %6.2f ms  p99 %7.2f  p99.9 %8.2f  max %9.2f".format(
+                    stalls.percentile(loadFrom, loadTo, 50.0) / 1e6,
+                    stalls.percentile(loadFrom, loadTo, 99.0) / 1e6,
+                    stalls.percentile(loadFrom, loadTo, 99.9) / 1e6,
+                    stalls.max(loadFrom, loadTo) / 1e6,
+                ),
+            )
+            println("  rss         %,d MiB now, %,d MiB at its peak".format(Rss.current() / MIB, Rss.peak() / MIB))
+
+            // One line a script can read, because the matrix is assembled by `ci/gc-measure.sh`
+            // and parsing the prose above would be a second description of this measurement.
+            println(
+                (
+                    "RESULT collector=%s xmx=%d max=%d ceiling=%d objects=%d open=%.3f live=%d " +
+                        "forced_median=%.3f forced_max=%.3f felt_median=%.3f felt_max=%.3f minor=%d minor_ms=%.0f " +
+                        "major=%d major_ms=%.0f p50=%.3f p99=%.3f p999=%.3f stall_max=%.3f " +
+                        "load=%.1f alloc=%.2f rss=%d concurrent=%b"
+                ).format(
+                    collectorTag(),
+                    ManagementRuntime.heapArgumentBytes() / MIB,
+                    maxMemory / MIB,
+                    ObjectStore.ceilingForHeap(maxMemory),
+                    keys,
+                    openNanos / 1e9,
+                    live / MIB,
+                    forced[forced.size / 2] / 1e9,
+                    forced.last() / 1e9,
+                    felt[felt.size / 2] / 1e6,
+                    felt.last() / 1e6,
+                    collections.minorCount() - minor,
+                    collections.minorMillis(minor),
+                    collections.majorCount() - major,
+                    collections.majorMillis(major),
+                    stalls.percentile(loadFrom, loadTo, 50.0) / 1e6,
+                    stalls.percentile(loadFrom, loadTo, 99.0) / 1e6,
+                    stalls.percentile(loadFrom, loadTo, 99.9) / 1e6,
+                    stalls.max(loadFrom, loadTo) / 1e6,
+                    load.nanos / 1e9,
+                    load.allocated / GIB.toDouble(),
+                    Rss.peak() / MIB,
+                    isConcurrent(),
+                ),
+            )
+        } finally {
+            stalls.stop()
+            collections.uninstall()
+            store.close()
+        }
+    }
+
+    /** How many objects this heap publishes room for. Printed alone, for the matrix to read. */
+    private fun ceiling() {
+        println("ceiling ${ObjectStore.ceilingForHeap()} maxMemory ${Runtime.getRuntime().maxMemory()}")
+    }
+
+    /**
+     * The live set on disk, written once and read by every variant after it.
+     *
+     * One generation and one key length, both deliberate: a log with three generations of every
+     * key has a **peak** live set larger than any store of this object count holds, and a pause
+     * measured against it compares collectors to each other rather than to a deployment.
+     */
+    private fun fill(
+        seed: Path,
+        keys: Int,
+    ) {
+        val log = seed.resolve("index.log")
+        if (Files.exists(log) && Files.size(log) > 0) {
+            println("  seed        %s, %,.1f MiB — reused".format(seed, Files.size(log) / MIB.toDouble()))
+            return
+        }
+        Files.createDirectories(seed)
+        val startedAt = System.nanoTime()
+        RecordLog(log).use { fresh ->
+            fresh.recover { }
+            fresh.append(IndexRecord.encode(IndexRecord.BucketCreated(GC_BUCKET)))
+            for (i in 0 until keys) {
+                fresh.append(
+                    IndexRecord.encode(
+                        IndexRecord.Put(
+                            bucket = GC_BUCKET,
+                            key = ObjectKey.of(gcKey(i)),
+                            fileId = "0e2b9c34-6a1f-4a7d-9b8e-2f5c1d0a7e30",
+                            size = 4096,
+                            eTag = "\"d41d8cd98f00b204e9800998ecf8427e\"",
+                            lastModifiedMillis = 1_755_400_000_000L,
+                            metadata = Metadata(contentType = "image/jpeg"),
+                        ),
+                    ),
+                )
+            }
+            fresh.force()
+        }
+        println(
+            "  seed        %s, %,.1f MiB — written in %.1f s".format(
+                seed,
+                Files.size(log) / MIB.toDouble(),
+                (System.nanoTime() - startedAt) / 1e9,
+            ),
+        )
+    }
+
+    /** What one load phase did. */
+    private class Churn(
+        val lookups: Long,
+        val listings: Long,
+        val allocated: Long,
+        val nanos: Long,
+    )
+
+    /**
+     * Garbage against the index, in the shape this server makes it.
+     *
+     * The budget is bytes allocated rather than seconds or operations, and that is the whole
+     * point: every variant digests the same garbage against the same live set, and the wall clock
+     * is a result rather than an input. A time-boxed loop would let the faster collector allocate
+     * more and then report more collections for it.
+     *
+     * A listing every hundredth lookup, because a page of a thousand entries is the largest
+     * allocation this server makes on a read path and the one that scales with the index — it
+     * still dominates the garbage at that ratio, by roughly three to one. Lookups alone produce
+     * garbage at a rate no collector notices, and a store that listed as often as it read would be
+     * a workload nobody has.
+     */
+    private fun churn(
+        store: ObjectStore,
+        keys: Int,
+        budget: Double,
+    ): Churn {
+        val prefix = "photos/".toByteArray()
+        val random = java.util.Random(20_260_819)
+        var lookups = 0L
+        var listings = 0L
+        val allocatedBefore = allocatedBytes()
+        val startedAt = System.nanoTime()
+        while (true) {
+            repeat(100) {
+                val key = gcKey(random.nextInt(keys))
+                store.get(GC_BUCKET, ObjectKey.of(key))
+                lookups++
+                if (lookups % 100 == 0L) {
+                    store.list(GC_BUCKET, prefix = prefix, startAfter = key.toByteArray(), maxKeys = 1000)
+                    listings++
+                }
+            }
+            if (allocatedBytes() - allocatedBefore >= budget) break
+        }
+        return Churn(lookups, listings, allocatedBytes() - allocatedBefore, System.nanoTime() - startedAt)
+    }
+
+    private fun gcKey(i: Int): String = "photos/%023d/img.jpg".format(i)
+
+    private fun allocatedBytes(): Long =
+        (
+            java.lang.management.ManagementFactory
+                .getThreadMXBean() as com.sun.management.ThreadMXBean
+        ).currentThreadAllocatedBytes
+
+    private fun collectorNames(): String =
+        java.lang.management.ManagementFactory
+            .getGarbageCollectorMXBeans()
+            .joinToString(" + ") { it.name }
+
+    /** The word the matrix groups by: `Serial`, `Parallel`, `G1`, `Z`. */
+    private fun collectorTag(): String =
+        when {
+            collectorNames().contains("MarkSweepCompact") -> "Serial"
+            collectorNames().contains("PS ") -> "Parallel"
+            collectorNames().startsWith("G1") -> "G1"
+            collectorNames().contains("Z") -> "Z"
+            else -> collectorNames().substringBefore(' ')
+        }
+
+    /** Whether the collector does its marking beside the application rather than instead of it. */
+    private fun isConcurrent(): Boolean = collectorTag() == "Z" || collectorTag() == "Shenandoah"
+
     private fun usedHeap(): Long {
         repeat(3) {
             System.gc()
@@ -952,6 +1275,25 @@ object Measurements {
 }
 
 private object ManagementRuntime {
+    /** What was asked for, as written on the command line — `maxMemory()` is what was granted. */
+    fun heapArgument(): String =
+        java.lang.management.ManagementFactory
+            .getRuntimeMXBean()
+            .inputArguments
+            .lastOrNull { it.startsWith("-Xmx") }
+            ?.removePrefix("-Xmx") ?: "(default)"
+
+    fun heapArgumentBytes(): Long {
+        val written = heapArgument()
+        val digits = written.takeWhile { it.isDigit() }.toLongOrNull() ?: return 0
+        return when (written.last().lowercaseChar()) {
+            'k' -> digits * 1024
+            'm' -> digits * 1024 * 1024
+            'g' -> digits * 1024 * 1024 * 1024
+            else -> digits
+        }
+    }
+
     fun arguments(): String =
         java.lang.management.ManagementFactory
             .getRuntimeMXBean()
@@ -959,4 +1301,157 @@ private object ManagementRuntime {
             .filter { it.startsWith("-X") }
             .joinToString(" ")
             .ifEmpty { "(default)" }
+}
+
+/**
+ * A thread that does nothing but sleep, and reports how badly that went.
+ *
+ * The point of measuring a pause this way is that it needs to know nothing about collectors. A
+ * collector reports the phases it has names for; a request waits for every safepoint there is,
+ * including the ones that belong to no collector at all. What this records is the second thing,
+ * and it is the number a timeout is set against.
+ *
+ * The buffer is preallocated and never grows, because a recorder that allocates while recording
+ * takes part in what it is recording. It is also part of the live set the collector has to trace —
+ * five megabytes of it, identically in every variant, which is why it is stated rather than
+ * hidden: at the smallest heap here that is two percent of the index.
+ */
+private class Hiccups(
+    capacity: Int = 600_000,
+) : Runnable {
+    private val samples = LongArray(capacity)
+
+    @Volatile
+    private var running = true
+
+    @Volatile
+    private var count = 0
+    private val thread = Thread(this, "hiccups").apply { isDaemon = true }
+
+    fun start() {
+        thread.start()
+    }
+
+    fun stop() {
+        running = false
+        thread.interrupt()
+        thread.join(1_000)
+    }
+
+    /** Where the record stands now, so a window can be asked about later. */
+    fun mark(): Int = count
+
+    /** Whether the buffer filled up, which would make every percentile below a partial answer. */
+    fun saturated(): Boolean = count >= samples.size
+
+    override fun run() {
+        while (running) {
+            val before = System.nanoTime()
+            try {
+                Thread.sleep(1)
+            } catch (_: InterruptedException) {
+                return
+            }
+            val over = System.nanoTime() - before - 1_000_000
+            val at = count
+            if (at < samples.size) {
+                samples[at] = if (over > 0) over else 0
+                count = at + 1
+            }
+        }
+    }
+
+    fun max(
+        from: Int,
+        to: Int,
+    ): Long {
+        var top = 0L
+        for (i in from until minOf(to, count)) top = maxOf(top, samples[i])
+        return top
+    }
+
+    fun percentile(
+        from: Int,
+        to: Int,
+        p: Double,
+    ): Long {
+        val window = samples.copyOfRange(from, minOf(to, count).coerceAtLeast(from))
+        if (window.isEmpty()) return 0
+        window.sort()
+        return window[((p / 100.0) * (window.size - 1)).toInt().coerceIn(0, window.size - 1)]
+    }
+}
+
+/**
+ * What the collector says about itself, which is the other half of the answer and not the whole
+ * of it.
+ *
+ * Read through the notification rather than through the cumulative counters, because a total
+ * divided by a count is an average and the question here is about the worst one. The durations are
+ * the collector's own: G1 reports the end of a concurrent cycle as a "major" collection whose
+ * duration is the cycle, not the pause, so a number from here is never published as a pause
+ * without [Hiccups] beside it.
+ */
+private class GcLog {
+    private val minor = ArrayList<Long>()
+    private val major = ArrayList<Long>()
+    private val installed =
+        ArrayList<Pair<javax.management.NotificationEmitter, javax.management.NotificationListener>>()
+
+    fun install() {
+        for (bean in java.lang.management.ManagementFactory
+            .getGarbageCollectorMXBeans()) {
+            if (bean !is javax.management.NotificationEmitter) continue
+            val listener =
+                javax.management.NotificationListener { notification, _ ->
+                    if (notification.type ==
+                        com.sun.management.GarbageCollectionNotificationInfo.GARBAGE_COLLECTION_NOTIFICATION
+                    ) {
+                        val info =
+                            com.sun.management.GarbageCollectionNotificationInfo
+                                .from(notification.userData as javax.management.openmbean.CompositeData)
+                        val into = if (info.gcAction.contains("major")) major else minor
+                        synchronized(into) { into.add(info.gcInfo.duration) }
+                    }
+                }
+            bean.addNotificationListener(listener, null, null)
+            installed += bean to listener
+        }
+    }
+
+    fun uninstall() {
+        for ((bean, listener) in installed) runCatching { bean.removeNotificationListener(listener) }
+    }
+
+    fun minorCount(): Int = synchronized(minor) { minor.size }
+
+    fun majorCount(): Int = synchronized(major) { major.size }
+
+    fun minorMillis(since: Int): Double = synchronized(minor) { minor.drop(since).sum().toDouble() }
+
+    fun majorMillis(since: Int): Double = synchronized(major) { major.drop(since).sum().toDouble() }
+}
+
+/**
+ * Resident memory, because that is the axis ZGC is decided on (M-153).
+ *
+ * A collector that buys its pause with footprint is the reverse of every other trade in this
+ * project, and `-Xmx` says nothing about it: the question is what the cgroup sees, and the cgroup
+ * sees this.
+ */
+private object Rss {
+    fun current(): Long = field("VmRSS")
+
+    fun peak(): Long = field("VmHWM")
+
+    private fun field(name: String): Long =
+        runCatching {
+            java.nio.file.Files
+                .readAllLines(
+                    java.nio.file.Path
+                        .of("/proc/self/status"),
+                ).first { it.startsWith("$name:") }
+                .filter { it.isDigit() }
+                .toLong() * 1024
+        }.getOrDefault(0L)
 }
