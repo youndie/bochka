@@ -324,4 +324,41 @@ class MultipartAttributesTest {
             query = "partNumber=1&uploadId=$uploadId",
             headers = listOf("x-amz-copy-source" to "/photos/source.bin", "x-amz-copy-source-range" to range),
         )
+
+    @Test
+    fun `GetObjectAttributes называет версию, на которую ответил`() {
+        // Операция принимает `?versionId` с M-142 и до сих пор не говорила, какая версия
+        // ответила: `GetObjectAttributesOutput.VersionId` — член-заголовок `x-amz-version-id`.
+        // Клиент узнаёт об этом как `KeyError: 'VersionId'`, то есть никак.
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+            s3.send(
+                "PUT",
+                "/photos",
+                query = "versioning",
+                body = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>".toByteArray(),
+            )
+            val first = s3.put("photos", "a.txt", "one").header("x-amz-version-id")!!
+            val second = s3.put("photos", "a.txt", "two").header("x-amz-version-id")!!
+
+            val current =
+                s3.send(
+                    "GET",
+                    "/photos/a.txt",
+                    query = "attributes",
+                    headers =
+                        listOf("x-amz-object-attributes" to "ETag"),
+                )
+            assertEquals(second, current.header("x-amz-version-id"))
+
+            val named =
+                s3.send(
+                    "GET",
+                    "/photos/a.txt",
+                    query = "attributes&versionId=$first",
+                    headers = listOf("x-amz-object-attributes" to "ETag"),
+                )
+            assertEquals(first, named.header("x-amz-version-id"))
+        }
+    }
 }

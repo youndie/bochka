@@ -1783,6 +1783,11 @@ class S3Handler(
         val after = stored.parts.filter { it.number > marker }
         val page = after.take(maxParts)
 
+        // `GetObjectAttributesOutput` carries members as **headers** as well as in the document:
+        // `LastModified`, which was here, and `VersionId`, which was not. Taking `?versionId` on
+        // the request and never saying which version answered is half an operation, and the client
+        // finds out by `KeyError` on `response['VersionId']` — the shape of failure that says
+        // nothing about its cause and that this repository has now paid for three times.
         return xml(
             S3Documents.getObjectAttributesResult(
                 eTag = stored.eTag.takeIf { "ETag" in asked },
@@ -1815,7 +1820,11 @@ class S3Handler(
                 maxParts = maxParts,
                 isTruncated = after.size > page.size,
             ),
-        ).copy(headers = listOf("Content-Type" to "application/xml", "Last-Modified" to httpDate(stored.lastModified)))
+        ).copy(
+            headers =
+                listOf("Content-Type" to "application/xml", "Last-Modified" to httpDate(stored.lastModified)) +
+                    versionHeader(stored),
+        )
     }
 
     /**

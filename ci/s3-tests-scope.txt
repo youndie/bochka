@@ -21,24 +21,35 @@ out-of-scope	encryption	server-side encryption touches the bytes on the read pat
 # being a reason. What is left of the family is three different things, and lumping them under one
 # stale line would hide all three.
 out-of-scope	bucket_logging	bucket logging is out of the v1 scope; these name a version only because their fixture does
-deferred	_version_if_match	conditional delete of a **named** version: S3 has no conditional form for it and neither have we (M-137)
+# Six cases, and the combination they ask for exists in no bucket type S3 has. The model puts
+# `x-amz-if-match-last-modified-time` and `x-amz-if-match-size` on `DeleteObject` with "only
+# supported for directory buckets", and puts on the same operation's `VersionId` "for directory
+# buckets ... only the `null` value of the version ID is supported". A condition that exists only
+# where a named version does not is not a form anybody can send. The suite says as much itself:
+# every one of the six carries `@pytest.mark.fails_on_aws # only supported for directory buckets`.
+# Decided in M-137, and it returns if a source says the two can meet.
+out-of-scope	_version_if_match	a condition on a named version: the model allows the conditions only for directory buckets, which allow only the null version (M-137)
 # Read as `deferred` for two milestones on the grounds that "the version half is ours". It is,
 # and it buys nothing: the operation these cases call is `GetObjectAcl`, and an ACL document
 # from a server with no owner model is a fiction whichever version it is about. Routing
 # `?versionId` into an answer that cannot be true is worse than not answering. Decided in M-138,
 # and it returns with ACLs or not at all.
 out-of-scope	versioned_object_acl	the case reads an object ACL; ACLs need an owner model, and the version half of an operation that cannot answer is not a feature (M-138)
-deferred	versioning_multi_object_delete_with_marker	batch delete must report the markers it created in <Deleted> (M-139)
-deferred	versioning_bucket_multipart_upload_return_version_id	CompleteMultipartUpload does not answer x-amz-version-id yet (M-140)
-deferred	versioning_copy_obj_version	CopyObject does not read ?versionId off x-amz-copy-source yet (M-141)
-deferred	multipart_copy_versioned	UploadPartCopy does not read a version off its source either (M-141)
-deferred	get_versioned_object_attributes	GetObjectAttributes does not take ?versionId yet (M-142)
-deferred	delete_marker_nonversioned	a suspended bucket's marker handling is not finished (M-143)
-# Same missing header as the line above, and its name says lifecycle nowhere — which is why the
-# broad `delete_marker` rule downstream picked it up and called it a versioning feature. The
-# lifecycle half of it works: the marker does expire. What is missing is `x-amz-delete-marker:
-# false` on the 404 that follows (M-143).
-deferred	delete_marker_expiration	the 404 for a key that is simply absent carries no x-amz-delete-marker: false (M-143)
+# Four rules stood here for M-139…M-141 and matched nothing at all: the cases they named have
+# passed since those tasks closed. A rule that cannot fire is the trap this file already learned
+# once from the other end — a narrow rule shadowed by a broad one — and it is worse in this
+# direction: it claims a defect that no longer exists, and the claim is only read by whoever is
+# looking for something else. Removed when the tails were closed.
+# Both cases want a `404` for an absent key to carry `x-amz-delete-marker: false`, and the model
+# refuses that in writing: `HeadObjectOutput.DeleteMarker` is documented "Specifies whether the
+# object retrieved was (true) or was not (false) a Delete Marker. **If false, this response header
+# does not appear in the response.**" So the header the cases read is one S3 does not send, and
+# passing them means emitting it. Note what the lifecycle half of the second one proves: the
+# marker does expire — the case then fails on the header, not on the expiry. Decided in M-143.
+out-of-scope	delete_marker_nonversioned	the case reads x-amz-delete-marker: false off a 404, and the model says that header does not appear when false (M-143)
+# Its name says lifecycle nowhere, which is how a broad `delete_marker` rule once picked it up and
+# called it a versioning feature — two wrong readings of one case, from two directions.
+out-of-scope	delete_marker_expiration	same header as above; the marker does expire, and the case fails after that (M-143)
 # Lifecycle arrived in M21, so the blanket rule that stood here is gone. What is left is one
 # family, and it fails for a reason that is a decision rather than a gap — measured, not guessed:
 # with BOCHKA_LIFECYCLE_DAY_SECONDS at the suite's five, the same shortened day that makes the
