@@ -38,8 +38,14 @@ val defaultJvmArgs =
  *
  * The same profile with a different heap, and the difference is the whole of M-64. The index holds
  * every key in memory, measured at 650 bytes each (`docs/measurements.md`), and half the heap is
- * what it may use — so 64 MiB would ship a store that refuses its 51 601st object. 512 MiB is
- * about 413 000 objects, which is a number worth publishing rather than a number that happens.
+ * what it may use — so 64 MiB would ship a store that refuses its 49 909th object. 512 MiB is
+ * 399 215 objects, which is a number worth publishing rather than a number that happens.
+ *
+ * Both come from `Runtime.maxMemory()` rather than from `-Xmx`, because that is what the code
+ * divides — and under `-XX:+UseSerialGC` the two are not the same number. A 512 MiB heap reports
+ * 494.9 MiB: one survivor space is not counted, since objects can never be allocated across both
+ * at once. Documented here as ~413 000 for a year, which is `-Xmx` over 650 and nothing the
+ * process would ever print.
  *
  * Development stays at 64 MiB because it is enforcing something else there: that the hot path
  * does not allocate. Two numbers because they are two requirements, not one requirement measured
