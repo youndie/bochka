@@ -172,6 +172,15 @@ sealed interface IndexRecord {
         val retentionMode: String? = null,
         val retentionUntilMillis: Long = 0,
         val legalHold: Boolean = false,
+        /**
+         * The customer key this upload was started with, as algorithm and MD5 (M-189).
+         *
+         * In the log for the same reason as the checksum algorithm above: the parts arrive minutes
+         * later, and an upload that survived a restart without this would accept parts under a key
+         * it can no longer check, and finish an object nobody can open.
+         */
+        val encryptionAlgorithm: String? = null,
+        val encryptionKeyMd5: String? = null,
     ) : IndexRecord
 
     data class UploadPart(
@@ -191,6 +200,8 @@ sealed interface IndexRecord {
          * computed from the subset that happened to be in memory.
          */
         val checksum: Metadata.Checksum? = null,
+        /** The IV this part was encrypted with, when the upload is encrypted (M-189). */
+        val iv: ByteArray? = null,
     ) : IndexRecord
 
     /** Completed or aborted — from the index's side those are the same event: the upload is over. */
@@ -288,6 +299,12 @@ sealed interface IndexRecord {
          */
         private const val KIND_PUT_ENCRYPTED: Byte = 22
 
+        /** An upload started with a customer key: [KIND_UPLOAD_STARTED_LOCKED] plus algorithm and MD5. */
+        private const val KIND_UPLOAD_STARTED_ENCRYPTED: Byte = 23
+
+        /** A part of one: [KIND_UPLOAD_PART_WITH_CHECKSUM] plus the IV it was encrypted with. */
+        private const val KIND_UPLOAD_PART_ENCRYPTED: Byte = 24
+
         /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
         private const val MAX_PARTS = 10_000L
 
@@ -331,7 +348,13 @@ sealed interface IndexRecord {
                 }
 
                 is UploadStarted -> {
-                    out.write(KIND_UPLOAD_STARTED_LOCKED.toInt())
+                    out.write(
+                        if (record.encryptionAlgorithm == null) {
+                            KIND_UPLOAD_STARTED_LOCKED.toInt()
+                        } else {
+                            KIND_UPLOAD_STARTED_ENCRYPTED.toInt()
+                        },
+                    )
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.key.toByteArray())
                     out.putField(record.uploadId.toByteArray(StandardCharsets.US_ASCII))
@@ -342,10 +365,20 @@ sealed interface IndexRecord {
                     out.putText(record.retentionMode)
                     out.putInt64(record.retentionUntilMillis)
                     out.write(if (record.legalHold) 1 else 0)
+                    if (record.encryptionAlgorithm != null) {
+                        out.putText(record.encryptionAlgorithm)
+                        out.putText(record.encryptionKeyMd5)
+                    }
                 }
 
                 is UploadPart -> {
-                    out.write(KIND_UPLOAD_PART_WITH_CHECKSUM.toInt())
+                    out.write(
+                        if (record.iv == null) {
+                            KIND_UPLOAD_PART_WITH_CHECKSUM.toInt()
+                        } else {
+                            KIND_UPLOAD_PART_ENCRYPTED.toInt()
+                        },
+                    )
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.uploadId.toByteArray(StandardCharsets.US_ASCII))
                     out.putInt64(record.number.toLong())
@@ -355,6 +388,7 @@ sealed interface IndexRecord {
                     out.putInt64(record.lastModifiedMillis)
                     out.putText(record.checksum?.algorithm)
                     out.putText(record.checksum?.value)
+                    record.iv?.let { out.putField(it) }
                 }
 
                 is UploadEnded -> {
@@ -473,18 +507,23 @@ sealed interface IndexRecord {
                 KIND_UPLOAD_STARTED_WITH_CHECKSUM,
                 KIND_UPLOAD_STARTED_WITH_TAGS,
                 KIND_UPLOAD_STARTED_LOCKED,
+                KIND_UPLOAD_STARTED_ENCRYPTED,
                 -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
                     val uploadId = buffer.text()
                     val startedAt = buffer.long
                     // Теги приехали с видом 15; виды 6 и 10 их не писали, и читать там нечего.
-                    val withTags = kind == KIND_UPLOAD_STARTED_WITH_TAGS || kind == KIND_UPLOAD_STARTED_LOCKED
+                    val withTags =
+                        kind == KIND_UPLOAD_STARTED_WITH_TAGS ||
+                            kind == KIND_UPLOAD_STARTED_LOCKED ||
+                            kind == KIND_UPLOAD_STARTED_ENCRYPTED
                     val metadata = buffer.metadata(withTags = withTags)
                     val carriesChecksum = kind != KIND_UPLOAD_STARTED
                     // Замок приехал с видом 21. Загрузка, начатая до него, замка и не несла —
                     // и это верное чтение старой записи, а не удобное.
-                    val lockable = kind == KIND_UPLOAD_STARTED_LOCKED
+                    val lockable = kind == KIND_UPLOAD_STARTED_LOCKED || kind == KIND_UPLOAD_STARTED_ENCRYPTED
+                    val encrypted = kind == KIND_UPLOAD_STARTED_ENCRYPTED
                     UploadStarted(
                         bucket = bucket,
                         key = key,
@@ -501,10 +540,12 @@ sealed interface IndexRecord {
                         retentionMode = if (lockable) buffer.optionalText() else null,
                         retentionUntilMillis = if (lockable) buffer.long else 0,
                         legalHold = lockable && buffer.get().toInt() == 1,
+                        encryptionAlgorithm = if (encrypted) buffer.optionalText() else null,
+                        encryptionKeyMd5 = if (encrypted) buffer.optionalText() else null,
                     )
                 }
 
-                KIND_UPLOAD_PART, KIND_UPLOAD_PART_WITH_CHECKSUM -> {
+                KIND_UPLOAD_PART, KIND_UPLOAD_PART_WITH_CHECKSUM, KIND_UPLOAD_PART_ENCRYPTED -> {
                     val bucket = buffer.text()
                     val uploadId = buffer.text()
                     val number = buffer.long.toInt()
@@ -512,8 +553,10 @@ sealed interface IndexRecord {
                     val size = buffer.long
                     val eTag = buffer.text()
                     val lastModified = buffer.long
-                    val algorithm = if (kind == KIND_UPLOAD_PART_WITH_CHECKSUM) buffer.optionalText() else null
-                    val value = if (kind == KIND_UPLOAD_PART_WITH_CHECKSUM) buffer.optionalText() else null
+                    val carries = kind == KIND_UPLOAD_PART_WITH_CHECKSUM || kind == KIND_UPLOAD_PART_ENCRYPTED
+                    val algorithm = if (carries) buffer.optionalText() else null
+                    val value = if (carries) buffer.optionalText() else null
+                    val iv = if (kind == KIND_UPLOAD_PART_ENCRYPTED) buffer.bytes() else null
                     UploadPart(
                         bucket = bucket,
                         uploadId = uploadId,
@@ -530,6 +573,7 @@ sealed interface IndexRecord {
                             } else {
                                 null
                             },
+                        iv = iv,
                     )
                 }
 

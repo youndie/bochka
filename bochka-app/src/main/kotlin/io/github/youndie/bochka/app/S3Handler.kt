@@ -116,6 +116,38 @@ class S3Handler(
             return error(head, S3Error.MISSING_CONTENT_LENGTH, key = keyOf(route), bucket = bucketOf(route))
         }
 
+        // The customer key on a part, checked here and not where the part is stored (M-189).
+        //
+        // **The difference is a hang.** A refusal written after the body has started arriving means
+        // the server answers and closes while the client is still pushing five mebibytes: both
+        // sides then wait, and the suite reports a timeout rather than a refusal. This repository
+        // has the lesson written down from the other direction — a test that sent four mebibytes to
+        // prove the body was not read hung the run — and every head-decided refusal lives here for
+        // exactly that reason.
+        if (route is S3Router.Route.UploadPart) {
+            val presented =
+                try {
+                    SseC.of { name -> head.header(name) }
+                } catch (refused: SseC.Refused) {
+                    return error(head, refused.error, detail = refused.detail)
+                }
+            val wanted = store.upload(route.uploadId)?.encryption
+            if (wanted != null && presented?.keyMd5 != wanted.keyMd5) {
+                return error(
+                    head,
+                    S3Error.INVALID_ARGUMENT,
+                    detail = "this upload was started with a customer key and this part does not carry it",
+                )
+            }
+            if (wanted == null && presented != null) {
+                return error(
+                    head,
+                    S3Error.INVALID_ARGUMENT,
+                    detail = "this upload was not started with a customer key",
+                )
+            }
+        }
+
         // A part number outside 1..10 000 is a request that could never be completed
         // (`s3-service-2.json:1604`), and it is visible from the head.
         val partNumber =
@@ -432,6 +464,15 @@ class S3Handler(
         // multipart upload finish as an object anybody could delete — and the client was told the
         // upload succeeded, which it had.
         val lock = lockOnUpload(head)
+        // The customer key, stated here and binding on every part (M-189). Refused now rather than
+        // at the first part: an upload started with a key that is not a key is a client that thinks
+        // it is encrypting, and it should find out on the request that said so.
+        val startingKey =
+            try {
+                SseC.of { name -> head.header(name) }
+            } catch (refused: SseC.Refused) {
+                return error(head, refused.error, detail = refused.detail, key = route.key, bucket = route.bucket)
+            }
         val upload =
             store.createUpload(
                 route.bucket,
@@ -441,6 +482,9 @@ class S3Handler(
                 checksumType,
                 retention = lock?.retention,
                 legalHold = lock?.legalHold == true,
+                // The key is not kept — only what identifies it. Every part brings the key again,
+                // which is what S3 asks of them, and this is what those parts are checked against.
+                encryption = startingKey?.let { ObjectStore.Encryption(it.algorithm, it.keyMd5, ByteArray(0)) },
             )
 
         // Both go back as **headers**: `CreateMultipartUploadOutput` gives them
@@ -480,15 +524,25 @@ class S3Handler(
                 null
             }
 
+        // The key travels on every part and is checked in `screen`, before a byte of the part is
+        // read — see the note there. Here it is only unpacked again, and it cannot refuse.
+        val presented = runCatching { SseC.of { name -> head.header(name) } }.getOrNull()
+        val wanted = store.upload(route.uploadId)?.encryption
+        // An IV of this part's own. The alternative — one IV for the object, with each part
+        // encrypted at its future offset — cannot work: the offset is not known until every other
+        // part has arrived, and parts arrive in any order.
+        val partIv = if (wanted != null) SseC.newIv() else null
+        val partEncryption = partIv?.let { ObjectStore.Encryption(wanted!!.algorithm, wanted.keyMd5, it) }
+
         // A part goes through the same four framings as an object, because it is the same upload
         // path: `aws s3 cp` of a large file sends every part aws-chunked with a signature apiece.
         var staged: ObjectStore.Staged? = null
         return try {
             staged =
                 if (streaming) {
-                    stageStreaming(head, verification, body, checksums)
+                    stageStreaming(head, verification, body, checksums, presented, partEncryption)
                 } else {
-                    stageWhole(body, checksums, signedHash)
+                    stageWhole(body, checksums, signedHash, presented, partEncryption)
                 }
             if (signedHash != null) {
                 val computed = signedHash.digest().joinToString("") { "%02x".format(it) }
@@ -498,11 +552,21 @@ class S3Handler(
             }
             checksums.verify()?.let { return error(head, it.error, detail = it.detail) }
 
-            val part = store.commitPart(route.uploadId, route.partNumber, staged, checksums.stored())
+            val part = store.commitPart(route.uploadId, route.partNumber, staged, checksums.stored(), partIv)
             staged = null
             // `UploadPartOutput.ChecksumSHA256` and its siblings are headers, and an SDK reads
             // them straight back into the part list it will send at completion.
-            HttpResponse(200, "OK", headers = checksumHeaders(part.checksum) + ("ETag" to part.eTag))
+            HttpResponse(
+                200,
+                "OK",
+                headers =
+                    checksumHeaders(part.checksum) + ("ETag" to part.eTag) +
+                        (
+                            wanted?.let {
+                                listOf(SseC.ALGORITHM_HEADER to it.algorithm, SseC.KEY_MD5_HEADER to it.keyMd5)
+                            } ?: emptyList()
+                        ),
+            )
         } catch (e: AwsChunkedDecoder.MalformedBody) {
             error(head, e.error, detail = e.message)
         } catch (e: ObjectStore.CompletionRefused) {
@@ -1786,7 +1850,16 @@ class S3Handler(
             listOf(SseC.ALGORITHM_HEADER to it.algorithm, SseC.KEY_MD5_HEADER to it.keyMd5)
         } ?: emptyList()
 
-    /** The filter that turns the stored bytes back into the object, or null when there is nothing to undo. */
+    /**
+     * The filter that turns the stored bytes back into the object, or null when there is nothing to
+     * undo.
+     *
+     * Two shapes, because an assembled object is not one stream of ciphertext but several laid end
+     * to end. A simple `PUT` has one IV and one counter running from the start of the object. A
+     * multipart object has an IV per part (M-189), so the filter has to know where it is in the
+     * object and start a new cipher at every seam — including when a `Range` drops it into the
+     * middle of one.
+     */
     private fun decrypting(
         stored: ObjectStore.Stored,
         presented: SseC?,
@@ -1794,11 +1867,53 @@ class S3Handler(
     ): HttpResponse.Filter? {
         val encryption = stored.encryption ?: return null
         val key = presented ?: return null
-        val cipher = key.cipherAt(encryption.iv, offset)
+        if (stored.parts.isEmpty()) {
+            val cipher = key.cipherAt(encryption.iv, offset)
+            return HttpResponse.Filter { buffer, from, length ->
+                // In place: counter mode writes exactly as many bytes as it reads, and the same
+                // array goes on to the socket.
+                cipher.update(buffer, from, length, buffer, from)
+            }
+        }
+        return partwiseDecrypting(stored, key, offset)
+    }
+
+    /**
+     * The same, for an object made of parts that were each encrypted on their own.
+     *
+     * Stateful, and it has to be: a chunk read off the disk can span a seam, and the two halves
+     * belong to two different ciphers. The position is absolute — where in the object the next
+     * byte sits — because that is the only thing both the part list and a `Range` agree on.
+     */
+    private fun partwiseDecrypting(
+        stored: ObjectStore.Stored,
+        key: SseC,
+        offset: Long,
+    ): HttpResponse.Filter {
+        val bounds = ArrayList<Triple<Long, Long, ByteArray>>(stored.parts.size)
+        var start = 0L
+        for (part in stored.parts) {
+            bounds += Triple(start, start + part.size, part.iv ?: ByteArray(16))
+            start += part.size
+        }
+        var position = offset
+        var cipher: javax.crypto.Cipher? = null
+        var currentEnd = -1L
         return HttpResponse.Filter { buffer, from, length ->
-            // In place: the cipher writes exactly as many bytes as it reads in counter mode, and
-            // the same array goes on to the socket.
-            cipher.update(buffer, from, length, buffer, from)
+            var done = 0
+            while (done < length) {
+                if (cipher == null || position >= currentEnd) {
+                    val part =
+                        bounds.firstOrNull { position >= it.first && position < it.second }
+                            ?: bounds.last()
+                    cipher = key.cipherAt(part.third, position - part.first)
+                    currentEnd = part.second
+                }
+                val room = minOf((currentEnd - position).toInt(), length - done)
+                cipher!!.update(buffer, from + done, room, buffer, from + done)
+                done += room
+                position += room
+            }
         }
     }
 
@@ -1938,6 +2053,18 @@ class S3Handler(
                     key = route.key,
                     bucket = route.bucket,
                 )
+
+        // The same key check a `GET` and a `HEAD` make, and for the same reason: this answer says
+        // how long the object is and what its parts are, which is a statement about the object
+        // rather than about the ciphertext. `GetObjectAttributes` takes the SSE-C headers in the
+        // model exactly because of that (M-189).
+        val presented =
+            try {
+                SseC.of { name -> head.header(name) }
+            } catch (refused: SseC.Refused) {
+                return error(head, refused.error, detail = refused.detail, key = route.key, bucket = route.bucket)
+            }
+        sseRefusal(head, route.bucket, route.key, stored, presented)?.let { return it }
 
         conditional(head, stored)?.let { status ->
             return if (status == 304) {

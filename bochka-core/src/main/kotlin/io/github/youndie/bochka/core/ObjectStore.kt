@@ -164,6 +164,8 @@ class ObjectStore(
         val size: Long,
         val eTag: String,
         val checksum: Metadata.Checksum?,
+        /** The IV this stretch of the object was encrypted with, when it was (M-189). */
+        val iv: ByteArray? = null,
     )
 
     /**
@@ -409,6 +411,10 @@ class ObjectStore(
                                             Retention(it, record.retentionUntilMillis)
                                         },
                                     legalHold = record.legalHold,
+                                    encryption =
+                                        record.encryptionAlgorithm?.let {
+                                            Encryption(it, record.encryptionKeyMd5.orEmpty(), ByteArray(0))
+                                        },
                                 ),
                             )
                     }
@@ -425,6 +431,7 @@ class ObjectStore(
                                 eTag = record.eTag,
                                 lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
                                 checksum = record.checksum,
+                                iv = record.iv,
                             ),
                         )
                     }
@@ -1581,6 +1588,15 @@ class ObjectStore(
         val checksumAlgorithm: String? = null,
         val checksumType: String? = null,
         /**
+         * The customer key this upload was started with, as its algorithm and MD5 (M-189).
+         *
+         * Here for the same reason as [checksumAlgorithm]: `CreateMultipartUpload` takes the SSE-C
+         * headers, the parts arrive minutes later, and every one of them has to be checked against
+         * what the upload was started with. Never the key itself — the parts bring it again, which
+         * is what S3 requires of them.
+         */
+        val encryption: Encryption? = null,
+        /**
          * The lock stated on the request that started the upload, held until there is something to
          * put it on.
          *
@@ -1601,6 +1617,17 @@ class ObjectStore(
         val lastModified: Instant,
         /** What the client stated about this part, kept so the finished object can answer for it. */
         val checksum: Metadata.Checksum? = null,
+        /**
+         * The initialisation vector this part was encrypted with, when the upload is encrypted.
+         *
+         * **Per part and not per object, and the alternative was the obvious one.** A completion
+         * could decrypt every part and re-encrypt it into the object under a single IV, which would
+         * leave the read path with one cipher and no boundaries — and would turn the join, today a
+         * kernel-level `transferFrom`, into a read-transform-write pass over the whole object with
+         * two AES passes on top. Keeping an IV per part costs a cipher restart per five mebibytes
+         * on a read path that is already off the fast path, and costs the join nothing.
+         */
+        val iv: ByteArray? = null,
     )
 
     /**
@@ -1648,6 +1675,7 @@ class ObjectStore(
         checksumType: String? = null,
         retention: Retention? = null,
         legalHold: Boolean = false,
+        encryption: Encryption? = null,
     ): Upload {
         val upload =
             Upload(
@@ -1660,6 +1688,7 @@ class ObjectStore(
                 checksumType = checksumType,
                 retention = retention,
                 legalHold = legalHold,
+                encryption = encryption,
             )
         uploads[upload.id] = UploadState(upload)
         write(
@@ -1674,6 +1703,8 @@ class ObjectStore(
                 retentionMode = retention?.mode,
                 retentionUntilMillis = retention?.untilMillis ?: 0,
                 legalHold = legalHold,
+                encryptionAlgorithm = encryption?.algorithm,
+                encryptionKeyMd5 = encryption?.keyMd5,
             ),
         )
         return upload
@@ -1707,9 +1738,10 @@ class ObjectStore(
         number: Int,
         staged: Staged,
         checksum: Metadata.Checksum? = null,
+        iv: ByteArray? = null,
     ): Part {
         val state = uploads[uploadId] ?: throw CompletionRefused(CompletionRefused.Reason.NO_SUCH_UPLOAD, uploadId)
-        val part = Part(number, staged.fileId, staged.size, staged.eTag, Instant.now(), checksum)
+        val part = Part(number, staged.fileId, staged.size, staged.eTag, Instant.now(), checksum, iv)
         val previous = state.parts.put(number, part)
         this.write(
             IndexRecord.UploadPart(
@@ -1721,6 +1753,7 @@ class ObjectStore(
                 eTag = staged.eTag,
                 lastModifiedMillis = part.lastModified.toEpochMilli(),
                 checksum = checksum,
+                iv = iv,
             ),
         )
         if (previous != null) Files.deleteIfExists(pathOf(previous.fileId))
@@ -1823,7 +1856,9 @@ class ObjectStore(
         }
 
         val summaries =
-            chosen.map { PartSummary(number = it.number, size = it.size, eTag = it.eTag, checksum = it.checksum) }
+            chosen.map {
+                PartSummary(number = it.number, size = it.size, eTag = it.eTag, checksum = it.checksum, iv = it.iv)
+            }
 
         // Only when **every** part carried a checksum: a mixture has no answer, and inventing one
         // would be worse than saying nothing.
@@ -1872,6 +1907,10 @@ class ObjectStore(
                 precondition = precondition,
                 retention = state.upload.retention,
                 legalHold = state.upload.legalHold,
+                // The object's own IV is empty on purpose: an assembled object has one per part,
+                // and the reader picks by offset. A single IV here would be a field nobody uses,
+                // which is the kind of field somebody later mistakes for the answer.
+                encryption = state.upload.encryption,
             )
         uploads.remove(uploadId)
         remember(uploadId, Completion(state.upload.bucket, state.upload.key, stored.eTag, stored.metadata.checksum))
@@ -1898,9 +1937,10 @@ class ObjectStore(
         precondition: Precondition,
         retention: Retention?,
         legalHold: Boolean,
+        encryption: Encryption?,
     ): Stored =
         try {
-            commit(bucket, key, metadata, staged, precondition, parts, retention, legalHold)
+            commit(bucket, key, metadata, staged, precondition, parts, retention, legalHold, encryption)
         } catch (e: Throwable) {
             Files.deleteIfExists(pathOf(staged.fileId))
             throw e
