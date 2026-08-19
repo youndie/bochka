@@ -1720,12 +1720,20 @@ class S3Handler(
     /**
      * Whether the key the client brought fits the object it is asking for, and what to say if not.
      *
-     * Three answers, and the difference between them is what the client does next. No key at all
-     * against an encrypted object is `400`: the request is incomplete, not forbidden, and a client
-     * told `403` goes off to re-sign a request that was signed correctly. A key against an object
-     * nobody encrypted is `400` for the same reason from the other side. A key that is well formed
-     * and **not the one** is `403` — that is a refusal of access, and the server knows it by the
-     * MD5 without trying to decrypt anything.
+     * **All three are `400`, and the third was written as `403` first.** The reasoning for `403`
+     * was that a key which does not open an object is a refusal of access — and the suite
+     * disagreed: `test_encryption_sse_c_other_key` asserts `400`, with no `fails_on_aws` beside it.
+     * The model says the key "must match the one used when storing the data" and says nothing about
+     * a status, so the suite is the oracle and the reasoning was only reasoning.
+     *
+     * Which is right on a second look: authorization here is the **signature**, and this request is
+     * signed correctly. The key is a parameter, and a parameter that cannot do its job makes a bad
+     * request — the same answer a wrong checksum gets. `403` would send a client off to re-sign a
+     * request whose signature was never the problem.
+     *
+     * What differs between the three is the message, and that is not decoration: "this object was
+     * not encrypted with a customer key" and "that is not the key it was written with" send a
+     * person to two different places.
      */
     private fun sseRefusal(
         head: HttpRequestParser.Head,
@@ -1757,7 +1765,7 @@ class S3Handler(
         if (presented.keyMd5 != encryption.keyMd5) {
             return error(
                 head,
-                S3Error.ACCESS_DENIED,
+                S3Error.INVALID_ARGUMENT,
                 detail = "that is not the key this object was written with",
                 key = key,
                 bucket = bucket,

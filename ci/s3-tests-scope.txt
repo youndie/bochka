@@ -14,9 +14,19 @@
 # A case matching nothing is reported as `unclassified`, which is the point of the file: a
 # failure that nobody has looked at must not be able to hide inside a category.
 
-out-of-scope	_enc[	server-side encryption touches the bytes on the read path, which cancels zero-copy (README, "What bochka is not")
-out-of-scope	sse	server-side encryption touches the bytes on the read path, which cancels zero-copy
-out-of-scope	encryption	server-side encryption touches the bytes on the read path, which cancels zero-copy
+# Шифрование распалось надвое в M26, и одна широкая строка на всю семью стала враньём: ключом
+# клиента сервер теперь шифрует, ключом сервера — по-прежнему нет. Узкие правила стоят выше общего,
+# иначе они мертвы — этот файл уже ловил такое с другой стороны (`object_raw_response_headers`).
+deferred	sse_c_multipart	SSE-C на многочастной загрузке: заголовки едут на каждую часть, и объект обязан собраться (M-189)
+deferred	sse_c_unaligned	то же, что выше: части неверного размера обязаны отвергаться (M-189)
+deferred	multipart_sse_c	чтение части зашифрованного объекта по partNumber (M-189)
+deferred	sse_c_encrypted_object_attributes	GetObjectAttributes обязан требовать ключ, как GET и HEAD (M-189)
+deferred	sse_c_post_object	POST-форма пока не несёт заголовков SSE-C (M-189)
+out-of-scope	sse_c_deny_algo_with_bucket_policy	кейс ставит политику бакета; политики — M29, а не шифрование
+out-of-scope	sse_c_enforced_with_bucket_policy	кейс ставит политику бакета; политики — M29, а не шифрование
+out-of-scope	_enc[	шифрование ключом сервера: сервер начинает хранить ключи, а это управление секретами (ресёрч покрытия)
+out-of-scope	sse	шифрование ключом сервера (SSE-S3, SSE-KMS): сервер начинает хранить ключи (ресёрч покрытия)
+out-of-scope	encryption	шифрование ключом сервера: сервер начинает хранить ключи (ресёрч покрытия)
 # Versioning arrived in M17, so "one version per key by design" stopped being true and stopped
 # being a reason. What is left of the family is three different things, and lumping them under one
 # stale line would hide all three.

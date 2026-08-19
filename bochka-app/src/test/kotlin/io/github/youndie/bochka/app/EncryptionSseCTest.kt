@@ -85,13 +85,20 @@ class EncryptionSseCTest {
     }
 
     @Test
-    fun `reading an encrypted object with the wrong key is refused, and with 403`() {
-        // А вот это уже отказ в доступе: ключ есть, он правильной формы, и он **не тот**. Сервер
-        // знает об этом по MD5 и обязан сказать об этом отказом, а не выдачей мусора.
+    fun `reading an encrypted object with the wrong key is refused, and with 400`() {
+        // **Здесь стояло 403, и это было рассуждение, а не факт.** Рассуждение звучало так: ключ,
+        // который не открывает объект, — это отказ в доступе. Сьют говорит `400`
+        // (`test_encryption_sse_c_other_key`, без пометки `fails_on_aws`), модель про код молчит,
+        // и значит решает сьют.
+        //
+        // На второй взгляд он и прав: доступ здесь решает **подпись**, а она у этого запроса
+        // верная. Ключ — параметр запроса, и параметр, который не может сделать свою работу, —
+        // это плохой запрос, тот же ответ, что у неверной контрольной суммы. `403` отправил бы
+        // клиента перевыпускать подпись, с которой всё в порядке.
         s3.createBucket("photos")
         s3.put("photos", "secret.txt", "hello", sseC())
 
-        assertEquals(403, s3.get("photos", "secret.txt", sseC(otherKey, otherMd5)).status)
+        assertEquals(400, s3.get("photos", "secret.txt", sseC(otherKey, otherMd5)).status)
     }
 
     @Test
