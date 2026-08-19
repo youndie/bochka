@@ -137,6 +137,19 @@ else
   fail "JAVA_OPTS no longer overrides the shipped heap ($shipped -> $forced): re-check what does"
 fi
 
+# The second name, and the one that used to be safe by accident. `BOCHKA_APP_OPTS` is the start
+# script's own knob -- Gradle derives it from the application name and documents it in the script it
+# generates -- and the server used to refuse to start with it set, because it begins with `BOCHKA_`.
+# That refusal was a bug (M-142) and it is gone, so this name now does what JAVA_OPTS does and does
+# it without a word. Checked separately from JAVA_OPTS because the two failed differently and would
+# fail differently again: one was loud and wrong, the other silent and right.
+appopts=$(ceiling -e BOCHKA_APP_OPTS=-Xmx3G)
+if [ -n "$appopts" ] && [ "$appopts" != "$shipped" ]; then
+  pass "BOCHKA_APP_OPTS starts the server and overrides the heap ($shipped -> $appopts)"
+else
+  fail "BOCHKA_APP_OPTS did not override the shipped heap ($shipped -> $appopts): did the server refuse it?"
+fi
+
 # --- the volume belongs to the process, not to root ---------------------------------------------
 docker exec "$NAME" sh -c 'echo probe > /var/lib/bochka/.probe' >/dev/null 2>&1 &&
   pass "the data directory is writable by the container's user" ||

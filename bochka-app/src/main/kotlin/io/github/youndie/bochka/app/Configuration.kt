@@ -86,10 +86,29 @@ class Configuration private constructor(
     /** What the process prints at startup, so a log says what it is running with. */
     fun describe(): String =
         Key.entries.joinToString("\n") { key ->
-            "  %-22s %s".format(key.property, get(key) ?: "(unset)")
+            val value = get(key)
+            "  %-22s %s".format(key.property, (if (key == Key.KEYS) redact(value) else value) ?: "(unset)")
         }
 
     companion object {
+        /**
+         * Keeps the shape of a value whose content has no business being in a log.
+         *
+         * `id:secret,id2:secret2` becomes `id:***,id2:***`. The ids stay, because "which keys does
+         * this process accept" is the question this line is read for; the secret goes, because the
+         * line is printed on every start into whatever collects container logs, and a `Secret` is
+         * where a value is **stored**, not where it stays.
+         *
+         * An entry with no colon is hidden whole. Nothing says which half of it was meant to be the
+         * secret, and a redaction that guesses is a redaction that leaks on the malformed input —
+         * which is the input most likely to be typed by hand.
+         */
+        private fun redact(value: String?): String? =
+            value?.split(',')?.joinToString(",") { pair ->
+                val colon = pair.indexOf(':')
+                if (colon <= 0) "***" else pair.substring(0, colon) + ":***"
+            }
+
         /** Names that are ours to interpret; anything else starting with `BOCHKA_` is a mistake. */
         private val KNOWN_ENVIRONMENT = Key.entries.associateBy { it.environment }
         private val KNOWN_PROPERTIES = Key.entries.associateBy { it.property }
@@ -98,19 +117,31 @@ class Configuration private constructor(
          * Variables that begin with `BOCHKA_` and are deliberately not settings.
          *
          * Every one of them is here because something outside this file already owns the name —
-         * the measurement harness, the build. Listing them beats loosening the rule.
+         * the measurement harness, the build, the start script this distribution ships with.
+         *
+         * `BOCHKA_APP_OPTS` is the expensive one. Gradle's generated start script assembles
+         * `$DEFAULT_JVM_OPTS $JAVA_OPTS $BOCHKA_APP_OPTS` from the application's own name, so it is
+         * documented by the distribution itself — and refusing it meant the documented way of
+         * passing a JVM option to this distribution stopped it with exit code 2. The shell reads it
+         * before there is a JVM to read a setting, so there is nothing here to interpret.
          */
         private val NOT_SETTINGS =
             setOf(
                 "BOCHKA_CONFIG",
-                "BOCHKA_MEASURE_DIR",
-                "BOCHKA_MEASURE_BYTES",
-                "BOCHKA_MEASURE_REPEATS",
-                "BOCHKA_MEASURE_KEYS",
-                "BOCHKA_MEASURE_GENERATIONS",
+                "BOCHKA_APP_OPTS",
                 "BOCHKA_S3TESTS_K",
                 "BOCHKA_FAILED_OUT",
             )
+
+        /**
+         * A whole namespace that belongs to the measurement harness rather than to the server.
+         *
+         * A prefix and not eight exact names, because the list was eight exact names and the
+         * collector measurement added four more in one commit. Whoever adds the thirteenth would
+         * have had to know this file existed, and nothing would have told them: the harness runs
+         * without a server in the process, so the refusal appears somewhere else entirely.
+         */
+        private const val HARNESS_PREFIX = "BOCHKA_MEASURE_"
 
         fun load(
             environment: Map<String, String> = System.getenv(),
@@ -130,7 +161,7 @@ class Configuration private constructor(
             }
 
             for ((name, value) in environment) {
-                if (!name.startsWith("BOCHKA_") || name in NOT_SETTINGS) continue
+                if (!name.startsWith("BOCHKA_") || name in NOT_SETTINGS || name.startsWith(HARNESS_PREFIX)) continue
                 val key =
                     KNOWN_ENVIRONMENT[name]
                         ?: throw Refused(unknown(name, KNOWN_ENVIRONMENT.keys, "in the environment"))
