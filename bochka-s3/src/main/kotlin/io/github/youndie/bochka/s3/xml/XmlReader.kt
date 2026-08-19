@@ -20,6 +20,16 @@ class XmlReader(
 ) {
     private var pos = 0
 
+    /**
+     * Что последний прочитанный тег был `<x/>` — пустым элементом без содержимого.
+     *
+     * Флагом, а не отдельным возвратом [openTag], потому что читает его не тот, кто открыл тег:
+     * [children] отдаёт имя обработчику, и содержимое элемента забирает уже он — через [textOf]
+     * или через вложенный [children]. Оба гасят флаг; если обработчик элемент не тронул,
+     * его гасит сам цикл.
+     */
+    private var empty = false
+
     class MalformedXmlException(
         message: String,
     ) : IllegalArgumentException(message)
@@ -41,6 +51,11 @@ class XmlReader(
     }
 
     fun children(onElement: (String) -> Unit) {
+        // An element written `<Filter/>` has no children and no closing tag to walk to.
+        if (empty) {
+            empty = false
+            return
+        }
         while (true) {
             skipSpace()
             if (pos >= text.length) throw MalformedXmlException("unexpected end of document")
@@ -49,10 +64,14 @@ class XmlReader(
                 return
             }
             val name = openTag() ?: throw MalformedXmlException("expected an element at $pos")
+            val wasEmpty = empty
             val before = pos
             onElement(name)
             // The handler did not consume the element: skip its content and its closing tag.
-            if (pos == before) {
+            // An empty element has neither, and its flag is dropped here when nobody read it.
+            if (wasEmpty) {
+                empty = false
+            } else if (pos == before) {
                 skipElementBody(name)
             }
         }
@@ -60,6 +79,11 @@ class XmlReader(
 
     /** Text content of the element whose opening tag was just read, and its closing tag. */
     fun textOf(name: String): String {
+        // `<Prefix/>` is the empty string, and the empty string is a prefix: it means "every key".
+        if (empty) {
+            empty = false
+            return ""
+        }
         val start = pos
         val end = text.indexOf('<', start)
         if (end < 0) throw MalformedXmlException("unterminated <$name>")
@@ -79,7 +103,10 @@ class XmlReader(
                 open--
             } else {
                 if (openTag() == null) throw MalformedXmlException("malformed markup in <$name>")
-                open++
+                // An empty element closes itself, so it does not deepen anything. Counting it as
+                // an opening tag would leave this loop one closing tag short and eat the rest of
+                // the document looking for it.
+                if (empty) empty = false else open++
             }
         }
     }
@@ -106,11 +133,17 @@ class XmlReader(
         val end = text.indexOf('>', pos)
         if (end < 0) throw MalformedXmlException("unterminated tag at $pos")
         val raw = text.substring(pos + 1, end)
-        if (raw.endsWith("/")) throw MalformedXmlException("self-closing elements are not accepted")
+        // `<Filter/>` used to be refused here, and that was wrong rather than strict: botocore
+        // writes an empty structure and an empty string that way, so `Filter {}` — "match every
+        // object" — and `Prefix: ''` arrive as self-closing elements from the standard client.
+        // A document nobody can write another way is not malformed. Nothing is skipped: the
+        // element is reported, and its content is empty because it has none.
+        empty = raw.endsWith("/")
         // Attributes are not read: no element in either document carries one that means anything,
         // and silently dropping an attribute we do not understand is better than pretending to
-        // support it. The name is everything up to the first space.
-        val name = raw.substringBefore(' ')
+        // support it. The name is everything up to the first space — or up to the slash of an
+        // empty element written without one, `<Filter/>`.
+        val name = raw.substringBefore(' ').removeSuffix("/")
         if (name.isEmpty()) throw MalformedXmlException("empty element name at $pos")
         pos = end + 1
         return name
