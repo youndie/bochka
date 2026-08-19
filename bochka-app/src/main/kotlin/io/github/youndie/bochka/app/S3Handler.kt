@@ -1208,9 +1208,29 @@ class S3Handler(
             return error(head, it.error, detail = it.detail, key = key, bucket = bucket)
         }
 
+        // The customer key by the same code again, and for the same reason as the metadata and the
+        // checksum above: the field names of a form are the header names of a `PUT`, and this one
+        // means the same thing in both (M-190б). The checksum was taken over the plaintext a few
+        // lines up, which is where it belongs — it describes the object, not what the disk holds.
+        val sse =
+            try {
+                SseC.of { name -> form[name] }
+            } catch (refused: SseC.Refused) {
+                return error(head, refused.error, detail = refused.detail, key = key, bucket = bucket)
+            }
+        val encryption = sse?.let { ObjectStore.Encryption(it.algorithm, it.keyMd5, SseC.newIv()) }
+
         var staged: ObjectStore.Staged? = null
         return try {
-            staged = store.stage { out -> out.write(raw, form.fileOffset, form.fileLength) }
+            staged =
+                if (sse == null || encryption == null) {
+                    store.stage { out -> out.write(raw, form.fileOffset, form.fileLength) }
+                } else {
+                    val cipher = sse.cipherAt(encryption.iv, 0)
+                    val encrypted = ByteArray(form.fileLength)
+                    cipher.update(raw, form.fileOffset, form.fileLength, encrypted, 0)
+                    store.stage { out -> out.write(encrypted, 0, encrypted.size) }
+                }
             val stored =
                 store.commit(
                     bucket,
@@ -1218,6 +1238,7 @@ class S3Handler(
                     metadata.copy(checksum = checksums.stored()),
                     staged,
                     ObjectStore.Precondition(),
+                    encryption = encryption,
                 )
             staged = null
             formSuccess(form, bucket, key, stored.eTag, accessKeyId)
