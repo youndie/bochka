@@ -114,7 +114,7 @@ spec:
       runAsUser is spelled out rather than inherited, and it stays spelled out whatever the image
       declares: it has to agree with fsGroup above, which is what makes the volume writable, and an
       inherited uid is one nobody can read out of this file. It is also load-bearing for the tag
-      this chart installs by default — `docker manifest inspect ghcr.io/youndie/bochka:v0.1.1`
+      this chart installs by default — `docker manifest inspect ghcr.io/youndie/bochka:v0.2.0`
       shows Config.User as the string "bochka" rather than a number, and kubelet under
       runAsNonRoot cannot resolve a name against a passwd file in an image it has not started; it
       refuses the container instead of assuming it is not root. The Dockerfile in this repository

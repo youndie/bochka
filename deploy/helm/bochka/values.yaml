@@ -21,7 +21,7 @@
 
 image:
   repository: ghcr.io/youndie/bochka
-  # Empty on purpose: the tag comes from .Chart.AppVersion, which is `v0.1.1` — verbatim, with the
+  # Empty on purpose: the tag comes from .Chart.AppVersion, which is `v0.2.0` — verbatim, with the
   # letter, because that is what the release pushes to GHCR. Override to pin something else.
   #
   # Overriding it moves more than the image: the `app.kubernetes.io/version` label and the first line
