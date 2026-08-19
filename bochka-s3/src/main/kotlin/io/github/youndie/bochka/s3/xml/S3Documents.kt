@@ -351,6 +351,42 @@ object S3Documents {
             text("Status", if (held) "ON" else "OFF")
         }
 
+    /**
+     * `<AccessControlPolicy>` — the owner with `FULL_CONTROL`, and nothing else.
+     *
+     * The one document in this file that is genuinely a stand-in, and it is written to be a
+     * **true** one: there are no access controls here, so the honest report is that the caller
+     * owns the thing and may do everything to it. A client reading it learns that nothing is
+     * restricted, which is the case.
+     *
+     * It answers the read side only. `PutBucketAcl` stays refused, because a grant accepted and
+     * not enforced is discovered as a leak rather than as an error.
+     */
+    fun accessControlPolicy(
+        ownerId: String,
+        ownerDisplayName: String,
+    ): ByteArray =
+        XmlWriter(384).document("AccessControlPolicy") {
+            element("Owner") {
+                text("ID", ownerId)
+                text("DisplayName", ownerDisplayName)
+            }
+            element("AccessControlList") {
+                element("Grant") {
+                    // Without the `xsi:type="CanonicalUser"` attribute real S3 puts here: this
+                    // writer has no attributes, and botocore reads the grantee by its elements
+                    // rather than by that type. Written down because it is a difference from the
+                    // wire, not an oversight — a client that keys off the attribute would see a
+                    // grantee of no type.
+                    element("Grantee") {
+                        text("ID", ownerId)
+                        text("DisplayName", ownerDisplayName)
+                    }
+                    text("Permission", "FULL_CONTROL")
+                }
+            }
+        }
+
     fun listAllMyBucketsResult(
         buckets: List<BucketEntry>,
         ownerId: String,

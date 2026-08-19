@@ -134,8 +134,7 @@ class S3RouterTest {
     fun `what bochka does not implement is refused by name rather than answered`() {
         // The important half. `GET /photos?versions` answered with an empty listing tells the
         // client there are no versions, which is a lie shaped exactly like an answer.
-        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos", "acl"))
-        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos", "lifecycle"))
+        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos", "notification"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos/a.txt", "acl"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PATCH", "h", "/photos/a.txt", ""))
     }
@@ -153,6 +152,15 @@ class S3RouterTest {
         // the same as a feature the server does not have.
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "versioning"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "versioning"))
+        // И третий переезд, M20: `?policy`, `?lifecycle` и `?acl` отвечают на `GET` — «настройки
+        // нет» это вопрос с определённым ответом, — но **только** на `GET`. Принимающая сторона
+        // остаётся отказом, и обе половины проверяются здесь рядом, чтобы одну нельзя было
+        // подвинуть, не заметив другую.
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "policy"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "lifecycle"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "acl"))
+        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "policy"))
+        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "acl"))
     }
 
     @Test

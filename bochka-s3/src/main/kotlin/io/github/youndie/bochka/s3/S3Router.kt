@@ -350,6 +350,10 @@ class S3Router(
                         Route.BucketSubresource(bucket, params.keys.first { it in CONFIGURABLE_SUBRESOURCES }, "GET")
                     }
 
+                    params.keys.any { it in READ_ONLY_SUBRESOURCES } -> {
+                        Route.BucketSubresource(bucket, params.keys.first { it in READ_ONLY_SUBRESOURCES }, "GET")
+                    }
+
                     params.keys.any { it in BUCKET_SUBRESOURCES } -> {
                         Route.NotImplemented("GET /$bucket?${params.keys.first { it in BUCKET_SUBRESOURCES }}")
                     }
@@ -581,6 +585,20 @@ class S3Router(
          * строчка здесь, а не правка трёх ветвей маршрутизации.
          */
         val CONFIGURABLE_SUBRESOURCES = setOf("tagging", "cors", "versioning", "object-lock")
+
+        /**
+         * Sub-resources answered on `GET` and refused on every other method (M20).
+         *
+         * The answer to "what is the policy of this bucket" is `404 NoSuchBucketPolicy`, and that
+         * is not a stub: a bucket with no policy is exactly what this server has, and S3 says so
+         * with the same code. `NotImplemented` would say something else — that the server is
+         * broken — and the client would leave.
+         *
+         * The **accepting** side stays refused, deliberately: `PUT ?policy` accepted and not
+         * applied is a lie a client finds out about through a leak rather than through an error
+         * (M-133). Which is why this set is consulted in the `GET` branch only.
+         */
+        val READ_ONLY_SUBRESOURCES = setOf("policy", "lifecycle", "acl")
 
         /** Sub-resources of an **object** that carry a lock rather than a configuration (M18). */
         val LOCK_SUBRESOURCES = setOf("retention", "legal-hold")

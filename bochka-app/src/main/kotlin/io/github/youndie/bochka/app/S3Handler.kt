@@ -1916,6 +1916,15 @@ class S3Handler(
         if (route.name == "versioning") return bucketVersioning(head, route, body)
         if (route.name == "object-lock") return bucketObjectLock(head, route, body)
 
+        // The truthful answers to questions this server has a defined answer for (M20). All three
+        // are `GET`-only by routing: the accepting side stays refused, because a policy accepted
+        // and not applied is found out through a leak rather than through an error.
+        when (route.name) {
+            "policy" -> return error(head, S3Error.NO_SUCH_BUCKET_POLICY, bucket = route.bucket)
+            "lifecycle" -> return error(head, S3Error.NO_SUCH_LIFECYCLE_CONFIGURATION, bucket = route.bucket)
+            "acl" -> return xml(S3Documents.accessControlPolicy(OWNER, OWNER))
+        }
+
         val absent = if (route.name == "tagging") S3Error.NO_SUCH_TAG_SET else S3Error.NO_SUCH_CORS_CONFIGURATION
         return when (route.method) {
             "GET" -> {

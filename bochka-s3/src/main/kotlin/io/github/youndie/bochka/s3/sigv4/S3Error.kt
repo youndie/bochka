@@ -288,6 +288,27 @@ enum class S3Error(
         409,
     ),
 
+    /**
+     * A bucket with no policy, and that is an **answer** rather than a missing feature.
+     *
+     * `NotImplemented` reads to a client as "this server is broken" and it leaves; `404` reads as
+     * "there is no policy here", which is true and is what S3 says. The distinction has already
+     * been paid for once — refusing `?versions` as unimplemented cost 837 cases of 838 in a
+     * cleanup fixture (M3).
+     */
+    NO_SUCH_BUCKET_POLICY(
+        "NoSuchBucketPolicy",
+        "The bucket policy does not exist",
+        404,
+    ),
+
+    /** Same shape, same reason: a bucket with no lifecycle rules has a defined answer. */
+    NO_SUCH_LIFECYCLE_CONFIGURATION(
+        "NoSuchLifecycleConfiguration",
+        "The lifecycle configuration does not exist",
+        404,
+    ),
+
     /** A lock-enabled bucket that has no configuration yet — absent, not unimplemented. */
     OBJECT_LOCK_CONFIGURATION_NOT_FOUND(
         "ObjectLockConfigurationNotFoundError",
