@@ -176,7 +176,10 @@ outside — the OOM kill arrives before the ceiling does, and an OOM kill is a C
 line saying why, at whatever moment the index happened to grow.
 
 512M heap + 80M metaspace + 32M code cache + 32M direct + stacks is about 700 MiB, and the values
-file asks for 768Mi. That is arithmetic from the profile and not a measured kill threshold — the
+file asks for 768Mi, and that number is measured rather than added up (M-148): with the index at its
+published ceiling, four listing clients and this probe, 576Mi survives and 512Mi is OOM-killed. The
+paragraph below is the arithmetic that first produced the figure, which is still what the refusal
+message explains to whoever hits it. Superseded detail: the
 measured one needs a cluster, a full index and live traffic, and it is a task in BACKLOG.md rather
 than a number anybody can quote here — so this guard sits at the number the chart itself recommends
 and says where the number comes from.

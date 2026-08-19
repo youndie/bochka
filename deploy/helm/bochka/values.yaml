@@ -248,7 +248,20 @@ probes:
     timeoutSeconds: 5
     failureThreshold: 6
 
-# 768Mi both ways, and this is the one number in the file with arithmetic behind it. The runtime
+# 768Mi both ways, and it is now the one number in the file with a **measurement** behind it rather
+# than arithmetic (M-148). Measured on a 2-core Ubuntu 26.04 box, with the index at its published
+# ceiling of 399215 versions, four clients listing it recursively, one overwriting, and the exec
+# probe forking a shell inside the same cgroup every three seconds:
+#
+#   640Mi  survived, peak 526 MiB      512Mi  OOM-killed, last seen at 503 MiB
+#   576Mi  survived, peak 473 MiB      480Mi  OOM-killed, last seen at 462 MiB
+#
+# So the floor is between 512 and 576, and 768Mi is that floor plus a third. The headroom is kept
+# deliberately: a floor measured under one traffic shape is one traffic shape's floor, and more
+# concurrent clients means more request buffers in flight at once. What it is not any more is a sum
+# somebody added up.
+#
+# The old arithmetic, kept because it is what the refusal message still explains: the runtime
 # profile is baked into the start script — `-Xmx512M -XX:MaxMetaspaceSize=80M
 # -XX:ReservedCodeCacheSize=32M -XX:MaxDirectMemorySize=32M -Xss256k` (build.gradle.kts:26-48) —
 # and MaxRAMPercentage is not used, so the limit does not influence the heap at all. The sum is
