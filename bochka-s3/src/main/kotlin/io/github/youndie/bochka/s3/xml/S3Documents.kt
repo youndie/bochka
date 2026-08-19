@@ -48,6 +48,22 @@ object S3Documents {
 
     data class DeletedEntry(
         val key: ObjectKey,
+        /**
+         * The version the request named, when it named one.
+         *
+         * S3 echoes it back, and a client that deletes by version has no other confirmation that
+         * the one it meant is the one that went.
+         */
+        val versionId: String? = null,
+        /**
+         * Set when this delete **created** a tombstone rather than removing bytes.
+         *
+         * The pair `DeleteMarker` + `DeleteMarkerVersionId` is how a caller learns that its
+         * delete is undoable and by what name — the batch form's equivalent of the headers a
+         * single `DELETE` answers with, and the only place a batch hands the id out (M-139).
+         */
+        val deleteMarker: Boolean = false,
+        val deleteMarkerVersionId: String? = null,
     )
 
     data class DeleteError(
@@ -678,6 +694,11 @@ object S3Documents {
             for (entry in deleted) {
                 element("Deleted") {
                     raw("Key", entry.key.toByteArray())
+                    entry.versionId?.let { text("VersionId", it) }
+                    if (entry.deleteMarker) {
+                        text("DeleteMarker", true)
+                        entry.deleteMarkerVersionId?.let { text("DeleteMarkerVersionId", it) }
+                    }
                 }
             }
             for (entry in errors) {

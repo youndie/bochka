@@ -96,6 +96,8 @@ class S3Router(
             val key: ObjectKey,
             val sourceBucket: String,
             val sourceKey: ObjectKey,
+            /** Which version of the source to copy, or `null` for its current one. */
+            val sourceVersionId: String? = null,
         ) : Route
 
         data class GetObject(
@@ -128,6 +130,7 @@ class S3Router(
         data class GetObjectAttributes(
             val bucket: String,
             val key: ObjectKey,
+            val versionId: String? = null,
         ) : Route
 
         /**
@@ -231,6 +234,8 @@ class S3Router(
             val partNumber: Int,
             val sourceBucket: String,
             val sourceKey: ObjectKey,
+            /** Which version of the source to copy, or `null` for its current one. */
+            val sourceVersionId: String? = null,
         ) : Route
 
         data class CompleteMultipartUpload(
@@ -302,6 +307,30 @@ class S3Router(
     }
 
     /**
+     * `/<bucket>/<key>` or `/<bucket>/<key>?versionId=…` — the source of a copy.
+     *
+     * The version used to be cut off and dropped, which was right while there were no versions and
+     * became a silent wrong answer once there were: a client asking for an old version got the
+     * current one and no indication that its request had been reinterpreted (M-141).
+     */
+    private fun parseCopySource(value: String): Triple<String, ObjectKey, String?>? {
+        val withoutVersion = value.substringBefore('?')
+        val query = value.substringAfter('?', "")
+        val trimmed = withoutVersion.removePrefix("/")
+        val slash = trimmed.indexOf('/')
+        if (slash <= 0 || slash == trimmed.length - 1) return null
+        val bucket = String(UriCodec.decode(trimmed.substring(0, slash)))
+        val key = ObjectKey(UriCodec.decode(trimmed.substring(slash + 1)))
+        val version =
+            query
+                .split('&')
+                .firstOrNull { it.startsWith("versionId=") }
+                ?.removePrefix("versionId=")
+                ?.takeIf { it.isNotEmpty() }
+        return Triple(bucket, key, version)
+    }
+
+    /**
      * `x-amz-copy-source` is `/<bucket>/<key>` or `<bucket>/<key>`, percent-encoded, and may carry
      * `?versionId=`.
      *
@@ -309,16 +338,6 @@ class S3Router(
      * bucket and **everything after it** is the key, slashes and all. Splitting a decoded string
      * would put a key containing `%2F` in the wrong place.
      */
-    private fun parseCopySource(value: String): Pair<String, ObjectKey>? {
-        val withoutVersion = value.substringBefore('?')
-        val trimmed = withoutVersion.removePrefix("/")
-        val slash = trimmed.indexOf('/')
-        if (slash <= 0 || slash == trimmed.length - 1) return null
-        val bucket = String(UriCodec.decode(trimmed.substring(0, slash)))
-        val key = ObjectKey(UriCodec.decode(trimmed.substring(slash + 1)))
-        return bucket to key
-    }
-
     private fun bucketRoute(
         method: String,
         bucket: String,
@@ -448,7 +467,15 @@ class S3Router(
                             }
 
                             else -> {
-                                Route.UploadPartCopy(bucket, key, uploadId, number, source.first, source.second)
+                                Route.UploadPartCopy(
+                                    bucket,
+                                    key,
+                                    uploadId,
+                                    number,
+                                    source.first,
+                                    source.second,
+                                    source.third,
+                                )
                             }
                         }
                     }
@@ -476,7 +503,7 @@ class S3Router(
                         if (source == null) {
                             Route.NotImplemented("x-amz-copy-source: $copySource")
                         } else {
-                            Route.CopyObject(bucket, key, source.first, source.second)
+                            Route.CopyObject(bucket, key, source.first, source.second, source.third)
                         }
                     }
 
@@ -499,7 +526,7 @@ class S3Router(
                     }
 
                     "attributes" in params -> {
-                        Route.GetObjectAttributes(bucket, key)
+                        Route.GetObjectAttributes(bucket, key, params["versionId"])
                     }
 
                     "tagging" in params -> {

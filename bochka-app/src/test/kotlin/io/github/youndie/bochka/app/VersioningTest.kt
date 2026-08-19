@@ -170,4 +170,67 @@ class VersioningTest {
             assertEquals("третий", s3.send("GET", "/photos/a.txt", query = "versionId=null").text)
         }
     }
+
+    @Test
+    fun `a copy names the version it copies from`() {
+        // M-141. До этого версия из `x-amz-copy-source` срезалась и выбрасывалась: клиент просил
+        // старую, получал текущую и **никакого признака**, что его запрос переиначили.
+        S3Fixture().use { s3 ->
+            s3.enable("photos")
+            val first = s3.put("photos", "a.txt", "первый").header("x-amz-version-id")
+            s3.put("photos", "a.txt", "второй")
+
+            s3.send(
+                "PUT",
+                "/photos/copy.txt",
+                headers = listOf("x-amz-copy-source" to "/photos/a.txt?versionId=$first"),
+            )
+
+            assertEquals("первый", s3.get("photos", "copy.txt").text)
+        }
+    }
+
+    @Test
+    fun `a batch delete says which tombstones it made`() {
+        // M-139. Единственное место, где пакетная форма отдаёт имя надгробия: без него клиент,
+        // удаливший тысячу ключей, не может отменить ни одного.
+        S3Fixture().use { s3 ->
+            s3.enable("photos")
+            s3.put("photos", "a.txt", "тело")
+            val body = "<Delete><Object><Key>a.txt</Key></Object></Delete>".toByteArray()
+            val md5 =
+                java.util.Base64.getEncoder().encodeToString(
+                    java.security.MessageDigest
+                        .getInstance("MD5")
+                        .digest(body),
+                )
+
+            val answer =
+                s3.send("POST", "/photos", query = "delete", headers = listOf("Content-MD5" to md5), body = body)
+
+            assertTrue("<DeleteMarker>true</DeleteMarker>" in answer.text, answer.text)
+            assertTrue("<DeleteMarkerVersionId>" in answer.text, answer.text)
+        }
+    }
+
+    @Test
+    fun `GetObjectAttributes reads the version it was given`() {
+        // M-142.
+        S3Fixture().use { s3 ->
+            s3.enable("photos")
+            val first = s3.put("photos", "a.txt", "первый").header("x-amz-version-id")
+            s3.put("photos", "a.txt", "подлиннее второй")
+
+            val attributes =
+                s3.send(
+                    "GET",
+                    "/photos/a.txt",
+                    query = "attributes&versionId=$first",
+                    headers =
+                        listOf("x-amz-object-attributes" to "ObjectSize"),
+                )
+
+            assertTrue("<ObjectSize>12</ObjectSize>" in attributes.text, attributes.text)
+        }
+    }
 }

@@ -317,7 +317,11 @@ class S3Handler(
             return error(head, S3Error.NO_SUCH_BUCKET, bucket = route.sourceBucket)
         }
         val source =
-            store.get(route.sourceBucket, route.sourceKey)
+            // The named version of the source, or its current one (M-141). Reading the current
+            // one for a request that named another would answer a question nobody asked.
+            route.sourceVersionId
+                ?.let { store.get(route.sourceBucket, route.sourceKey, it) }
+                ?: store.get(route.sourceBucket, route.sourceKey)
                 ?: return error(head, S3Error.NO_SUCH_KEY, key = route.sourceKey, bucket = route.sourceBucket)
 
         // The conditions on a copy are about the **source**, and they have their own header names
@@ -462,7 +466,11 @@ class S3Handler(
             return error(head, S3Error.NO_SUCH_BUCKET, bucket = route.sourceBucket)
         }
         val source =
-            store.get(route.sourceBucket, route.sourceKey)
+            // The named version of the source, or its current one (M-141). Reading the current
+            // one for a request that named another would answer a question nobody asked.
+            route.sourceVersionId
+                ?.let { store.get(route.sourceBucket, route.sourceKey, it) }
+                ?: store.get(route.sourceBucket, route.sourceKey)
                 ?: return error(head, S3Error.NO_SUCH_KEY, key = route.sourceKey, bucket = route.sourceBucket)
 
         val requested = head.header("x-amz-copy-source-range")
@@ -1670,8 +1678,10 @@ class S3Handler(
         head: HttpRequestParser.Head,
         route: S3Router.Route.GetObjectAttributes,
     ): HttpResponse {
+        // A named version, or the current one — the same rule every other read follows (M-142).
+        val named = route.versionId
         val stored =
-            store.get(route.bucket, route.key)
+            (if (named != null) store.get(route.bucket, route.key, named) else store.get(route.bucket, route.key))
                 ?: return error(head, S3Error.NO_SUCH_KEY, key = route.key, bucket = route.bucket)
 
         val asked =
@@ -2150,14 +2160,23 @@ class S3Handler(
                 // delete, which in a versioning bucket lays a tombstone. The batch form carries
                 // both, and treating them alike is how a versioned bucket becomes impossible to
                 // empty — every entry answers `204` while the versions stay.
-                if (named != null) {
-                    store.deleteVersion(bucket, target.key, named, bypass = bypassGovernance(head))
-                } else {
-                    store.delete(bucket, target.key, precondition)
-                }
+                val marker =
+                    if (named != null) {
+                        store.deleteVersion(bucket, target.key, named, bypass = bypassGovernance(head))
+                        null
+                    } else {
+                        store.delete(bucket, target.key, precondition).marker
+                    }
                 // Deleting what is not there is a success in S3, so every key that got this far is
-                // reported deleted.
-                deleted += S3Documents.DeletedEntry(target.key)
+                // reported deleted — and it is reported with what actually happened: a tombstone
+                // laid down is undoable, and this is the only place a batch names it (M-139).
+                deleted +=
+                    S3Documents.DeletedEntry(
+                        key = target.key,
+                        versionId = named,
+                        deleteMarker = marker != null,
+                        deleteMarkerVersionId = marker?.versionId,
+                    )
             } catch (e: ObjectStore.PreconditionFailed) {
                 errors += S3Documents.DeleteError(target.key, S3Error.PRECONDITION_FAILED.code, e.message)
             } catch (e: ObjectStore.Locked) {
