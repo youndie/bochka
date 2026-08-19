@@ -183,10 +183,11 @@ ingress:
   #     hosts:
   #       - s3.example.com
 
-# The health check, and the shape of it is forced by the server having no health endpoint: the one
-# answer an unauthenticated request gets is `403 AccessDenied` on `GET /` (S3Handler.kt:71-76),
-# and kubelet counts 200-399 as success for httpGet — so an httpGet probe here is red forever and
-# the pod never becomes ready.
+# The health check. Its shape used to be forced by the server having no health endpoint at all: the
+# one answer an unauthenticated request got was `403 AccessDenied` on `GET /`, and kubelet counts
+# 200-399 as success for httpGet, so an httpGet probe was red forever and the pod never became
+# ready. `GET /-/healthy` exists now (M-143) and `http` is the shape to use — see the note on the
+# default below for why it is not the default yet.
 #
 # What this probe proves: the server accepted a connection, parsed a request, ran it through
 # signature verification and answered. What it does NOT prove, and this is not hidden anywhere:
@@ -195,6 +196,8 @@ ingress:
 # — all answer the same 403. It costs one bash fork per period inside a cgroup whose memory budget
 # is nearly exact (~700 MiB of 768), which is accounted for in `resources` below.
 #
+#   http  `GET /-/healthy`, which answers 200 to anyone who can reach the port and costs a socket.
+#         Needs an image that has the handle, which is anything after v0.2.0.
 #   exec  the probe above; needs bash in the image, which the shipped one has (there is no curl,
 #         no wget and no nc — /dev/tcp is the whole toolkit).
 #   tcp   a plain TCP connect. Green against a JVM stuck in a full GC, which is the reason this
