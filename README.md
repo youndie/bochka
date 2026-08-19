@@ -228,9 +228,9 @@ is a "deferred" for ever. That whole distinction was itself a finding — those 
 the classification file while the backlog said there was nothing to do, which is two documents
 disagreeing about the same thing.
 
-Counted against what is in scope the score is 274 of 276 — 99% — and that number is here as a
+Counted against what is in scope the score is 426 of 428 — 99% — and that number is here as a
 warning rather than a boast: its denominator is chosen by this repository, and 99% of your own
-scope list is available to anyone willing to lengthen the list. **36% is the honest one because
+scope list is available to anyone willing to lengthen the list. **57% is the honest one because
 somebody else chose it.** What the number is for is the direction it moves, which is why the count
 of tests that ran is printed beside it — a rising score and a shrinking suite look identical
 otherwise.
