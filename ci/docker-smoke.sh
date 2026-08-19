@@ -150,6 +150,27 @@ else
   fail "BOCHKA_APP_OPTS did not override the shipped heap ($shipped -> $appopts): did the server refuse it?"
 fi
 
+# --- the collector is announced, because two published numbers depend on it ---------------------
+#
+# M-156. The object ceiling above is `maxMemory() * 0.5 / 650`, and `maxMemory()` is a property of
+# the collector: 455, 494 and 512 MiB at the same -Xmx512M under Parallel, Serial and G1. A wrapper
+# that swaps the collector moves a number in the README without touching it, so the log says which
+# one is running. Checked in the image because that is where somebody would swap it.
+if docker logs "$NAME" 2>&1 | grep -q '^collector: Serial at'; then
+  pass "the log names the collector the numbers were measured under"
+else
+  fail "the startup log does not name the collector: $(docker logs "$NAME" 2>&1 | grep -i collector | head -1)"
+fi
+
+# M-157. And it is a note rather than a refusal: a person may raise the heap, they may not be left
+# to discover the pause. `-Xmx3G` is outside the measured envelope, and the process must still come
+# up — a check that only proved the warning would pass equally well on a server that refused.
+if noisy=$(ceiling -e JAVA_OPTS=-Xmx3G) && [ -n "$noisy" ]; then
+  pass "a heap beyond the measured envelope still starts (ceiling $noisy)"
+else
+  fail "a heap beyond the measured envelope did not start"
+fi
+
 # --- the volume belongs to the process, not to root ---------------------------------------------
 docker exec "$NAME" sh -c 'echo probe > /var/lib/bochka/.probe' >/dev/null 2>&1 &&
   pass "the data directory is writable by the container's user" ||
