@@ -67,11 +67,17 @@ Every key lives in memory, so the number of objects is bounded by the heap wheth
 or not. Measured at **650 bytes of index per object** (586 for a forty-byte key, 647 for a
 hundred-byte one — the larger is what the code uses), with half the heap allowed to be index:
 
-| `-Xmx` | Objects |
-|---|---|
-| 64 MiB, the development profile | ~51 600 |
-| **512 MiB, what ships** | **~413 000** |
-| 4 GiB | ~3 300 000 |
+| `-Xmx` | `Runtime.maxMemory()` | Objects |
+|---|---|---|
+| 64 MiB, the development profile | 61.9 MiB | 49 908 |
+| **512 MiB, what ships** | **494.9 MiB** | **399 215** |
+| 4 GiB | 3959 MiB | 3 193 720 |
+
+The middle column is there because it is the one being divided, and it is **not** `-Xmx`. Under
+`-XX:+UseSerialGC` one survivor space is left out of the reported maximum — nothing can be
+allocated in both at once — so a 512 MiB heap reports 494.9 MiB. These numbers were `-Xmx / 2 / 650`
+for a year, which is about 3.4 % more objects than the process would ever accept; the ceiling it
+prints as `object ceiling` on its first line has always been the smaller one.
 
 Going over it is a **refusal to start**, not a slide into swap. A process that comes up and then
 thrashes looks like a slow disk to everybody who did not write the index; a process that will not
