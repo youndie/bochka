@@ -216,32 +216,63 @@ object Measurements {
         val key = ByteArray(32) { (it * 7 + 1).toByte() }
         val iv = ByteArray(16) { (it * 13 + 5).toByte() }
 
-        val zeroCopy =
-            Measurement.repeated("transferTo (an ordinary object)", bytes, repeats) {
-                overLoopback("transferTo (an ordinary object)", bytes) { socket ->
-                    FileChannel.open(file, StandardOpenOption.READ).use { source ->
-                        var position = 0L
-                        while (position < bytes) position += source.transferTo(position, bytes - position, socket)
-                    }
+        // **In the process and not through a socket, and that was learned the expensive way here.**
+        // The first version of this sent the bytes over loopback, the way the server does, and came
+        // back with all three variants inside their own noise — and with AES-256-CTR reported as
+        // *cheaper* than the same path without a cipher, which cannot happen: it is the same work
+        // plus a cipher. A variant that does strictly more work coming out cheaper is the signature
+        // of a stand measuring itself, and the remedy is the one this repository already wrote down
+        // for the lifecycle read path: ask the question where the answer is, not where the request
+        // is. The socket is measured by M-61 on the network stand; what is new here is the cipher.
+        //
+        // The sum goes into the output on purpose. A loop whose result nobody uses is a loop the
+        // JIT may delete, and that has produced a beautiful number here before (M-178: two
+        // nanoseconds for two hash lookups).
+        var sink = 0L
+
+        // One discarded pass of each, and it is not tidiness: `AES/CTR` compiles down to the
+        // processor's AES instructions only after the JIT has seen the loop, so the first
+        // measured run is a measurement of the compiler. Without this the spread of the ciphered
+        // variant came back at 4.58x — larger than the difference being asked about, which by the
+        // rule of this file means no conclusion at all.
+        repeat(2) {
+            FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                val warm = javax.crypto.Cipher.getInstance("AES/CTR/NoPadding")
+                warm.init(
+                    javax.crypto.Cipher.DECRYPT_MODE,
+                    javax.crypto.spec.SecretKeySpec(key, "AES"),
+                    javax.crypto.spec.IvParameterSpec(iv),
+                )
+                val chunk = ByteArray(64 * KIB.toInt())
+                val buffer = ByteBuffer.wrap(chunk)
+                while (true) {
+                    buffer.clear()
+                    val read = source.read(buffer)
+                    if (read < 0) break
+                    warm.update(chunk, 0, read, chunk, 0)
+                    sink += chunk[read - 1].toLong()
                 }
             }
-        val throughHeap =
-            Measurement.repeated("through the heap, no cipher", bytes, repeats) {
-                overLoopback("through the heap, no cipher", bytes) { socket ->
+        }
+
+        val plain =
+            Measurement.repeated("read the object, no cipher", bytes, repeats) {
+                Measurement.of("read the object, no cipher", bytes) {
                     FileChannel.open(file, StandardOpenOption.READ).use { source ->
-                        val buffer = ByteBuffer.allocate(64 * KIB.toInt())
+                        val chunk = ByteArray(64 * KIB.toInt())
+                        val buffer = ByteBuffer.wrap(chunk)
                         while (true) {
                             buffer.clear()
-                            if (source.read(buffer) < 0) break
-                            buffer.flip()
-                            while (buffer.hasRemaining()) socket.write(buffer)
+                            val read = source.read(buffer)
+                            if (read < 0) break
+                            sink += chunk[read - 1].toLong()
                         }
                     }
                 }
             }
-        val decrypted =
-            Measurement.repeated("through the heap, AES-256-CTR", bytes, repeats) {
-                overLoopback("through the heap, AES-256-CTR", bytes) { socket ->
+        val ciphered =
+            Measurement.repeated("read the object, AES-256-CTR", bytes, repeats) {
+                Measurement.of("read the object, AES-256-CTR", bytes) {
                     val cipher = javax.crypto.Cipher.getInstance("AES/CTR/NoPadding")
                     cipher.init(
                         javax.crypto.Cipher.DECRYPT_MODE,
@@ -249,7 +280,6 @@ object Measurements {
                         javax.crypto.spec.IvParameterSpec(iv),
                     )
                     FileChannel.open(file, StandardOpenOption.READ).use { source ->
-                        // The same shape the server uses: one array, decrypted in place, then out.
                         val chunk = ByteArray(64 * KIB.toInt())
                         val buffer = ByteBuffer.wrap(chunk)
                         while (true) {
@@ -257,18 +287,16 @@ object Measurements {
                             val read = source.read(buffer)
                             if (read < 0) break
                             cipher.update(chunk, 0, read, chunk, 0)
-                            val out = ByteBuffer.wrap(chunk, 0, read)
-                            while (out.hasRemaining()) socket.write(out)
+                            sink += chunk[read - 1].toLong()
                         }
                     }
                 }
             }
 
-        println(zeroCopy)
-        println(throughHeap)
-        println(decrypted)
-        println("  ${Measurement.compare(zeroCopy.median, decrypted.median)}")
-        println("  ${Measurement.compare(throughHeap.median, decrypted.median)}")
+        println(plain)
+        println(ciphered)
+        println("  ${Measurement.compare(plain.median, ciphered.median)}")
+        println("  (checksum of the reads, so that nothing above can be optimised away: $sink)")
     }
 
     /**

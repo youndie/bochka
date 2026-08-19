@@ -153,6 +153,81 @@ class EncryptionSseCTest {
     }
 
     @Test
+    fun `a multipart object is encrypted part by part and reads back whole`() {
+        // M-189. У каждой части свой IV, и объект из них собирается конкатенацией шифротекстов —
+        // значит на чтении шифр обязан переключаться на швах. Части здесь разного размера
+        // специально: при одинаковых ошибка в арифметике границ не видна.
+        s3.createBucket("photos")
+        val first = "A".repeat(5 * 1024 * 1024)
+        val second = "B".repeat(1024)
+
+        val started = s3.send("POST", "/photos/big.bin", query = "uploads", headers = sseC())
+        assertEquals(200, started.status, started.text)
+        val uploadId = Regex("<UploadId>([^<]+)</UploadId>").find(started.text)!!.groupValues[1]
+
+        val p1 =
+            s3.send(
+                "PUT",
+                "/photos/big.bin",
+                query = "partNumber=1&uploadId=$uploadId",
+                headers = sseC(),
+                body = first.toByteArray(),
+            )
+        val p2 =
+            s3.send(
+                "PUT",
+                "/photos/big.bin",
+                query = "partNumber=2&uploadId=$uploadId",
+                headers = sseC(),
+                body = second.toByteArray(),
+            )
+        assertEquals(200, p1.status, p1.text)
+        assertEquals(200, p2.status, p2.text)
+
+        val completion =
+            "<CompleteMultipartUpload>" +
+                "<Part><PartNumber>1</PartNumber><ETag>${p1.header("ETag")}</ETag></Part>" +
+                "<Part><PartNumber>2</PartNumber><ETag>${p2.header("ETag")}</ETag></Part>" +
+                "</CompleteMultipartUpload>"
+        val done = s3.send("POST", "/photos/big.bin", query = "uploadId=$uploadId", body = completion.toByteArray())
+        assertEquals(200, done.status, done.text)
+
+        val read = s3.get("photos", "big.bin", sseC())
+        assertEquals(200, read.status, read.text)
+        assertEquals(first + second, read.text)
+    }
+
+    @Test
+    fun `a part that does not carry the upload's key is refused`() {
+        // И отказ приходит **из screen**, до чтения тела: ответ после того, как часть уже поехала,
+        // означает, что сервер закрывает соединение, пока клиент ещё пишет пять мебибайт. Обе
+        // стороны ждут, и сьют показывает это таймаутом, а не отказом. Так и было, пока проверка
+        // стояла в обработчике.
+        s3.createBucket("photos")
+        val started = s3.send("POST", "/photos/big.bin", query = "uploads", headers = sseC())
+        val uploadId = Regex("<UploadId>([^<]+)</UploadId>").find(started.text)!!.groupValues[1]
+
+        val wrong =
+            s3.send(
+                "PUT",
+                "/photos/big.bin",
+                query = "partNumber=1&uploadId=$uploadId",
+                headers = sseC(otherKey, otherMd5),
+                body = "x".toByteArray(),
+            )
+        assertEquals(400, wrong.status)
+
+        val none =
+            s3.send(
+                "PUT",
+                "/photos/big.bin",
+                query = "partNumber=1&uploadId=$uploadId",
+                body = "x".toByteArray(),
+            )
+        assertEquals(400, none.status)
+    }
+
+    @Test
     fun `an unencrypted object refuses a key rather than pretending`() {
         // Обратная сторона: ключ на объекте, который никто не шифровал. S3 отвечает `400` —
         // и это то же правило, по которому здесь отвергается всё, чего сервер не исполняет:
