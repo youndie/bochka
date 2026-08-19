@@ -164,6 +164,11 @@ ingress:
   # down as non-optional (deploy/nginx/nginx.conf:28-86). Without proxy-body-size everything over
   # a megabyte is a 413; with request buffering on, the proxy stores the whole upload on disk
   # before bochka sees a byte, which doubles the write and makes `Expect: 100-continue` pointless.
+  #
+  # That last one is measured rather than argued (M-144, docs/measurements.md): through
+  # ingress-nginx v1.15.1 with these annotations, a PUT of 64 MiB with a bad signature is refused
+  # with 403 after **zero** bytes of body, the same as straight at the Service. The head-only
+  # refusal survives the proxy, and this chart may say so.
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "0"
     nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
