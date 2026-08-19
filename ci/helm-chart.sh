@@ -99,7 +99,23 @@ expect_in "$work/minimal.yaml" 'replicas: 1' "one replica, and it is a constant"
 expect_in "$work/minimal.yaml" 'kind: StatefulSet' "a StatefulSet, not a Deployment"
 expect_not_in "$work/minimal.yaml" 'kind: Deployment' "no Deployment anywhere"
 expect_in "$work/minimal.yaml" 'enableServiceLinks: false' "service links are off"
-expect_in "$work/minimal.yaml" 'image: "ghcr.io/youndie/bochka:v0.1.1"' "the default tag is the one GHCR has, with the v"
+# Read from the chart rather than pinned here, and that is a fix rather than a tidy-up: pinned, this
+# check went red on the release that moved `appVersion` to v0.2.0 — the number lived in two files and
+# only one of them was edited, which is the failure mode the pin was supposed to prevent.
+#
+# What is left pinned is the part that is a claim rather than a value: the `v`. `appVersion: 0.2.0`
+# beside a template that reads `.Chart.AppVersion` asks GHCR for a tag that does not exist, because
+# the release pushes `v0.2.0` and `0.2.0` is only ever a Maven coordinate (Chart.yaml says so at
+# length). Whether the registry actually holds that tag is deliberately **not** asked here: a
+# rendering check that reaches for the network fails when the network does, and a harness that
+# flakes gets ignored long before it gets fixed.
+app_version=$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$chart/Chart.yaml")
+expect_in "$work/minimal.yaml" "image: \"ghcr.io/youndie/bochka:$app_version\"" \
+  "the default tag is the chart's own appVersion ($app_version)"
+case $app_version in
+  v*) pass "and it carries the v, which is what the release pushes" ;;
+  *)  fail "appVersion is '$app_version': without the v it names a Maven coordinate, not an image tag" ;;
+esac
 expect_in "$work/minimal.yaml" 'type: ClusterIP' "the Service is ClusterIP"
 expect_not_in "$work/minimal.yaml" 'LoadBalancer' "no LoadBalancer is offered"
 expect_not_in "$work/minimal.yaml" 'NodePort' "no NodePort is offered"
@@ -245,136 +261,159 @@ else
     echo "could not create the kind cluster" >&2; sed 's/^/  /' "$work/kind.out" >&2; exit 3
   }
   cluster_created=yes
-  kind load docker-image "$IMAGE" --name "$CLUSTER" >>"$work/kind.out" 2>&1 || {
-    echo "could not load $IMAGE into the cluster" >&2; exit 3
+  # `kind load` is where a docker that is newer than the kind binary shows up, and it shows up as
+  # a missing blob rather than as a version complaint: kind imports with `ctr --all-platforms`, and
+  # an image pulled into docker's containerd store holds the index for every platform while holding
+  # the layers of one, so `ctr` asks for a digest nothing has. Measured here on docker 29.1.3 with
+  # kind 0.27.0; the same script and the same tree pass on CI, where kind is newer.
+  #
+  # In `auto` that ends the cluster stage with a named reason instead of a red harness. A harness
+  # that is red on a developer's machine for a reason that is not the code gets ignored, and then
+  # the run that mattered gets ignored with it. `BOCHKA_CHART_KIND=yes` — which is how CI runs —
+  # keeps failing, because there the missing capability *is* the failure.
+  kind_gave_up() { # what
+    if [ "$KIND_MODE" = yes ]; then
+      echo "could not load $1 into the cluster" >&2; sed 's/^/  /' "$work/kind.out" >&2; exit 3
+    fi
+    echo "  SKIP    the cluster stage: kind could not load $1 into the cluster"
+    echo "          $(kind version 2>/dev/null | head -1), docker $(docker version --format '{{.Server.Version}}' 2>/dev/null)"
+    echo "          last lines of kind's own output:"
+    tail -3 "$work/kind.out" | sed 's/^/            /'
+    kind delete cluster --name "$CLUSTER" >/dev/null 2>&1
+    skipped_cluster=yes
   }
+
+  skipped_cluster=no
+  kind load docker-image "$IMAGE" --name "$CLUSTER" >>"$work/kind.out" 2>&1 || kind_gave_up "$IMAGE"
 
   # Both images are put in from the outside rather than pulled by the kubelet: an anonymous pull
   # from inside a throwaway cluster is a registry rate limit waiting to make this job flaky, and a
   # flaky harness gets ignored long before it gets fixed.
   docker pull -q "$TESTS_IMAGE" >/dev/null 2>&1
-  kind load docker-image "$TESTS_IMAGE" --name "$CLUSTER" >>"$work/kind.out" 2>&1 || {
-    echo "could not load $TESTS_IMAGE into the cluster" >&2; exit 3
-  }
+  [ "$skipped_cluster" = yes ] ||
+    kind load docker-image "$TESTS_IMAGE" --name "$CLUSTER" >>"$work/kind.out" 2>&1 ||
+    kind_gave_up "$TESTS_IMAGE"
 
-  # The release is named `bochka` on purpose: fullname collapses to `bochka`, the Service is called
-  # `bochka`, and kubelet's service links would therefore inject BOCHKA_SERVICE_HOST and friends —
-  # the variables that stop this server with exit 2. This is the one check the whole chart exists
-  # for, and it cannot be made by rendering.
-  if helm install "$RELEASE" "$chart" \
-       --set image.repository="${IMAGE%:*}" \
-       --set image.tag="${IMAGE##*:}" \
-       --set auth.keys[0].id=chartkey \
-       --set auth.keys[0].secret=chartsecret \
-       --set tests.image="$TESTS_IMAGE" \
-       --set persistence.size=1Gi \
-       --wait --timeout 5m >"$work/install.out" 2>&1; then
-    pass "the pod reaches Ready, which means the exec probe answered 403 through bash and /dev/tcp"
-  else
-    fail "the release never became ready"
-    sed 's/^/          /' "$work/install.out" | tail -20
-    kubectl describe pod -l app.kubernetes.io/instance="$RELEASE" 2>&1 | tail -40 | sed 's/^/          /'
-    kubectl logs "sts/$RELEASE" 2>&1 | tail -20 | sed 's/^/          /'
-  fi
+  if [ "$skipped_cluster" = no ]; then
+    # The release is named `bochka` on purpose: fullname collapses to `bochka`, the Service is called
+    # `bochka`, and kubelet's service links would therefore inject BOCHKA_SERVICE_HOST and friends —
+    # the variables that stop this server with exit 2. This is the one check the whole chart exists
+    # for, and it cannot be made by rendering.
+    if helm install "$RELEASE" "$chart" \
+         --set image.repository="${IMAGE%:*}" \
+         --set image.tag="${IMAGE##*:}" \
+         --set auth.keys[0].id=chartkey \
+         --set auth.keys[0].secret=chartsecret \
+         --set tests.image="$TESTS_IMAGE" \
+         --set persistence.size=1Gi \
+         --wait --timeout 5m >"$work/install.out" 2>&1; then
+      pass "the pod reaches Ready, which means the exec probe answered 403 through bash and /dev/tcp"
+    else
+      fail "the release never became ready"
+      sed 's/^/          /' "$work/install.out" | tail -20
+      kubectl describe pod -l app.kubernetes.io/instance="$RELEASE" 2>&1 | tail -40 | sed 's/^/          /'
+      kubectl logs "sts/$RELEASE" 2>&1 | tail -20 | sed 's/^/          /'
+    fi
 
-  if helm test "$RELEASE" --logs >"$work/test.out" 2>&1; then
-    pass "helm test: a round trip through aws-cli, and the built-in credentials refused"
-  else
-    fail "helm test failed"
-    sed 's/^/          /' "$work/test.out" | tail -30
-  fi
+    if helm test "$RELEASE" --logs >"$work/test.out" 2>&1; then
+      pass "helm test: a round trip through aws-cli, and the built-in credentials refused"
+    else
+      fail "helm test failed"
+      sed 's/^/          /' "$work/test.out" | tail -30
+    fi
 
-  uid=$(kubectl exec "sts/$RELEASE" -- id -u 2>/dev/null | tr -d '\r\n')
-  if [ "$uid" = "1000" ]; then
-    pass "the process runs as uid 1000 and writes to a volume it did not own a minute ago"
-  else
-    fail "the process runs as uid '$uid'"
-  fi
+    uid=$(kubectl exec "sts/$RELEASE" -- id -u 2>/dev/null | tr -d '\r\n')
+    if [ "$uid" = "1000" ]; then
+      pass "the process runs as uid 1000 and writes to a volume it did not own a minute ago"
+    else
+      fail "the process runs as uid '$uid'"
+    fi
 
-  # And the hazard itself, seen rather than asserted. `enableServiceLinks: false` in the chart is a
-  # claim about what would happen without it, and a claim nobody has watched fail is a comment. So:
-  # the same image, in the same namespace, with service links left at their default, next to a
-  # Service called `bochka`. It has to refuse to start and say which name it choked on.
-  #
-  # If this ever goes red the other way — the pod starts — the reason for that line has stopped
-  # reproducing, and that is worth knowing before somebody deletes it as noise.
-  probe_pod="$RELEASE-servicelinks"
-  kubectl run "$probe_pod" --image="$IMAGE" --image-pull-policy=IfNotPresent \
-    --restart=Never --command -- /opt/bochka/bin/bochka-app >/dev/null 2>&1
-  linkmsg=""
-  for _ in $(seq 1 60); do
-    linkmsg=$(kubectl logs "$probe_pod" 2>/dev/null)
-    [ -n "$linkmsg" ] && break
-    sleep 2
-  done
-  kubectl delete pod "$probe_pod" --now >/dev/null 2>&1
-  # Any injected name, not one chosen in advance. The claim is "a Service called `bochka` puts
-  # BOCHKA_* variables in the pod and this server stops on them" — which one it hits first is
-  # kubelet's business and the environment's iteration order. Pinned to BOCHKA_SERVICE_HOST, this
-  # check went red against a server that had refused to start exactly as predicted, and printed the
-  # refusal underneath its own verdict: `unknown setting 'BOCHKA_PORT_9000_TCP_PORT'`.
-  if printf '%s' "$linkmsg" | grep -q "unknown setting 'BOCHKA_"; then
-    pass "with service links left on, the same image refuses to start — which is what the chart turns off"
-  else
-    fail "the service-link hazard did not reproduce, so 'enableServiceLinks: false' is now unproven"
-    printf '%s\n' "${linkmsg:-(the pod printed nothing)}" | head -5 | sed 's/^/          /'
-  fi
+    # And the hazard itself, seen rather than asserted. `enableServiceLinks: false` in the chart is a
+    # claim about what would happen without it, and a claim nobody has watched fail is a comment. So:
+    # the same image, in the same namespace, with service links left at their default, next to a
+    # Service called `bochka`. It has to refuse to start and say which name it choked on.
+    #
+    # If this ever goes red the other way — the pod starts — the reason for that line has stopped
+    # reproducing, and that is worth knowing before somebody deletes it as noise.
+    probe_pod="$RELEASE-servicelinks"
+    kubectl run "$probe_pod" --image="$IMAGE" --image-pull-policy=IfNotPresent \
+      --restart=Never --command -- /opt/bochka/bin/bochka-app >/dev/null 2>&1
+    linkmsg=""
+    for _ in $(seq 1 60); do
+      linkmsg=$(kubectl logs "$probe_pod" 2>/dev/null)
+      [ -n "$linkmsg" ] && break
+      sleep 2
+    done
+    kubectl delete pod "$probe_pod" --now >/dev/null 2>&1
+    # Any injected name, not one chosen in advance. The claim is "a Service called `bochka` puts
+    # BOCHKA_* variables in the pod and this server stops on them" — which one it hits first is
+    # kubelet's business and the environment's iteration order. Pinned to BOCHKA_SERVICE_HOST, this
+    # check went red against a server that had refused to start exactly as predicted, and printed the
+    # refusal underneath its own verdict: `unknown setting 'BOCHKA_PORT_9000_TCP_PORT'`.
+    if printf '%s' "$linkmsg" | grep -q "unknown setting 'BOCHKA_"; then
+      pass "with service links left on, the same image refuses to start — which is what the chart turns off"
+    else
+      fail "the service-link hazard did not reproduce, so 'enableServiceLinks: false' is now unproven"
+      printf '%s\n' "${linkmsg:-(the pod printed nothing)}" | head -5 | sed 's/^/          /'
+    fi
 
-  # The trap this chart is built around: service links are injected only for Services that existed
-  # *before* the pod. The install above can pass with them on; the first rollout after it cannot.
-  # So the rollout is part of the harness rather than something a person discovers in production.
-  if kubectl rollout restart "statefulset/$RELEASE" >/dev/null 2>&1 &&
-     kubectl rollout status "statefulset/$RELEASE" --timeout=5m >"$work/rollout.out" 2>&1; then
-    pass "the pod restarts with the Service already in place, which is where service links would bite"
-  else
-    fail "the rollout did not complete"
-    sed 's/^/          /' "$work/rollout.out"
-    kubectl logs "sts/$RELEASE" 2>&1 | tail -20 | sed 's/^/          /'
-  fi
+    # The trap this chart is built around: service links are injected only for Services that existed
+    # *before* the pod. The install above can pass with them on; the first rollout after it cannot.
+    # So the rollout is part of the harness rather than something a person discovers in production.
+    if kubectl rollout restart "statefulset/$RELEASE" >/dev/null 2>&1 &&
+       kubectl rollout status "statefulset/$RELEASE" --timeout=5m >"$work/rollout.out" 2>&1; then
+      pass "the pod restarts with the Service already in place, which is where service links would bite"
+    else
+      fail "the rollout did not complete"
+      sed 's/^/          /' "$work/rollout.out"
+      kubectl logs "sts/$RELEASE" 2>&1 | tail -20 | sed 's/^/          /'
+    fi
 
-  if helm test "$RELEASE" --logs >"$work/test2.out" 2>&1; then
-    pass "and it still stores and serves after the restart, on the same volume"
-  else
-    fail "the store did not survive its own pod being replaced"
-    sed 's/^/          /' "$work/test2.out" | tail -30
-  fi
+    if helm test "$RELEASE" --logs >"$work/test2.out" 2>&1; then
+      pass "and it still stores and serves after the restart, on the same volume"
+    else
+      fail "the store did not survive its own pod being replaced"
+      sed 's/^/          /' "$work/test2.out" | tail -30
+    fi
 
-  # `persistence.size` on an installed release. The chart says this is refused rather than ignored,
-  # and the difference is the whole point: a volumeClaimTemplate is immutable, so the API server
-  # rejects the StatefulSet patch, `helm upgrade` ends failed, and everything Helm applies *before*
-  # the StatefulSet is already in the cluster. The upgrade below therefore changes two things at
-  # once, the way a GitOps commit does: the volume size, which makes it fail, and the key, which
-  # shows what got through anyway. No run touched this path before, and the claim lived in three
-  # documents.
-  if helm upgrade "$RELEASE" "$chart" \
-       --set image.repository="${IMAGE%:*}" \
-       --set image.tag="${IMAGE##*:}" \
-       --set auth.keys[0].id=chartkey \
-       --set auth.keys[0].secret=rotatedsecret \
-       --set tests.image="$TESTS_IMAGE" \
-       --set persistence.size=2Gi >"$work/upgrade.out" 2>&1; then
-    fail "a changed persistence.size upgraded cleanly, so what the chart says about it is now wrong"
-  elif grep -q "forbidden" "$work/upgrade.out"; then
-    pass "a changed persistence.size is refused by the API server, not quietly ignored"
-  else
-    fail "the upgrade failed, but not as an immutable volumeClaimTemplate:"
-    sed 's/^/          /' "$work/upgrade.out" | head -5
-  fi
+    # `persistence.size` on an installed release. The chart says this is refused rather than ignored,
+    # and the difference is the whole point: a volumeClaimTemplate is immutable, so the API server
+    # rejects the StatefulSet patch, `helm upgrade` ends failed, and everything Helm applies *before*
+    # the StatefulSet is already in the cluster. The upgrade below therefore changes two things at
+    # once, the way a GitOps commit does: the volume size, which makes it fail, and the key, which
+    # shows what got through anyway. No run touched this path before, and the claim lived in three
+    # documents.
+    if helm upgrade "$RELEASE" "$chart" \
+         --set image.repository="${IMAGE%:*}" \
+         --set image.tag="${IMAGE##*:}" \
+         --set auth.keys[0].id=chartkey \
+         --set auth.keys[0].secret=rotatedsecret \
+         --set tests.image="$TESTS_IMAGE" \
+         --set persistence.size=2Gi >"$work/upgrade.out" 2>&1; then
+      fail "a changed persistence.size upgraded cleanly, so what the chart says about it is now wrong"
+    elif grep -q "forbidden" "$work/upgrade.out"; then
+      pass "a changed persistence.size is refused by the API server, not quietly ignored"
+    else
+      fail "the upgrade failed, but not as an immutable volumeClaimTemplate:"
+      sed 's/^/          /' "$work/upgrade.out" | head -5
+    fi
 
-  size_now=$(kubectl get "sts/$RELEASE" -o jsonpath='{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}' 2>/dev/null)
-  keys_now=$(kubectl get "secret/$RELEASE" -o jsonpath='{.data.keys}' 2>/dev/null |
-    python3 -c 'import base64,sys; d=sys.stdin.read().strip(); print(base64.b64decode(d).decode() if d else "")')
-  if [ "$size_now" = "1Gi" ] && [ "$keys_now" = "chartkey:rotatedsecret" ]; then
-    pass "and the failed release is half applied: the new key is in the Secret, the pod is on the old spec"
-  else
-    fail "the failed upgrade left something else behind: volume '$size_now', keys '$keys_now'"
-  fi
+    size_now=$(kubectl get "sts/$RELEASE" -o jsonpath='{.spec.volumeClaimTemplates[0].spec.resources.requests.storage}' 2>/dev/null)
+    keys_now=$(kubectl get "secret/$RELEASE" -o jsonpath='{.data.keys}' 2>/dev/null |
+      python3 -c 'import base64,sys; d=sys.stdin.read().strip(); print(base64.b64decode(d).decode() if d else "")')
+    if [ "$size_now" = "1Gi" ] && [ "$keys_now" = "chartkey:rotatedsecret" ]; then
+      pass "and the failed release is half applied: the new key is in the Secret, the pod is on the old spec"
+    else
+      fail "the failed upgrade left something else behind: volume '$size_now', keys '$keys_now'"
+    fi
 
-  helm uninstall "$RELEASE" >/dev/null 2>&1
-  if kubectl get pvc "data-$RELEASE-0" >/dev/null 2>&1; then
-    pass "helm uninstall left the volume alone"
-  else
-    fail "the volume went away with the release"
+    helm uninstall "$RELEASE" >/dev/null 2>&1
+    if kubectl get pvc "data-$RELEASE-0" >/dev/null 2>&1; then
+      pass "helm uninstall left the volume alone"
+    else
+      fail "the volume went away with the release"
+    fi
   fi
 fi
 
