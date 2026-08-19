@@ -270,6 +270,7 @@ same signature verification, same four body framings, same storage.
 ```kotlin
 repositories { maven("https://reposilite.kotlin.website/snapshots") }
 dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:0.2.0") }
+```
 
 A store per test class, reset between tests — what is expensive is the start, not the state:
 
@@ -295,7 +296,6 @@ and `reset()` clears any that are left.
 wrapping the socket, and a wrapper silently removes the `transferTo` path this whole server is built
 around — there is a test guarding exactly that. A test that needs TLS puts a terminator in front, the
 way the deployment does.
-```
 
 ```kotlin
 Bochka.start().use { bochka ->
