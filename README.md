@@ -43,6 +43,11 @@ modes and legal hold, access keys narrowed to a mode and a set of buckets, and l
 that are **applied** rather than stored: objects and noncurrent versions expire, orphaned delete
 markers and abandoned uploads go, and `x-amz-expiration` says when.
 
+And encryption with a key the client brings: `SSE-C` on single and multipart uploads, with the
+server keeping the algorithm and the key's MD5 and never the key. An object nobody encrypted is
+untouched by it — same `transferTo`, same cost — and what an encrypted one costs is a measured
+number rather than a shrug.
+
 Delivered: a distribution, an image on `ghcr.io` and five artifacts published per release.
 [BACKLOG.md](BACKLOG.md) says which milestone each thing is, and every closed one ends with what
 came out differently than planned.
@@ -357,8 +362,13 @@ disagreeing — which reads like a bug in your project and is a missing line.
   `Transition` is refused by name rather than stored and never acted on.
 - **Not an identity system.** Access keys are a static list in the configuration; no IAM, no bucket
   policies, no STS.
-- **Not encrypted in-process.** No TLS termination and no server-side encryption: both mean
-  touching the bytes on the read path, which is what the zero-copy path exists not to do.
+- **Not encrypted with a key of its own.** No TLS termination and no SSE-S3 or SSE-KMS: the first
+  would wrap the socket and the second would make this process a keeper of secrets, with rotation
+  and an audit trail behind it. **SSE-C is there**, and it is the one place the trade is worth it:
+  the key arrives with the request, the server keeps only its MD5 and an IV, and an object nobody
+  encrypted still goes out by `transferTo`. What an encrypted one costs is measured rather than
+  implied — the cipher doubles the user-space read path, 2.04× ([docs/measurements.md](docs/measurements.md))
+  — and only whoever sends a key pays it.
 - **Not compared with anything.** The read path is measured — numbers, host and filesystem are in
   [docs/measurements.md](docs/measurements.md), and a milestone that changes the hot path does not
   close without them — but nothing here has been benchmarked *against another store*, and no
