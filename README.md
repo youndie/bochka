@@ -3,7 +3,7 @@
 [![kotlin](https://img.shields.io/badge/Kotlin-2.4.10-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
-[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-426%2F744-yellowgreen)](ci/s3-tests.sh)
+[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-431%2F744-yellowgreen)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.2.0)
 
@@ -227,7 +227,7 @@ of `ceph/s3-tests` a single-process JVM store passes is comparable with other im
 which is true of no benchmark this project could run on its own. So it is published as soon as it
 exists, ahead of everything else:
 
-> **426 of 744 passed (57%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
+> **431 of 744 passed (58%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
 
 **316 of the 318 remaining failures** are things this store says in
 ["What bochka is not"](#what-bochka-is-not) that it will never have — encryption, ACLs, policies,
@@ -247,9 +247,9 @@ is a "deferred" for ever. That whole distinction was itself a finding — those 
 the classification file while the backlog said there was nothing to do, which is two documents
 disagreeing about the same thing.
 
-Counted against what is in scope the score is 426 of 428 — 99% — and that number is here as a
+Counted against what is in scope the score is 431 of 434 — 99% — and that number is here as a
 warning rather than a boast: its denominator is chosen by this repository, and 99% of your own
-scope list is available to anyone willing to lengthen the list. **57% is the honest one because
+scope list is available to anyone willing to lengthen the list. **58% is the honest one because
 somebody else chose it.** What the number is for is the direction it moves, which is why the count
 of tests that ran is printed beside it — a rising score and a shrinking suite look identical
 otherwise.
