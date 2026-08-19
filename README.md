@@ -61,6 +61,13 @@ measured rather than believed. Median of seven runs, spread printed beside every
 > difference is the point: loopback has no device in it, so it understates the thing the read path
 > is built for by about half.
 
+Features are measured against that path rather than assumed to be free. Lifecycle rules add **eight
+nanoseconds** to a read of a bucket that has none — one failed map lookup — and 555 ns to one that
+gets an `x-amz-expiration` header, of which the rule lookup is 62 and the rest is formatting a
+date. A sweep over a million versions takes 4.5 seconds against a period of an hour. Neither
+number was visible end-to-end across a network, and that is recorded too: a request costing
+hundreds of microseconds cannot be asked about nanoseconds.
+
 The measurements that came out against the plan are the more useful half, and there have been
 several. The buffer the upload path uses turns out not to matter — size and kind are both inside
 the noise, so nothing was changed. `splice(2)` through FFM is not being introduced, because the
@@ -183,12 +190,18 @@ Three independent levels, because each is blind to what the others catch:
    The count of enabled tests is printed next to the percentage, because otherwise a rising score
    and a shrinking suite look identical.
 
-s3kn is in level 2 as well — `ci/s3kn.sh` runs its live tests against bochka, 21 of 21 today — but
-it is the one client whose result is never the metric, and passing all of them is exactly why. Its author is this project's author, and
+s3kn is in level 2 as well — `ci/s3kn.sh` runs its live tests against bochka, 20 of 21 today — but
+it is the one client whose result is never the metric. Its author is this project's author, and
 testing a server with your own client is the weakest check available — it signs its bodies the one simple
 way, so it never exercises the thing most likely to be broken, and it does that while looking
 green. It stays in the set as a second independent implementation of the signature and as presign
 coverage. It is not the metric.
+
+The one it does not pass is a disagreement rather than a defect, which is worth naming because it
+is the shape a shared author produces: s3kn asserts `411` for a `PUT` framed chunked with no
+`Content-Length`, and bochka has answered `200` since M12 on the grounds that a chunked body
+states its length as it goes. The API model settles neither side. Written down as a question with
+a criterion rather than fixed by whichever repository was edited last.
 
 That percentage is also the one number here that means something outside this repository: how much
 of `ceph/s3-tests` a single-process JVM store passes is comparable with other implementations,
@@ -236,6 +249,11 @@ docker run -d --name bochka \
 Bound to the loopback on purpose, with nginx in front for TLS — that is the architecture rather
 than a convenience, because terminating TLS inside the JVM would cost the read path this whole
 project is built around. [deploy/](deploy/) has the configuration and the reasoning.
+
+There is a Helm chart in [deploy/helm/bochka](deploy/helm/bochka) with a harness that installs it
+into a real kubelet. It is **not published anywhere** — no repository, no OCI push — and that is
+the current state rather than an omission: publishing it would be a promise about upgrade paths
+that nobody has been asked for yet.
 
 **A setting bochka does not recognise stops it from starting.** `BOCHKA_DATADIR` instead of
 `BOCHKA_DATA_DIR` means the objects are in a temporary directory and nothing about the running
