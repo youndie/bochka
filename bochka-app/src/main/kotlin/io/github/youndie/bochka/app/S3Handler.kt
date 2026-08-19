@@ -19,6 +19,7 @@ import io.github.youndie.bochka.s3.PostPolicy
 import io.github.youndie.bochka.s3.PostSignature
 import io.github.youndie.bochka.s3.S3ErrorResponse
 import io.github.youndie.bochka.s3.S3Router
+import io.github.youndie.bochka.s3.TagRules
 import io.github.youndie.bochka.s3.UriCodec
 import io.github.youndie.bochka.s3.sigv4.AwsChunkedDecoder
 import io.github.youndie.bochka.s3.sigv4.CanonicalRequest
@@ -166,8 +167,32 @@ class S3Handler(
             PayloadChecksums.of { head.header(it) }.rejection?.let { rejection ->
                 return error(head, rejection.error, detail = rejection.detail, key = route.key, bucket = route.bucket)
             }
-            ObjectHeaders.checkSize(ObjectHeaders.read(head.headers))?.let { rejection ->
-                return error(head, rejection.error, detail = rejection.detail, key = route.key, bucket = route.bucket)
+        }
+
+        // Everything the head says about the object it is about to carry, judged before the body.
+        // `CreateMultipartUpload` is here beside `PutObject` because it takes the same headers and
+        // starts an upload that would otherwise carry the bad ones to its completion.
+        if (route is S3Router.Route.PutObject || route is S3Router.Route.CreateMultipartUpload) {
+            val stated =
+                try {
+                    ObjectHeaders.read(head.headers)
+                } catch (e: ObjectHeaders.Malformed) {
+                    return error(
+                        head,
+                        S3Error.INVALID_TAG,
+                        detail = e.message,
+                        key = keyOf(route),
+                        bucket = bucketOf(route),
+                    )
+                }
+            ObjectHeaders.check(stated)?.let { rejection ->
+                return error(
+                    head,
+                    rejection.error,
+                    detail = rejection.detail,
+                    key = keyOf(route),
+                    bucket = bucketOf(route),
+                )
             }
         }
 
@@ -2044,7 +2069,11 @@ class S3Handler(
                 val document =
                     try {
                         if (route.name == "tagging") {
-                            S3Documents.taggingResult(S3Requests.parseTagging(collected.toByteArray()))
+                            val tags = S3Requests.parseTagging(collected.toByteArray())
+                            TagRules.check(tags)?.let {
+                                return error(head, S3Error.INVALID_TAG, detail = it.message, bucket = route.bucket)
+                            }
+                            S3Documents.taggingResult(tags)
                         } else {
                             S3Documents.corsResult(S3Requests.parseCors(collected.toByteArray()))
                         }
@@ -2092,6 +2121,18 @@ class S3Handler(
                     } catch (e: XmlReader.MalformedXmlException) {
                         return error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
                     }
+                // Проверка **до** записи, и это половина кейса: `test_put_excess_tags:12072`
+                // сначала ждёт отказа, а потом читает теги объекта и требует, чтобы их было ноль.
+                // Отказ, оставивший после себя набор, — это не отказ.
+                TagRules.check(tags)?.let {
+                    return error(
+                        head,
+                        S3Error.INVALID_TAG,
+                        detail = it.message,
+                        key = route.key,
+                        bucket = route.bucket,
+                    )
+                }
                 store.setTags(route.bucket, route.key, tags)
                 HttpResponse(200, "OK")
             }

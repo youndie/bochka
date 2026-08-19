@@ -55,12 +55,6 @@ out-of-scope	acl	access control lists: the access keys here are static (open que
 out-of-scope	policy	bucket policies: the access keys here are static (open question 4)
 out-of-scope	_iam	IAM is a different service; this store authenticates with static keys
 out-of-scope	_sts	STS is a different service; this store authenticates with static keys
-# Tags are implemented (M14). These four were behind a stale reason, and one of them closes the
-# connection rather than answering — which is not a scope question in any reading (M-155).
-defect	put_excess_key_tags	the limit on tag key length is not enforced (M-155)
-defect	put_excess_val_tags	the limit on tag value length is not enforced (M-155)
-defect	put_excess_tags	over-many tags answer MalformedXML where S3 answers InvalidTag (M-155)
-defect	put_obj_with_tags	x-amz-tagging on PutObject closes the connection instead of answering (M-155)
 out-of-scope	public_access_block	public access blocks belong with policies, which are out of scope
 out-of-scope	block_public	public access blocks belong with policies, which are out of scope
 out-of-scope	anonymous	anonymous access needs public-read ACLs, which are out of scope

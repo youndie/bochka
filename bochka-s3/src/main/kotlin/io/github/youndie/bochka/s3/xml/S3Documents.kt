@@ -286,11 +286,19 @@ object S3Documents {
             if (objectSize != null) text("ObjectSize", objectSize)
         }
 
-    /** `<Tagging><TagSet>` — тот же документ на чтении, что и на записи (`s3-service-2.json:13301`). */
+    /**
+     * `<Tagging><TagSet>` — тот же документ на чтении, что и на записи (`s3-service-2.json:13301`),
+     * и порядок в нём по ключу, а не по тому, как теги приехали.
+     *
+     * Набор тегов неупорядочен: одно и то же множество приезжает документом в одном порядке и
+     * заголовком `x-amz-tagging` в другом. Ответ по ключу означает, что у множества одно
+     * представление, каким бы способом его ни положили, — и `test_put_obj_with_tags:12281`
+     * сравнивает именно документ, а не множество.
+     */
     fun taggingResult(tags: Map<String, String>): ByteArray =
         XmlWriter(128 + tags.size * 64).document("Tagging") {
             element("TagSet") {
-                for ((key, value) in tags) {
+                for ((key, value) in tags.toSortedMap()) {
                     element("Tag") {
                         text("Key", key)
                         text("Value", value)

@@ -51,7 +51,19 @@ object ObjectHeaders {
         // `x-amz-tagging: a=1&b=2` — теги формой запроса, а не документом
         // (`s3-service-2.json:3158`). Клиент, положивший объект одним запросом, иначе вынужден
         // делать второй только ради тегов.
-        val tags = one("x-amz-tagging")?.takeIf { it.isNotEmpty() }?.let(S3Requests::parseTaggingHeader).orEmpty()
+        val tags =
+            one("x-amz-tagging")
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { stated ->
+                    // Процентная раскодировка бросает на испорченной последовательности, и бросает
+                    // отсюда — из `screen`, до чтения тела. Своего типа у отказа не было, поэтому он
+                    // улетал мимо цикла запроса и клиент получал закрытый сокет вместо `400`.
+                    try {
+                        S3Requests.parseTaggingHeader(stated)
+                    } catch (e: IllegalArgumentException) {
+                        throw Malformed("x-amz-tagging: ${e.message}")
+                    }
+                }.orEmpty()
 
         return Metadata(
             tags = tags,
@@ -74,16 +86,27 @@ object ObjectHeaders {
         )
     }
 
-    fun checkSize(metadata: Metadata): Rejection? {
+    /** A header that is present and cannot be read at all. Typed, so a caller can answer `400`. */
+    class Malformed(
+        override val message: String,
+    ) : RuntimeException(message)
+
+    /**
+     * Everything about the head that can be refused before a byte of the body is read (§1.2).
+     *
+     * Both halves are limits on what the client said about the object rather than on the object,
+     * so both are decidable here — and the tag half was not checked at all until M-155, which is
+     * how `x-amz-tagging` with eleven tags became an object with eleven tags.
+     */
+    fun check(metadata: Metadata): Rejection? {
         val bytes =
             metadata.user.entries.sumOf {
                 it.key.toByteArray(StandardCharsets.UTF_8).size + it.value.toByteArray(StandardCharsets.UTF_8).size
             }
-        return if (bytes > MAX_USER_BYTES) {
-            Rejection(S3Error.METADATA_TOO_LARGE, "$bytes bytes of user metadata, the limit is $MAX_USER_BYTES")
-        } else {
-            null
+        if (bytes > MAX_USER_BYTES) {
+            return Rejection(S3Error.METADATA_TOO_LARGE, "$bytes bytes of user metadata, the limit is $MAX_USER_BYTES")
         }
+        return TagRules.check(metadata.tags)?.let { Rejection(S3Error.INVALID_TAG, it.message) }
     }
 
     /**

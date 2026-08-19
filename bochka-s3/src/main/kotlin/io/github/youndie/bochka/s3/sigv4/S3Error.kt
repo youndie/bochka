@@ -323,6 +323,19 @@ enum class S3Error(
         400,
     ),
 
+    /**
+     * `:1463` — the document parsed and the tag set it describes is not one S3 accepts.
+     *
+     * Separate from [MALFORMED_XML], and the difference is what the client does next: a malformed
+     * document is a serialisation bug, an invalid tag is a value the caller chose. Answering the
+     * first for the second sends them looking at their XML writer.
+     */
+    INVALID_TAG(
+        "InvalidTag",
+        "The tag provided was not a valid tag.",
+        400,
+    ),
+
     MALFORMED_XML(
         "MalformedXML",
         "The XML you provided was not well-formed or did not validate against our published schema.",

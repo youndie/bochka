@@ -195,18 +195,19 @@ of `ceph/s3-tests` a single-process JVM store passes is comparable with other im
 which is true of no benchmark this project could run on its own. So it is published as soon as it
 exists, ahead of everything else:
 
-> **415 of 744 passed (55%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
+> **419 of 744 passed (56%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
 
-**306 of the 329 remaining failures** are things this store says in
+**306 of the 325 remaining failures** are things this store says in
 ["What bochka is not"](#what-bochka-is-not) that it will never have — encryption, ACLs, policies,
 IAM, storage classes. Every failure is classified with a reason
 ([docs/s3-tests.md](docs/s3-tests.md)), and one nobody has classified is reported by name as
 `unclassified` rather than folded into a category. That count is zero.
 
-**Nine are defects**, and they were found by re-reading the classification rather than by running
-anything: three families sat behind reasons that had stopped being true when the features arrived.
-A label saying "out of scope" over a defect is worse than no label — the unclassified count is
-watched, and a closed-looking question is not.
+**Five are defects**, and all nine of them were found by re-reading the classification rather than
+by running anything: three families sat behind reasons that had stopped being true when the
+features arrived. A label saying "out of scope" over a defect is worse than no label — the
+unclassified count is watched, and a closed-looking question is not. Four are fixed; the rest is
+a lock that fails open, which is its own milestone.
 
 **Fourteen are in scope and not done**, and two of those are there because a decision is unmade
 rather than because work is: a key holding C1 control characters, and the round trip of non-ASCII

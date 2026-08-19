@@ -104,7 +104,19 @@ class HttpServer(
             }
 
             val request = head
-            val screened = handler.screen(request)
+            // Wrapped exactly like `handle` below, and it was not — which is the whole of M-155.
+            // `screen` reads the head, and reading a header can fail: a malformed `x-amz-tagging`
+            // threw out of here, past this loop, and the client got a closed socket with no bytes
+            // in it. A refusal has to be a refusal; "the connection dropped" is diagnosed as the
+            // network, and the suite reported it as `ConnectionClosedError` for a milestone.
+            val screened =
+                try {
+                    handler.screen(request)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    handler.failed(request, e)
+                }
             if (screened != null) {
                 // Answering without reading the body is the point (§1.2), and it also means the
                 // connection can no longer be reused: what the client is about to send, or has

@@ -85,23 +85,34 @@ object S3Requests {
                 tags[k] = value ?: throw XmlReader.MalformedXmlException("<Tag> без <Value>")
             }
         }
-        if (tags.size > MAX_TAGS) throw XmlReader.MalformedXmlException("больше $MAX_TAGS тегов")
+        // Предел на число тегов здесь не проверяется, и это не упущение: одиннадцать тегов —
+        // документ разборчивый и по схеме верный, а неверен набор, который он описывает. Ответ
+        // на такое — `InvalidTag` от [TagRules], а не `MalformedXML`, посылающий клиента искать
+        // ошибку в своём сериализаторе (M-155).
         return tags
     }
 
     /**
      * `x-amz-tagging: a=1&b=2` — те же теги, но формой запроса, а не документа
      * (`s3-service-2.json:3158`). Значения процентно закодированы, как в query.
+     *
+     * **Пара без `=` — это тег с пустым значением, а не поломка.** У тега значение необязательно,
+     * и `foo=bar&bar` (`test_put_obj_with_tags:12281`) означает два тега, у второго значение
+     * пустое. Отказ здесь стоил дороже, чем выглядел: [ObjectHeaders.read] зовётся из `screen`,
+     * а брошенное оттуда исключение уходило мимо цикла запроса — клиент получал закрытый сокет
+     * без единого байта ответа и диагностировал сеть.
      */
     fun parseTaggingHeader(value: String): Map<String, String> {
         val tags = LinkedHashMap<String, String>()
         for (pair in value.split('&')) {
             if (pair.isEmpty()) continue
             val eq = pair.indexOf('=')
-            if (eq < 0) throw XmlReader.MalformedXmlException("тег без значения: '$pair'")
-            tags[decode(pair.substring(0, eq))] = decode(pair.substring(eq + 1))
+            if (eq < 0) {
+                tags[decode(pair)] = ""
+            } else {
+                tags[decode(pair.substring(0, eq))] = decode(pair.substring(eq + 1))
+            }
         }
-        if (tags.size > MAX_TAGS) throw XmlReader.MalformedXmlException("больше $MAX_TAGS тегов")
         return tags
     }
 
@@ -504,9 +515,6 @@ object S3Requests {
         }
         return CorsRules(rules)
     }
-
-    /** Десять тегов на объект и на бакет — предел из документации AWS; в модели величины нет. */
-    const val MAX_TAGS: Int = 10
 
     fun parseDelete(body: ByteArray): DeleteRequest {
         val targets = ArrayList<Target>()
