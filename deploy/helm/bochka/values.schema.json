@@ -109,6 +109,7 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "className": { "type": "string" },
+        "requirementsExpressedFor": { "type": "string" },
         "annotations": { "type": "object" },
         "hosts": {
           "type": "array",
@@ -170,12 +171,10 @@
     "persistence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["enabled"],
       "properties": {
-        "enabled": { "type": "boolean" },
         "storageClass": { "type": "string" },
         "accessModes": {
-          "description": "ReadWriteMany is refused rather than discouraged: nothing in bochka-core guards the data directory against a second process, so a volume two nodes can mount is a promise the server does not keep.",
+          "description": "ReadWriteMany is refused, and the reason is the filesystem rather than the writer count (M-150). One writer this chart does guarantee -- one replica, and ReadWriteOncePod at the API. What it cannot guarantee on an RWX class is the write order the store is built on: the object file is fsynced and renamed into place before the index hears about it, and on NFS or CephFS both halves of that behave differently from the local filesystem every crash test in this repository has run on. Not forever -- what would change it is a crash test on a network filesystem, which is a task rather than an opinion.",
           "type": "array",
           "minItems": 1,
           "maxItems": 1,

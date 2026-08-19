@@ -1,0 +1,18 @@
+# A controller this chart has no annotations for, without saying that its requirements were
+# expressed elsewhere. Rendering would produce an Ingress whose every nginx annotation is inert.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+ingress:
+  enabled: true
+  className: traefik
+  hosts:
+    - host: s3.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: s3-example-com-tls
+      hosts:
+        - s3.example.com

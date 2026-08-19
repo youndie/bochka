@@ -38,10 +38,18 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # An index rather than one manifest (M-137). Until this was here, `docker manifest inspect`
+      # returned a single amd64 manifest, so an arm64 node -- Graviton, Ampere, kind on Apple
+      # silicon -- pulled it happily and answered `exec format error`, which reads as a broken image
+      # rather than as the wrong architecture. Cheap here and nowhere else: this image compiles
+      # nothing, so emulation runs one `useradd` and a copy.
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
+          platforms: linux/amd64,linux/arm64
           # The version and `latest`, not `latest` alone: a tag that moves is not a thing anybody
           # can pin, and a deployment that cannot pin cannot roll back.
           tags: |
@@ -72,12 +80,45 @@ jobs:
           BOCHKA_REPO_SECRET: ${{ secrets.BOCHKA_REPO_SECRET }}
         run: ./gradlew -PVERSION=${GITHUB_REF_NAME#v} publishAllPublicationsToBochkaRepoRepository
 
+  chart:
+    # On `needs: gate` like the other two, and for the reason those two are separate jobs at all: a
+    # chart published beside an image that did not pass is a chart that installs an untested server.
+    #
+    # An OCI package in ghcr next to the image, rather than a `gh-pages` branch with an `index.yaml`.
+    # The second mechanism is a second place where a version can drift from the image it names, and
+    # this repository has already paid for one of those (`consume` asking for a tag nobody pushed).
+    needs: gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      # The one thing a chart can be wrong about that nothing else would notice: `appVersion` is the
+      # default image tag, so a chart published with last release's appVersion installs last
+      # release's server while calling itself this one. The chart's own `version` is deliberately
+      # not checked against anything -- a chart that fixes a label is republished on purpose, which
+      # is exactly where it differs from the image.
+      - name: The chart names the release being published
+        run: |
+          have=$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' deploy/helm/bochka/Chart.yaml)
+          if [ "$have" != "$GITHUB_REF_NAME" ]; then
+            echo "appVersion is '$have' and the tag is '$GITHUB_REF_NAME': the chart would install another release"
+            exit 1
+          fi
+      - name: Log in to the registry the image goes to
+        run: helm registry login ghcr.io -u ${{ github.actor }} --password ${{ secrets.GITHUB_TOKEN }}
+      - name: Package and push
+        run: |
+          helm package deploy/helm/bochka --destination "$RUNNER_TEMP"
+          helm push "$RUNNER_TEMP"/bochka-*.tgz oci://ghcr.io/youndie/charts
+
   consume:
     # The check that matters, and the one a publish job cannot make about itself: build something
     # else against what was just published, the way a consumer would (booblik, M9). A publication
     # that exists and cannot be resolved — wrong coordinates, a missing POM, a dependency that was
     # never published — looks identical to a good one from the publishing side.
-    needs: [image, maven]
+    needs: [image, maven, chart]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -93,3 +134,12 @@ jobs:
           BOCHKA_REPO_URL: ${{ secrets.BOCHKA_REPO_URL }}
         run: |
           BOCHKA_VERSION="${BOCHKA_VERSION#v}" ./ci/consume-published.sh
+      # The same question asked of the chart, and it has its own way of being wrong: a chart pushed
+      # to an OCI registry under a name that does not match `name:` in Chart.yaml resolves for
+      # nobody, and `helm push` says nothing about it.
+      - name: Pull the chart back out, the way somebody installing it would
+        run: |
+          helm pull oci://ghcr.io/youndie/charts/bochka --version "$(sed -n 's/^version: *//p' deploy/helm/bochka/Chart.yaml)" \
+            --destination "$RUNNER_TEMP"
+          helm template "$RUNNER_TEMP"/bochka-*.tgz --set auth.keys[0].id=k --set auth.keys[0].secret=s |
+            grep -q "image: ghcr.io/youndie/bochka:$GITHUB_REF_NAME"

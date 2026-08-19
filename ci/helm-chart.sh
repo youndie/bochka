@@ -65,7 +65,7 @@ command -v helm >/dev/null || { echo "helm is not installed" >&2; exit 3; }
 # --- lint ---------------------------------------------------------------------------------------
 
 echo "linting"
-for set in minimal full emptydir existing-claim existing-secret; do
+for set in minimal full foreign-ingress existing-claim existing-secret; do
   if helm lint "$chart" -f "$values/$set-values.yaml" >"$work/lint.out" 2>&1; then
     pass "helm lint, $set values"
   else
@@ -78,7 +78,7 @@ done
 
 echo
 echo "rendering"
-for set in minimal full emptydir existing-claim existing-secret; do
+for set in minimal full foreign-ingress existing-claim existing-secret; do
   if helm template "$RELEASE" "$chart" -f "$values/$set-values.yaml" >"$work/$set.yaml" 2>"$work/$set.err"; then
     pass "helm template, $set values"
   else
@@ -172,8 +172,10 @@ expect_not_in "$work/full.yaml" 'kubernetes.io/arch' 'and "nodeSelector: null" a
 expect_in "$work/full.yaml" 'BOCHKA_VIRTUAL_HOST_SUFFIXES' "virtual-host suffixes reach the process"
 expect_in "$work/full.yaml" 'proxy-request-buffering' "the ingress carries the annotations nginx.conf calls non-optional"
 expect_in "$work/full.yaml" 'tcpSocket' "probes.type: tcp renders the socket probe"
-expect_in "$work/emptydir.yaml" 'emptyDir' "persistence.enabled: false is allowed"
-expect_not_in "$work/emptydir.yaml" 'volumeClaimTemplates' "and claims nothing while it is off"
+expect_in "$work/minimal.yaml" 'ReadWriteOncePod' "the default access mode is the one that gives one writer at the API"
+expect_not_in "$work/minimal.yaml" 'emptyDir' "there is no shape of this chart that mounts an emptyDir"
+expect_in "$work/foreign-ingress.yaml" 'router.middlewares' "a foreign controller keeps the annotations its operator wrote"
+expect_not_in "$work/foreign-ingress.yaml" 'nginx.ingress.kubernetes.io' "and loses the nginx ones, which would be inert lines that look like configuration"
 expect_in "$work/existing-claim.yaml" 'claimName: bochka-data' "an existing claim is mounted as it is"
 expect_not_in "$work/existing-claim.yaml" 'volumeClaimTemplates' "and the chart creates no claim beside it"
 expect_not_in "$work/existing-secret.yaml" 'kind: Secret' "an existing Secret means the chart renders none"
@@ -208,6 +210,8 @@ refuses bad-bochka-env         "namespace"             "a BOCHKA_* variable from
 refuses bad-ingress-no-tls     "without ingress.tls"   "an Ingress with no certificate"
 refuses bad-ingress-wildcard   "virtualHostSuffixes"   "a wildcard host the router was never told about"
 refuses bad-ingress-suffix     "no rule for"           "a virtual-host suffix with no wildcard rule, which the controller answers itself"
+refuses bad-emptydir           "persistence"           "persistence.enabled, the key that used to mount an emptyDir"
+refuses bad-ingress-class      "requirementsExpressedFor" "a controller whose four requirements nobody expressed"
 refuses bad-access-mode        "accessModes"           "ReadWriteMany, which promises a second writer"
 refuses bad-small-memory       "runtime profile needs" "a memory limit under the profile, where the OOM kill beats the object ceiling"
 refuses bad-probe-timing       "initialDelaySeconds"   "a probe field the template renders nowhere"
@@ -261,11 +265,18 @@ else
     echo "could not create the kind cluster" >&2; sed 's/^/  /' "$work/kind.out" >&2; exit 3
   }
   cluster_created=yes
-  # `kind load` is where a docker that is newer than the kind binary shows up, and it shows up as
-  # a missing blob rather than as a version complaint: kind imports with `ctr --all-platforms`, and
-  # an image pulled into docker's containerd store holds the index for every platform while holding
-  # the layers of one, so `ctr` asks for a digest nothing has. Measured here on docker 29.1.3 with
-  # kind 0.27.0; the same script and the same tree pass on CI, where kind is newer.
+  # `kind load docker-image` fails on any image that was **pulled** rather than built here, and the
+  # reason is not the kind version. Measured on kind 0.32.0 with docker 29.1.3, the current pair:
+  # `bochka:chart`, built locally and therefore single-platform, loads; `amazon/aws-cli`, pulled as
+  # a multi-platform index, does not. kind imports with `ctr --all-platforms`, and docker's
+  # containerd store keeps the index for every platform while keeping the layers of one, so `ctr`
+  # asks for a digest nothing has. This comment said "a docker newer than the kind binary" for a
+  # milestone, which was a guess that fitted the evidence available then and is wrong: the newest
+  # kind fails identically, and a locally built image passes on the same machine in the same run.
+  #
+  # So the load goes through a single-platform archive, which `docker image save --platform` will
+  # write and kind will import without complaint. Kept as a function because both images need it
+  # and only one of them is ours.
   #
   # In `auto` that ends the cluster stage with a named reason instead of a red harness. A harness
   # that is red on a developer's machine for a reason that is not the code gets ignored, and then
@@ -283,16 +294,22 @@ else
     skipped_cluster=yes
   }
 
+  # amd64 by name rather than by the host's architecture: everything about this harness (the tag it
+  # asserts, the image it builds, the base it stands on) is one architecture today, and a silent
+  # `uname -m` would make the failure on an arm64 laptop look like a chart problem.
+  load_image() { # image
+    docker image save --platform linux/amd64 "$1" -o "$work/image.tar" >>"$work/kind.out" 2>&1 &&
+      kind load image-archive "$work/image.tar" --name "$CLUSTER" >>"$work/kind.out" 2>&1
+  }
+
   skipped_cluster=no
-  kind load docker-image "$IMAGE" --name "$CLUSTER" >>"$work/kind.out" 2>&1 || kind_gave_up "$IMAGE"
+  load_image "$IMAGE" || kind_gave_up "$IMAGE"
 
   # Both images are put in from the outside rather than pulled by the kubelet: an anonymous pull
   # from inside a throwaway cluster is a registry rate limit waiting to make this job flaky, and a
   # flaky harness gets ignored long before it gets fixed.
-  docker pull -q "$TESTS_IMAGE" >/dev/null 2>&1
-  [ "$skipped_cluster" = yes ] ||
-    kind load docker-image "$TESTS_IMAGE" --name "$CLUSTER" >>"$work/kind.out" 2>&1 ||
-    kind_gave_up "$TESTS_IMAGE"
+  docker pull -q --platform linux/amd64 "$TESTS_IMAGE" >/dev/null 2>&1
+  [ "$skipped_cluster" = yes ] || load_image "$TESTS_IMAGE" || kind_gave_up "$TESTS_IMAGE"
 
   if [ "$skipped_cluster" = no ]; then
     # The release is named `bochka` on purpose: fullname collapses to `bochka`, the Service is called

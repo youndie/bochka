@@ -169,13 +169,6 @@ known one overwrites a setting this chart already renders from values.
 {{- end -}}
 
 {{/*
-`persistence.existingClaim` with `persistence.enabled: false` is two opposite instructions.
-*/}}
-{{- if and (not .Values.persistence.enabled) .Values.persistence.existingClaim -}}
-{{- fail "persistence.existingClaim is set while persistence.enabled is false, which would mount an emptyDir and ignore the claim." -}}
-{{- end -}}
-
-{{/*
 A memory limit below the shipped runtime profile is refused, and it is the same refusal as JAVA_OPTS
 seen from the other side. That one is rejected because it replaces the heap the published object
 ceiling is derived from; a limit under the profile's own footprint destroys the same property from

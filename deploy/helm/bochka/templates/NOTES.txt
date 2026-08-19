@@ -82,11 +82,7 @@ set to a smaller number, or a smaller heap. In ordinary life the index never gro
 because the writes were refused first.
 
 STORAGE
-{{ if not .Values.persistence.enabled }}
-persistence.enabled is false, so /var/lib/bochka is an emptyDir. The objects live until the pod is
-recreated — an upgrade, a node drain, an eviction — and disappear without a crash, an error or a
-line in the log. That failure looks like "the data vanished", not like a setting.
-{{- else if .Values.persistence.existingClaim }}
+{{ if .Values.persistence.existingClaim }}
 The claim {{ .Values.persistence.existingClaim }} is yours: this chart neither created it nor will ever delete it.
 {{- else }}
 The volume is claimed by the StatefulSet, not by Helm:

@@ -266,21 +266,13 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- if or (not .Values.persistence.enabled) .Values.persistence.existingClaim }}
+      {{- with .Values.persistence.existingClaim }}
       volumes:
         - name: data
-          {{- if .Values.persistence.existingClaim }}
           persistentVolumeClaim:
-            claimName: {{ .Values.persistence.existingClaim }}
-          {{- else }}
-          {{- /*
-          Allowed, and the only shape here that loses data: an emptyDir lives until the pod is
-          recreated, which is an upgrade or an eviction rather than a crash — no error, no log line.
-          */}}
-          emptyDir: {}
-          {{- end }}
+            claimName: {{ . }}
       {{- end }}
-  {{- if and .Values.persistence.enabled (not .Values.persistence.existingClaim) }}
+  {{- if not .Values.persistence.existingClaim }}
   {{- /*
   Retain both ways, and stated rather than assumed. `helm uninstall` does not touch this claim in
   any case — the controller created it, so Helm has no record of it — and the deletion command is

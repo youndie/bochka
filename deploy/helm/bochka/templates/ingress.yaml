@@ -44,13 +44,41 @@ this refusal names work that already existed rather than adding any.
 {{- fail (printf "virtualHostSuffixes lists %q while ingress.hosts has no rule for \"*.%s\". Virtual-hosted requests — bucket.%s — would match no rule in this Ingress and never reach the service at all; the controller answers them itself, and the client sees a missing bucket rather than a missing route. Add a host \"*.%s\" (with a certificate that covers it), or drop the suffix and stay path-style." . . . .) }}
 {{- end }}
 {{- end }}
+{{/*
+M-146: which controller this chart is for, and what happens on any other one.
+
+The annotation defaults are ingress-nginx's, and they are four requirements rather than taste
+(deploy/nginx/nginx.conf): unlimited body size, request buffering off, response buffering off, long
+read and send timeouts. On Traefik, HAProxy or a Gateway API implementation those keys are inert —
+the Ingress renders, the controller ignores every one of them, and the first upload over a megabyte
+is a 413 from a proxy nobody configured for this server. Silently: nothing in the manifest, the
+release or the log says the requirements were dropped.
+
+So the class is either one this chart knows, or one the operator says they have configured
+themselves. Accepting a class and not expressing its requirements is the same shape as accepting a
+bucket policy and not enforcing it, and this repository refuses that one too.
+*/}}
+{{- $class := .Values.ingress.className | default "nginx" }}
+{{- if and (ne $class "nginx") (ne $class .Values.ingress.requirementsExpressedFor) }}
+{{- fail (printf "ingress.className is %q, and this chart's annotation defaults are ingress-nginx's — on %s they are inert. bochka needs four things from whatever proxies it: no body size limit, request buffering off, response buffering off, and read/send timeouts long enough for a large upload (deploy/nginx/nginx.conf). Express them in ingress.annotations for your controller and set ingress.requirementsExpressedFor: %q to say so — or put your own terminator in front of the ClusterIP Service and leave ingress.enabled false." $class $class $class) }}
+{{- end }}
+{{/*
+And the nginx keys come off for a foreign class rather than riding along. An inert annotation on
+somebody else's Ingress is a line that looks like configuration and is not.
+*/}}
+{{- $annotations := dict }}
+{{- range $name, $value := .Values.ingress.annotations }}
+{{- if or (eq $class "nginx") (not (hasPrefix "nginx.ingress.kubernetes.io/" $name)) }}
+{{- $_ := set $annotations $name $value }}
+{{- end }}
+{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: {{ include "bochka.fullname" . }}
   labels:
     {{- include "bochka.labels" . | nindent 4 }}
-  {{- with .Values.ingress.annotations }}
+  {{- with $annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}

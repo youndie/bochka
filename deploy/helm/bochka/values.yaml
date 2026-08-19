@@ -152,12 +152,18 @@ service:
 # rather than rendering it.
 ingress:
   enabled: false
+  # Empty or `nginx` is ingress-nginx, the one controller this chart has annotations for.
   className: ""
+  # Any other controller: write its name here to say that you have expressed the four requirements
+  # below in `annotations` yourself (M-146). Without it the chart refuses to render, rather than
+  # rendering an Ingress on which its own defaults are inert — the failure that would produce is a
+  # 413 on the first upload over a megabyte, from a controller nobody configured for this server.
+  # The chart also drops its nginx annotations for such a class instead of leaving them on as noise.
+  requirementsExpressedFor: ""
   # Defaults aimed at ingress-nginx, which is where these four requirements are already written
   # down as non-optional (deploy/nginx/nginx.conf:28-86). Without proxy-body-size everything over
   # a megabyte is a 413; with request buffering on, the proxy stores the whole upload on disk
   # before bochka sees a byte, which doubles the write and makes `Expect: 100-continue` pointless.
-  # On another controller they are inert and you want its own equivalents.
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "0"
     nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
@@ -268,10 +274,14 @@ resources:
     cpu: "2"
     memory: 768Mi
 
+# There is no `persistence.enabled`, and its absence is the answer to what this chart is for
+# (M-149). Helm is not how anybody runs a store in a test — that is `bochka-embedded` in the same
+# JVM as the test, or `docker run` — so the one thing `enabled: false` bought was an emptyDir: a
+# mode where the objects live until the pod is recreated and then disappear with no crash, no error
+# and no line in the log. A durability product does not ship a switch that turns durability off; it
+# is the same rule that refuses a bucket policy it would not enforce. A demo install is not harmed,
+# it gets a claim from the default StorageClass like everything else.
 persistence:
-  # On, because off means an emptyDir, and an emptyDir means the objects live until the pod is
-  # recreated — a failure that looks like "the data vanished" rather than like a misconfiguration.
-  enabled: true
   # Empty means the cluster's default StorageClass. Worth choosing deliberately: every PUT costs
   # two fsync barriers (the object file, then the index record), so a network disk is not a
   # cosmetic choice here.
@@ -287,10 +297,16 @@ persistence:
   # The command every search answers with is `kubectl delete pod --force --grace-period=0`, and if
   # the node is merely partitioned rather than dead, the old process is still writing. Under
   # ReadWriteOnce that window is real; ReadWriteOncePod closes it at the API, because the volume is
-  # bound to one pod and not one node. It needs a CSI driver that supports it (and Kubernetes 1.29
-  # for GA), which is the only reason it is not the default here.
+  # bound to one pod and not one node. So it is the default (M-147), and `kubeVersion` is `>=1.29`
+  # for it: the versions that excludes went out of support years ago, and what it buys is the one
+  # guarantee this server cannot make for itself.
+  #
+  # A CSI driver without ReadWriteOncePod leaves the claim Pending and the pod not started, which is
+  # loud, diagnosable and reversible with `--set persistence.accessModes[0]=ReadWriteOnce`. That is
+  # the trade taken deliberately: a failure to start beats a window in which two processes write the
+  # same index.
   accessModes:
-    - ReadWriteOnce
+    - ReadWriteOncePod
   # 20Gi is the one number here that implicitly names an average object size: against a ceiling of
   # 399215 objects it is about 52 KiB apiece. Below that the index runs out first — a store of small
   # objects answers 507 with the volume half empty — and above it the volume does, long before the
@@ -312,10 +328,12 @@ persistence:
   # one, and the volume is entirely yours.
   existingClaim: ""
 
-# amd64, because that is the only architecture published: `docker manifest inspect` returns a
-# single manifest rather than an index, and publish.yml has neither setup-qemu-action nor
-# setup-buildx-action. On an arm64 node (Graviton, Ampere, kind on Apple silicon) the pod gets
-# `exec format error`. This pin goes away the day the image becomes multi-arch.
+# amd64, because that is the only architecture `appVersion` names. publish.yml now builds an index
+# for amd64 and arm64 (M-137), so this pin has an expiry date rather than a reason: the release that
+# publishes the index is the release that removes it, together with `appVersion` and with
+# `probes.type` above. Until then it stands, because v0.2.0 is a single amd64 manifest and an arm64
+# node pulls it happily and answers `exec format error` — which reads as a broken image rather than
+# as the wrong architecture.
 #
 # Removing it is `nodeSelector: null` or `--set nodeSelector=null`, and **not** `nodeSelector: {}`:
 # Helm merges maps, so an empty one leaves this default exactly where it was and the difference is

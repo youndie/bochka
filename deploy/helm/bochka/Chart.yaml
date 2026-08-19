@@ -17,12 +17,23 @@ version: 0.1.0
 # The `v` lives here rather than in the template on purpose: a `printf "v%s"` in the template moves
 # the rule out of sight and breaks in silence if a release ever stops writing the letter. This line
 # is read by eye, and by `helm list` in the APP VERSION column.
+#
+# **Три строки едут вместе с этой.** `probes.type` и `nodeSelector` в `values.yaml` держат самое
+# узкое умолчание, потому что образ `appVersion` — без ручки здоровья и без второй архитектуры;
+# выпуск, который двигает эту строку, обязан подвинуть и те две. `publish.yml` проверяет только
+# одно: что `appVersion` — это публикуемый тег, потому что чарт с прошлым `appVersion` ставит
+# прошлый сервер, называя себя этим.
 appVersion: "v0.2.0"
 
-# 1.27, because `persistentVolumeClaimRetentionPolicy` is beta-on-by-default from there. On an
-# older cluster the field is dropped without a word, and "the volume outlives `helm uninstall`"
-# would become a promise this chart states and cannot keep. A refusal to install beats that.
-kubeVersion: ">=1.27.0-0"
+# 1.29, and it is two requirements rather than one. `persistentVolumeClaimRetentionPolicy` is
+# beta-on-by-default from 1.27 — on an older cluster the field is dropped without a word, and "the
+# volume outlives `helm uninstall`" becomes a promise this chart states and cannot keep.
+# `ReadWriteOncePod` is GA from 1.29, and it is the default access mode here (M-147) because it is
+# the only thing that gives this store one writer at the API rather than one writer per node.
+#
+# What that excludes: 1.27 and 1.28, both out of support since 2024. A floor derived from a feature
+# the chart actually uses beats a floor picked to be welcoming.
+kubeVersion: ">=1.29.0-0"
 
 home: https://github.com/youndie/bochka
 sources:

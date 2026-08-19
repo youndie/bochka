@@ -1,0 +1,10 @@
+# `persistence.enabled: false` used to render an emptyDir, and the key is gone (M-149): a store
+# whose objects vanish when the pod is recreated is not a shape this product offers. Kept as a
+# refusal so the removal is visible to whoever wrote that line in their own values file — the
+# schema names the key rather than ignoring it.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+persistence:
+  enabled: false
