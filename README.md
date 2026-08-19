@@ -3,7 +3,7 @@
 [![kotlin](https://img.shields.io/badge/Kotlin-2.4.10-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
-[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-274%2F744-yellow)](ci/s3-tests.sh)
+[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-426%2F744-yellowgreen)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.2.0)
 
