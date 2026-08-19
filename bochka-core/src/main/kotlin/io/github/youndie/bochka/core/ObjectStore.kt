@@ -605,7 +605,7 @@ class ObjectStore(
      * passes [bypass]; `COMPLIANCE` yields to nobody, so [bypass] is deliberately not consulted
      * for it.
      *
-     * **Changing the mode is weakening too, and that is the half this missed** (M-154). The first
+     * **Changing the mode is weakening too, and that is the half this missed** (M-175). The first
      * version of this compared only dates, so `GOVERNANCE` → `COMPLIANCE` with the same date was
      * not "weakened" and went through — and so did `COMPLIANCE` → `GOVERNANCE`, which turns a
      * promise nobody can break into one anybody can. The date was unchanged in both, which is
@@ -858,7 +858,7 @@ class ObjectStore(
          * One index record instead of two, and no window: a crash between "the object exists" and
          * "the object is protected" leaves an unprotected object, which is the one outcome a lock
          * is bought to prevent. Used by the multipart completion, where the lock was stated
-         * minutes earlier on the request that started the upload (M-154).
+         * minutes earlier on the request that started the upload (M-175).
          */
         retention: Retention? = null,
         legalHold: Boolean = false,
@@ -1537,7 +1537,7 @@ class ObjectStore(
          *
          * `CreateMultipartUpload` takes `x-amz-object-lock-*` exactly as `PutObject` does, and the
          * object it locks does not exist for another few minutes. Dropping them here — which is
-         * what happened until M-154 — produces a finished object with no lock at all, and the
+         * what happened until M-175 — produces a finished object with no lock at all, and the
          * client that asked for one is told the upload succeeded.
          */
         val retention: Retention? = null,

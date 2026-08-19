@@ -173,7 +173,7 @@ class VersioningTest {
 
     @Test
     fun `a copy names the version it copies from`() {
-        // M-141. До этого версия из `x-amz-copy-source` срезалась и выбрасывалась: клиент просил
+        // M-163. До этого версия из `x-amz-copy-source` срезалась и выбрасывалась: клиент просил
         // старую, получал текущую и **никакого признака**, что его запрос переиначили.
         S3Fixture().use { s3 ->
             s3.enable("photos")
@@ -192,7 +192,7 @@ class VersioningTest {
 
     @Test
     fun `a batch delete says which tombstones it made`() {
-        // M-139. Единственное место, где пакетная форма отдаёт имя надгробия: без него клиент,
+        // M-161. Единственное место, где пакетная форма отдаёт имя надгробия: без него клиент,
         // удаливший тысячу ключей, не может отменить ни одного.
         S3Fixture().use { s3 ->
             s3.enable("photos")
@@ -215,7 +215,7 @@ class VersioningTest {
 
     @Test
     fun `GetObjectAttributes reads the version it was given`() {
-        // M-142.
+        // M-164.
         S3Fixture().use { s3 ->
             s3.enable("photos")
             val first = s3.put("photos", "a.txt", "первый").header("x-amz-version-id")

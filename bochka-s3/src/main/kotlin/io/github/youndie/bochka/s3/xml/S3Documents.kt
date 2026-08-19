@@ -61,7 +61,7 @@ object S3Documents {
          *
          * The pair `DeleteMarker` + `DeleteMarkerVersionId` is how a caller learns that its
          * delete is undoable and by what name — the batch form's equivalent of the headers a
-         * single `DELETE` answers with, and the only place a batch hands the id out (M-139).
+         * single `DELETE` answers with, and the only place a batch hands the id out (M-161).
          */
         val deleteMarker: Boolean = false,
         val deleteMarkerVersionId: String? = null,

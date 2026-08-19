@@ -160,7 +160,7 @@ class S3RouterTest {
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "acl"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "policy"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "acl"))
-        // И четвёртый переезд, M21: `?lifecycle` был среди отвечающих на `GET` и отвергающих
+        // И четвёртый переезд, M23: `?lifecycle` был среди отвечающих на `GET` и отвергающих
         // всё остальное — а стал настройкой на трёх методах. Направление у переездов одно:
         // подресурс уходит из отвергающих тогда, когда сервер начинает **делать** то, что тот
         // описывает, а не когда отвечать стало удобно.

@@ -104,7 +104,7 @@ class HttpServer(
             }
 
             val request = head
-            // Wrapped exactly like `handle` below, and it was not — which is the whole of M-155.
+            // Wrapped exactly like `handle` below, and it was not — which is the whole of M-176.
             // `screen` reads the head, and reading a header can fail: a malformed `x-amz-tagging`
             // threw out of here, past this loop, and the client got a closed socket with no bytes
             // in it. A refusal has to be a refusal; "the connection dropped" is diagnosed as the

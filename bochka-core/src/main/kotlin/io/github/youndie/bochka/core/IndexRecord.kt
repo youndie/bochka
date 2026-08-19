@@ -157,7 +157,7 @@ sealed interface IndexRecord {
          *
          * Same shape and same reason as the fields of a [Put]: the object it protects appears
          * minutes later, at the completion, and an upload that forgot them across a restart
-         * finishes as an unlocked object while the client believes otherwise (M-154).
+         * finishes as an unlocked object while the client believes otherwise (M-175).
          */
         val retentionMode: String? = null,
         val retentionUntilMillis: Long = 0,
@@ -259,7 +259,7 @@ sealed interface IndexRecord {
         private const val KIND_BUCKET_OBJECT_LOCK: Byte = 20
 
         /**
-         * An upload that remembers the lock its client asked for (M-154).
+         * An upload that remembers the lock its client asked for (M-175).
          *
          * Sixth time the same rule, and the first time an old kind decoding to "no lock" is worth
          * saying out loud: it is the truth about those uploads and also the safe reading. An

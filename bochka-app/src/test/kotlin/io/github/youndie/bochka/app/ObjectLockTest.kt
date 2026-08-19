@@ -392,7 +392,7 @@ class ObjectLockTest {
 
     @Test
     fun `режим retention нельзя сменить, оставив ту же дату`() {
-        // M-154. `test_object_lock_changing_mode_from_governance_without_bypass:13993` и
+        // M-175. `test_object_lock_changing_mode_from_governance_without_bypass:13993` и
         // `..._from_compliance:14010`. Проверка «ослабления» смотрела только на дату, а дата
         // здесь не меняется — меняется режим, и это ровно то, чем один замок отличается от
         // другого. `COMPLIANCE`, ставший `GOVERNANCE`, — это обещание, которое стало снимаемым.
@@ -461,7 +461,7 @@ class ObjectLockTest {
 
     @Test
     fun `замок, названный при старте многочастной загрузки, доживает до объекта`() {
-        // M-154. `test_object_lock_delete_multipart_object_with_retention:13708`. Заголовки
+        // M-175. `test_object_lock_delete_multipart_object_with_retention:13708`. Заголовки
         // замка едут на `CreateMultipartUpload`, а объект появляется минутами позже — и до этой
         // задачи они просто терялись: загрузка завершалась объектом без всякой защиты, а клиенту
         // отвечали успехом, потому что загрузка и правда удалась.

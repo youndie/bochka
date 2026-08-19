@@ -311,7 +311,7 @@ class S3Router(
      *
      * The version used to be cut off and dropped, which was right while there were no versions and
      * became a silent wrong answer once there were: a client asking for an old version got the
-     * current one and no indication that its request had been reinterpreted (M-141).
+     * current one and no indication that its request had been reinterpreted (M-163).
      */
     private fun parseCopySource(value: String): Triple<String, ObjectKey, String?>? {
         val withoutVersion = value.substringBefore('?')
@@ -625,7 +625,7 @@ class S3Router(
          * applied is a lie a client finds out about through a leak rather than through an error
          * (M-133). Which is why this set is consulted in the `GET` branch only.
          *
-         * `lifecycle` was here until M21 and is now configurable, which is the same move
+         * `lifecycle` was here until M23 and is now configurable, which is the same move
          * `tagging`, `versioning` and `object-lock` made before it — and it is a move in one
          * direction only: a sub-resource leaves this set when the server starts **doing** what it
          * describes, never because answering was convenient.

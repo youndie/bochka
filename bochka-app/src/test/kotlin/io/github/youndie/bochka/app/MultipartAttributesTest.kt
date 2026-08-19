@@ -327,7 +327,7 @@ class MultipartAttributesTest {
 
     @Test
     fun `GetObjectAttributes называет версию, на которую ответил`() {
-        // Операция принимает `?versionId` с M-142 и до сих пор не говорила, какая версия
+        // Операция принимает `?versionId` с M-164 и до сих пор не говорила, какая версия
         // ответила: `GetObjectAttributesOutput.VersionId` — член-заголовок `x-amz-version-id`.
         // Клиент узнаёт об этом как `KeyError: 'VersionId'`, то есть никак.
         S3Fixture().use { s3 ->

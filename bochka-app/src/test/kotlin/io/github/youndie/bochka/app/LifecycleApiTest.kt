@@ -130,7 +130,7 @@ class LifecycleApiTest {
     @Test
     fun `пустой фильтр приезжает самозакрывающимся элементом и принимается`() {
         // Ровно то тело, которое botocore кладёт на провод для `Filter: {}`
-        // (`test_lifecycle_set_empty_filter:9349`). До M21 сервер отвечал на него `MalformedXML`,
+        // (`test_lifecycle_set_empty_filter:9349`). До M23 сервер отвечал на него `MalformedXML`,
         // потому что читатель XML отвергал `<x/>` — а другой формы у стандартного клиента нет.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")

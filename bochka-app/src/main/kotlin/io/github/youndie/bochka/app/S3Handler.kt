@@ -356,7 +356,7 @@ class S3Handler(
             return error(head, S3Error.NO_SUCH_BUCKET, bucket = route.sourceBucket)
         }
         val source =
-            // The named version of the source, or its current one (M-141). Reading the current
+            // The named version of the source, or its current one (M-163). Reading the current
             // one for a request that named another would answer a question nobody asked.
             route.sourceVersionId
                 ?.let { store.get(route.sourceBucket, route.sourceKey, it) }
@@ -412,7 +412,7 @@ class S3Handler(
             }
         val checksumType = head.header("x-amz-checksum-type")?.trim()?.uppercase()
         // `x-amz-object-lock-*` on the request that **starts** the upload, held until the
-        // completion has something to put them on. Dropped until M-154, which made a locked
+        // completion has something to put them on. Dropped until M-175, which made a locked
         // multipart upload finish as an object anybody could delete — and the client was told the
         // upload succeeded, which it had.
         val lock = lockOnUpload(head)
@@ -512,7 +512,7 @@ class S3Handler(
             return error(head, S3Error.NO_SUCH_BUCKET, bucket = route.sourceBucket)
         }
         val source =
-            // The named version of the source, or its current one (M-141). Reading the current
+            // The named version of the source, or its current one (M-163). Reading the current
             // one for a request that named another would answer a question nobody asked.
             route.sourceVersionId
                 ?.let { store.get(route.sourceBucket, route.sourceKey, it) }
@@ -1117,7 +1117,7 @@ class S3Handler(
 
         // And the checksum by the same code as well, for the same reason: `x-amz-checksum-sha256`
         // is a field of a form and a header of a `PUT`, and it means one thing in both. Excluding
-        // it from the policy's coverage check was only half of M-135 — a form that states a
+        // it from the policy's coverage check was only half of M-158 — a form that states a
         // checksum nobody verifies promises bytes it did not deliver.
         val checksums = PayloadChecksums.of { name -> form[name] }
         checksums.rejection?.let {
@@ -1747,7 +1747,7 @@ class S3Handler(
         head: HttpRequestParser.Head,
         route: S3Router.Route.GetObjectAttributes,
     ): HttpResponse {
-        // A named version, or the current one — the same rule every other read follows (M-142).
+        // A named version, or the current one — the same rule every other read follows (M-164).
         val named = route.versionId
         val stored =
             (if (named != null) store.get(route.bucket, route.key, named) else store.get(route.bucket, route.key))
@@ -2344,7 +2344,7 @@ class S3Handler(
                     }
                 // Deleting what is not there is a success in S3, so every key that got this far is
                 // reported deleted — and it is reported with what actually happened: a tombstone
-                // laid down is undoable, and this is the only place a batch names it (M-139).
+                // laid down is undoable, and this is the only place a batch names it (M-161).
                 deleted +=
                     S3Documents.DeletedEntry(
                         key = target.key,

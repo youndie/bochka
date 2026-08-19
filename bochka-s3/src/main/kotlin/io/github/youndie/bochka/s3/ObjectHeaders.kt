@@ -95,7 +95,7 @@ object ObjectHeaders {
      * Everything about the head that can be refused before a byte of the body is read (§1.2).
      *
      * Both halves are limits on what the client said about the object rather than on the object,
-     * so both are decidable here — and the tag half was not checked at all until M-155, which is
+     * so both are decidable here — and the tag half was not checked at all until M-176, which is
      * how `x-amz-tagging` with eleven tags became an object with eleven tags.
      */
     fun check(metadata: Metadata): Rejection? {

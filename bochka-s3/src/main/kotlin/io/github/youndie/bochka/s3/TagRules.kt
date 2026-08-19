@@ -10,7 +10,7 @@ package io.github.youndie.bochka.s3
  *
  * **In one place because three operations take tags and all three have to agree**: the XML body of
  * `PutObjectTagging` and `PutBucketTagging`, and the `x-amz-tagging` header of an upload. Until
- * M-155 only the first two counted them, and only as a *count*, and the answer was `MalformedXML`
+ * M-176 only the first two counted them, and only as a *count*, and the answer was `MalformedXML`
  * — which sends the caller to look at their XML writer for a value they chose themselves.
  *
  * Characters and not bytes, because that is what the restriction says. The difference shows up
