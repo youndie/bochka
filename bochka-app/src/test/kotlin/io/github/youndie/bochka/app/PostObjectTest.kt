@@ -292,4 +292,124 @@ class PostObjectTest {
             assertTrue("etag=%22" in location && location.endsWith("%22"), location)
         }
     }
+
+    @Test
+    fun `контрольная сумма формы не требует условия и проверяется по байтам`() {
+        // M-135, `test_post_object_upload_checksum:15299`. Поле `x-amz-checksum-sha256` политикой
+        // не покрыто — и это правильно: список полей вне условий существует затем, чтобы
+        // загружающий не мог подставить к подписанной политике что-то своё, а контрольная сумма
+        // ничего не расширяет. Худшее, что она делает, — отказывает в загрузке.
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+            val payload = "x".repeat(2048).toByteArray()
+            val digest =
+                java.util.Base64
+                    .getEncoder()
+                    .encodeToString(
+                        java.security.MessageDigest
+                            .getInstance("SHA-256")
+                            .digest(payload),
+                    )
+
+            val answer =
+                s3.postForm(
+                    "photos",
+                    s3.signedPolicy(policy()) +
+                        listOf(
+                            "key" to "cksum.txt",
+                            "acl" to "private",
+                            "x-amz-checksum-sha256" to digest,
+                        ),
+                    payload,
+                )
+
+            assertEquals(204, answer.status, answer.text)
+            assertEquals(2048, s3.get("photos", "cksum.txt").body.size)
+        }
+    }
+
+    @Test
+    fun `неверная контрольная сумма формы — отказ, а не принятый объект`() {
+        // Вторая половина того же кейса, и та, ради которой сумму надо **считать**: пропустить
+        // поле мимо проверки покрытия было бы достаточно для первой половины и оставило бы форму,
+        // которая обещает одни байты и кладёт другие.
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+
+            val answer =
+                s3.postForm(
+                    "photos",
+                    s3.signedPolicy(policy()) +
+                        listOf(
+                            "key" to "cksum.txt",
+                            "acl" to "private",
+                            "x-amz-checksum-sha256" to "sailorjerry",
+                        ),
+                    "x".repeat(2048).toByteArray(),
+                )
+
+            assertEquals(400, answer.status, answer.text)
+            assertEquals(404, s3.get("photos", "cksum.txt").status, "объект не должен был появиться")
+        }
+    }
+
+    @Test
+    fun `сумма правильной формы, но не от этих байтов — тоже отказ`() {
+        // `sailorjerry` не является base64 от 32 байт вовсе, так что предыдущий тест прошёл бы и
+        // на одной проверке формата. Здесь сумма безупречна и посчитана от другого тела.
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+            val ofSomethingElse =
+                java.util.Base64
+                    .getEncoder()
+                    .encodeToString(
+                        java.security.MessageDigest
+                            .getInstance("SHA-256")
+                            .digest("другое тело".toByteArray()),
+                    )
+
+            val answer =
+                s3.postForm(
+                    "photos",
+                    s3.signedPolicy(policy()) +
+                        listOf(
+                            "key" to "cksum.txt",
+                            "acl" to "private",
+                            "x-amz-checksum-sha256" to ofSomethingElse,
+                        ),
+                    "x".repeat(2048).toByteArray(),
+                )
+
+            assertEquals(400, answer.status, answer.text)
+            assertTrue("BadDigest" in answer.text, answer.text)
+        }
+    }
+
+    @Test
+    fun `сумма сохраняется и отдаётся по x-amz-checksum-mode`() {
+        // То же, что у `PutObject`: клиент назвал сумму, сервер её проверил и запомнил — иначе
+        // `GET` пришлось бы считать её заново по пяти гигабайтам.
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+            val payload = "x".repeat(64).toByteArray()
+            val digest =
+                java.util.Base64
+                    .getEncoder()
+                    .encodeToString(
+                        java.security.MessageDigest
+                            .getInstance("SHA-256")
+                            .digest(payload),
+                    )
+
+            s3.postForm(
+                "photos",
+                s3.signedPolicy(policy()) +
+                    listOf("key" to "cksum.txt", "acl" to "private", "x-amz-checksum-sha256" to digest),
+                payload,
+            )
+
+            val read = s3.get("photos", "cksum.txt", headers = listOf("x-amz-checksum-mode" to "ENABLED"))
+            assertEquals(digest, read.header("x-amz-checksum-sha256"))
+        }
+    }
 }

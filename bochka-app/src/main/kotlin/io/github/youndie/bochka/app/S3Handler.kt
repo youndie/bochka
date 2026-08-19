@@ -1115,10 +1115,30 @@ class S3Handler(
         // read by the same code — `content-type`, `cache-control`, `x-amz-meta-*` and the rest.
         val metadata = ObjectHeaders.read(form.fields.map { it.key to it.value })
 
+        // And the checksum by the same code as well, for the same reason: `x-amz-checksum-sha256`
+        // is a field of a form and a header of a `PUT`, and it means one thing in both. Excluding
+        // it from the policy's coverage check was only half of M-135 — a form that states a
+        // checksum nobody verifies promises bytes it did not deliver.
+        val checksums = PayloadChecksums.of { name -> form[name] }
+        checksums.rejection?.let {
+            return error(head, it.error, detail = it.detail, key = key, bucket = bucket)
+        }
+        checksums.update(raw, form.fileOffset, form.fileLength)
+        checksums.verify()?.let {
+            return error(head, it.error, detail = it.detail, key = key, bucket = bucket)
+        }
+
         var staged: ObjectStore.Staged? = null
         return try {
             staged = store.stage { out -> out.write(raw, form.fileOffset, form.fileLength) }
-            val stored = store.commit(bucket, key, metadata, staged, ObjectStore.Precondition())
+            val stored =
+                store.commit(
+                    bucket,
+                    key,
+                    metadata.copy(checksum = checksums.stored()),
+                    staged,
+                    ObjectStore.Precondition(),
+                )
             staged = null
             formSuccess(form, bucket, key, stored.eTag, accessKeyId)
         } catch (e: ObjectStore.CeilingExceeded) {

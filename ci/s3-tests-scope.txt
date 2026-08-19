@@ -22,7 +22,12 @@ out-of-scope	encryption	server-side encryption touches the bytes on the read pat
 # stale line would hide all three.
 out-of-scope	bucket_logging	bucket logging is out of the v1 scope; these name a version only because their fixture does
 deferred	_version_if_match	conditional delete of a **named** version: S3 has no conditional form for it and neither have we (M-137)
-deferred	versioned_object_acl	the case reads an object ACL of a version; ACLs are out of scope, but the version half is ours (M-138)
+# Read as `deferred` for two milestones on the grounds that "the version half is ours". It is,
+# and it buys nothing: the operation these cases call is `GetObjectAcl`, and an ACL document
+# from a server with no owner model is a fiction whichever version it is about. Routing
+# `?versionId` into an answer that cannot be true is worse than not answering. Decided in M-138,
+# and it returns with ACLs or not at all.
+out-of-scope	versioned_object_acl	the case reads an object ACL; ACLs need an owner model, and the version half of an operation that cannot answer is not a feature (M-138)
 deferred	versioning_multi_object_delete_with_marker	batch delete must report the markers it created in <Deleted> (M-139)
 deferred	versioning_bucket_multipart_upload_return_version_id	CompleteMultipartUpload does not answer x-amz-version-id yet (M-140)
 deferred	versioning_copy_obj_version	CopyObject does not read ?versionId off x-amz-copy-source yet (M-141)
@@ -66,7 +71,6 @@ out-of-scope	request_payment	requester pays is out of the v1 scope
 out-of-scope	storage_class	one storage class; there is one disk
 out-of-scope	_torrent	BitTorrent retrieval was removed from S3 itself
 out-of-scope	usage	usage accounting is a ceph extension, not S3
-deferred	post_object_upload_checksum	the form's x-amz-checksum-* is neither conditioned nor verified yet (M-135)
 out-of-scope	post_object_anonymous	an anonymous form needs a bucket open to everyone, which needs public ACLs
 out-of-scope	post_object_tags_anonymous	an anonymous form needs a bucket open to everyone, which needs public ACLs
 out-of-scope	post_object_set_success_code	the form carries no policy at all; it is an anonymous POST to a public bucket
