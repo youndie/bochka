@@ -36,9 +36,16 @@ Objects can also be copied server-side, written and read conditionally (`If-Matc
 listed with owners, and asked about without their bytes — `GetObjectAttributes`, `partNumber` on a
 read, and the checksum of an assembled object, which is the checksum of its parts' checksums.
 
-Not built: delivery — a distribution, an image and published artifacts — and the seven things the
-compatibility run found and nobody has claimed. [BACKLOG.md](BACKLOG.md) says which milestone each
-is, and every closed one ends with what came out differently than planned.
+Since then: bucket and object tags with a CORS configuration and preflight, browser `POST` form
+uploads with a policy and both signature versions, versioning end to end — delete markers, reads
+and deletes by `versionId`, `ListObjectVersions` in pages — object lock with retention in both
+modes and legal hold, access keys narrowed to a mode and a set of buckets, and lifecycle rules
+that are **applied** rather than stored: objects and noncurrent versions expire, orphaned delete
+markers and abandoned uploads go, and `x-amz-expiration` says when.
+
+Delivered: a distribution, an image on `ghcr.io` and five artifacts published per release.
+[BACKLOG.md](BACKLOG.md) says which milestone each thing is, and every closed one ends with what
+came out differently than planned.
 
 Anything below describing behaviour bochka does not have says so — that is the project's first
 rule, `main` describes what exists.
@@ -188,16 +195,22 @@ of `ceph/s3-tests` a single-process JVM store passes is comparable with other im
 which is true of no benchmark this project could run on its own. So it is published as soon as it
 exists, ahead of everything else:
 
-> **274 of 744 passed (36%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
+> **415 of 744 passed (55%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
 
-Low, and it should be: **468 of the 470 remaining failures** are things this store says in
-["What bochka is not"](#what-bochka-is-not) that it will never have — encryption, ACLs,
-versioning, object lock, lifecycle, policies. Every failure is classified with a reason
+**306 of the 329 remaining failures** are things this store says in
+["What bochka is not"](#what-bochka-is-not) that it will never have — encryption, ACLs, policies,
+IAM, storage classes. Every failure is classified with a reason
 ([docs/s3-tests.md](docs/s3-tests.md)), and one nobody has classified is reported by name as
 `unclassified` rather than folded into a category. That count is zero.
 
-**Two are in scope and not done**, and both are there because a decision is unmade rather than
-because work is: a key holding C1 control characters, and the round trip of non-ASCII metadata.
+**Nine are defects**, and they were found by re-reading the classification rather than by running
+anything: three families sat behind reasons that had stopped being true when the features arrived.
+A label saying "out of scope" over a defect is worse than no label — the unclassified count is
+watched, and a closed-looking question is not.
+
+**Fourteen are in scope and not done**, and two of those are there because a decision is unmade
+rather than because work is: a key holding C1 control characters, and the round trip of non-ASCII
+metadata.
 Each names in the classification file what would settle it, because a "deferred" with no criterion
 is a "deferred" for ever. That whole distinction was itself a finding — those entries once sat in
 the classification file while the backlog said there was nothing to do, which is two documents
@@ -302,14 +315,16 @@ disagreeing — which reads like a bug in your project and is a missing line.
   line of the log. A store at its ceiling refuses new keys with `507 InsufficientStorage` and goes
   on serving everything it already holds; a store whose index no longer fits the heap it was given
   refuses to open at all, instead of degrading into swap.
-- **Not versioned.** One version per key. Versioning would make the index key composite, which is
-  a different project.
+- **Not multi-class storage.** One disk means one storage class, so a lifecycle rule carrying a
+  `Transition` is refused by name rather than stored and never acted on.
 - **Not an identity system.** Access keys are a static list in the configuration; no IAM, no bucket
   policies, no STS.
 - **Not encrypted in-process.** No TLS termination and no server-side encryption: both mean
   touching the bytes on the read path, which is what the zero-copy path exists not to do.
-- **Not benchmarked.** There is nothing to benchmark yet. When there is, a milestone that changed
-  the hot path will not close without a number, a host and a filesystem next to it.
+- **Not compared with anything.** The read path is measured — numbers, host and filesystem are in
+  [docs/measurements.md](docs/measurements.md), and a milestone that changes the hot path does not
+  close without them — but nothing here has been benchmarked *against another store*, and no
+  number below should be read as one.
 
 ## Documentation
 

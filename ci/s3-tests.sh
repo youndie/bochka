@@ -13,6 +13,10 @@ set -uo pipefail
 
 readonly PORT=${BOCHKA_PORT:-19001}
 readonly IMAGE=python:3.11-slim
+# How long a lifecycle "day" lasts on both sides of this run; see the note by the server start.
+# `S3TESTS_LC_DAY` overrides it — not `BOCHKA_*`, because the server refuses a name in its own
+# namespace that it does not know, and would print its usage instead of starting.
+readonly LC_DAY=${S3TESTS_LC_DAY:-5}
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 log="$work/bochka.log"
@@ -79,7 +83,16 @@ command -v docker >/dev/null || { echo "docker is not installed; the suite canno
 # `BOCHKA_LOG=1` is on for the whole run, and it is the half of this that matters: a preserved log
 # with nothing in it but the startup banner answers no question at all. It costs a few megabytes of
 # a file that is thrown away on a green run.
+# `BOCHKA_LIFECYCLE_DAY_SECONDS` and the suite's `lc_debug_interval` below are one setting written
+# twice, and they must agree. A lifecycle rule counts days; a test that waited one would never be
+# run by anybody, so the suite shortens the day and the server has to shorten it the same way —
+# exactly like `api_name`, which is already set from both ends a few lines down.
+#
+# Five and not the suite's default of ten, and that was arithmetic rather than taste: the longest
+# case sleeps ten intervals (`test_lifecycle_expiration_size_gt`), and ten times ten is over the
+# sixty-second per-test timeout. At five it is fifty, and the timeout still measures a hang.
 BOCHKA_PORT=$PORT BOCHKA_BIND_ADDRESS=0.0.0.0 BOCHKA_DATA_DIR="$work/data" BOCHKA_LOG=1 \
+  BOCHKA_LIFECYCLE_DAY_SECONDS=$LC_DAY \
   BOCHKA_KEYS="s3main:s3mainsecret,s3alt:s3altsecret,s3tenant:s3tenantsecret" \
   "$root/bochka-app/build/install/bochka-app/bin/bochka-app" >"$log" 2>&1 &
 server_pid=$!
@@ -117,6 +130,11 @@ for section, key, secret in (
     # Set per section rather than in DEFAULT: the sample sets it inside the sections, and a value
     # there wins over the default, so a DEFAULT-only version of this line changed nothing.
     cfg.set(section, "api_name", "us-east-1")
+# The other half of BOCHKA_LIFECYCLE_DAY_SECONDS. The suite reads it from `s3 main` only
+# (`s3tests/functional/__init__.py:248`) and defaults it to ten, so leaving it out here would have
+# the tests sleeping for ten-second days against a server whose day is five — which reads as
+# "lifecycle works" while proving nothing, because everything is over-due by the time it looks.
+cfg.set("s3 main", "lc_debug_interval", sys.argv[2])
 with open("/work/s3tests.conf", "w") as out:
     cfg.write(out)
 PYCONF
@@ -156,7 +174,7 @@ docker run --rm --network host -v "$work:/work" \
   # comment ends it. That is not hypothetical, it happened here.
   pip install -q -r requirements.txt pytest-timeout >/dev/null 2>&1
   git rev-parse --short HEAD > /work/suite-revision
-  python /work/make-conf.py '"$PORT"'
+  python /work/make-conf.py '"$PORT"' '"$LC_DAY"'
   S3TEST_CONF=/work/s3tests.conf timeout 5400 python -m pytest s3tests/functional/test_s3.py \
     -p no:cacheprovider -q --no-header -rN --continue-on-collection-errors \
     --timeout=60 --timeout-method=signal --junit-xml=/work/results.xml \

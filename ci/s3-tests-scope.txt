@@ -21,7 +21,14 @@ out-of-scope	encryption	server-side encryption touches the bytes on the read pat
 # being a reason. What is left of the family is three different things, and lumping them under one
 # stale line would hide all three.
 out-of-scope	bucket_logging	bucket logging is out of the v1 scope; these name a version only because their fixture does
-out-of-scope	object_lock	object lock and retention are M18, not versioning
+# Object lock is implemented (M18), so "out of scope" stopped being a reason for these four and
+# started being a label over a defect. Each one is the same shape: the case expects a refusal and
+# gets a success ("ClientError not raised"), which for a lock means it failed **open**. Reproduce
+# before fixing — a suite message is a hypothesis, not a diagnosis (M-154).
+defect	object_lock_changing_mode_from_compliance	COMPLIANCE mode can be changed, and it must not be changeable at all (M-154)
+defect	object_lock_changing_mode_from_governance_without_bypass	GOVERNANCE mode changes without x-amz-bypass-governance-retention (M-154)
+defect	object_lock_delete_multipart_object_with_legal_hold_on	a multipart object under legal hold can be deleted (M-154)
+defect	object_lock_delete_multipart_object_with_retention	a multipart object under retention can be deleted (M-154)
 deferred	_version_if_match	conditional delete of a **named** version: S3 has no conditional form for it and neither have we (M-137)
 deferred	versioned_object_acl	the case reads an object ACL of a version; ACLs are out of scope, but the version half is ours (M-138)
 deferred	versioning_multi_object_delete_with_marker	batch delete must report the markers it created in <Deleted> (M-139)
@@ -30,21 +37,43 @@ deferred	versioning_copy_obj_version	CopyObject does not read ?versionId off x-a
 deferred	multipart_copy_versioned	UploadPartCopy does not read a version off its source either (M-141)
 deferred	get_versioned_object_attributes	GetObjectAttributes does not take ?versionId yet (M-142)
 deferred	delete_marker_nonversioned	a suspended bucket's marker handling is not finished (M-143)
-out-of-scope	lifecycle	lifecycle rules are out of the v1 scope
+# Same missing header as the line above, and its name says lifecycle nowhere — which is why the
+# broad `delete_marker` rule downstream picked it up and called it a versioning feature. The
+# lifecycle half of it works: the marker does expire. What is missing is `x-amz-delete-marker:
+# false` on the 404 that follows (M-143).
+deferred	delete_marker_expiration	the 404 for a key that is simply absent carries no x-amz-delete-marker: false (M-143)
+# Lifecycle arrived in M21, so the blanket rule that stood here is gone. What is left is one
+# family, and it fails for a reason that is a decision rather than a gap — measured, not guessed:
+# with BOCHKA_LIFECYCLE_DAY_SECONDS at the suite's five, the same shortened day that makes the
+# expiration cases observable also shortens what `x-amz-expiration` advertises, so the header says
+# "five seconds" where the case wants "one day". Run the same four with S3TESTS_LC_DAY=86400 and
+# all four pass. The suite pins the other arrangement — header in calendar days, deletion on the
+# debug clock — under which the server deletes an object **before** the date it advertised, and
+# that is the one guarantee the header gives.
+out-of-scope	lifecycle_expiration_header	the advertised expiry-date follows the same clock the sweep does; the case wants them to disagree
 out-of-scope	acl	access control lists: the access keys here are static (open question 4)
 out-of-scope	policy	bucket policies: the access keys here are static (open question 4)
 out-of-scope	_iam	IAM is a different service; this store authenticates with static keys
 out-of-scope	_sts	STS is a different service; this store authenticates with static keys
-out-of-scope	lifecycle	lifecycle rules are out of the v1 scope (README)
-out-of-scope	tagging	object and bucket tags are out of the v1 scope
-out-of-scope	object_lock	object lock and retention are out of the v1 scope
-out-of-scope	legal_hold	object lock and retention are out of the v1 scope
-out-of-scope	retention	object lock and retention are out of the v1 scope
+# Tags are implemented (M14). These four were behind a stale reason, and one of them closes the
+# connection rather than answering — which is not a scope question in any reading (M-155).
+defect	put_excess_key_tags	the limit on tag key length is not enforced (M-155)
+defect	put_excess_val_tags	the limit on tag value length is not enforced (M-155)
+defect	put_excess_tags	over-many tags answer MalformedXML where S3 answers InvalidTag (M-155)
+defect	put_obj_with_tags	x-amz-tagging on PutObject closes the connection instead of answering (M-155)
 out-of-scope	public_access_block	public access blocks belong with policies, which are out of scope
 out-of-scope	block_public	public access blocks belong with policies, which are out of scope
 out-of-scope	anonymous	anonymous access needs public-read ACLs, which are out of scope
 out-of-scope	website	static website hosting is out of the v1 scope
-out-of-scope	cors	CORS configuration is out of the v1 scope
+# CORS is implemented (M14), and the eleven cases under this name fail for three different reasons,
+# none of them "we do not have CORS". Splitting them is the point of this file.
+out-of-scope	cors_presigned_get_object_tenant_v2	the case presigns with SigV2, which this server does not verify
+out-of-scope	cors_presigned_get_object_v2	the case presigns with SigV2, which this server does not verify
+out-of-scope	cors_presigned_put_object_tenant_v2	the case presigns with SigV2, which this server does not verify
+out-of-scope	cors_presigned_put_object_v2	the case presigns with SigV2, which this server does not verify
+out-of-scope	cors_presigned	the case reads a presigned URL from another origin unsigned; anonymous access needs public-read ACLs
+out-of-scope	cors_origin	the case fetches across origins without a signature; anonymous access needs public-read ACLs
+defect	cors_header_option	a preflight this server allows and S3 refuses: the rule set does not cover the asked-for header (M-156)
 out-of-scope	notification	bucket notifications are out of the v1 scope
 out-of-scope	replication	replication needs more than one node, which is the whole niche this is not
 out-of-scope	logging	server access logging is out of the v1 scope
@@ -96,7 +125,6 @@ out-of-scope	nonowner	ownership checks need an owner model, which needs IAM
 out-of-scope	owner_enforced	object ownership controls belong with ACLs
 out-of-scope	owner_preferred	object ownership controls belong with ACLs
 out-of-scope	object_writer	object ownership controls belong with ACLs
-out-of-scope	delete_marker	delete markers are a versioning feature
 out-of-scope	bucket_head_extended	x-rgw-object-count is a ceph extension, not S3
 out-of-scope	unordered	allow-unordered is a ceph extension, not S3
 out-of-scope	public_block	public access blocks belong with policies
@@ -108,7 +136,6 @@ out-of-scope	bucket_list_return_data	the case reads an object ACL to compare own
 
 out-of-scope	object_raw	the "raw" family builds its own unsigned or ACL-dependent requests; anonymous access needs public-read ACLs
 out-of-scope	object_anon	anonymous writes need public-write ACLs
-out-of-scope	_tags	object and bucket tags are out of the v1 scope
 out-of-scope	obj_enc_conflict	contradictory server-side-encryption headers; encryption is out of scope
 out-of-scope	bucket_gone	the case deletes the bucket under an anonymous client and expects 404 before the 403
 out-of-scope	object_gone	the case reads under an anonymous client and expects 404 before the 403
