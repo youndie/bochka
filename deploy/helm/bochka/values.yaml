@@ -197,6 +197,20 @@ ingress:
 #   none  no probes at all, and then the Service keeps an endpoint pointed at a pod that may not
 #         be answering.
 probes:
+  # `http` is the right shape and is not the default yet, which is a statement about the *image*
+  # rather than about the chart. `GET /-/healthy` answers 200 without a signature (M-143) — but it
+  # answers it in the image this chart is built beside, and `appVersion` still names v0.2.0, which
+  # has no such handle. A default that needs an image newer than the one it asks for is a chart
+  # that installs a pod kubelet restarts forever. The two lines move together, at the release that
+  # publishes the handle.
+  #
+  # Until then `exec`: a `bash` and `/dev/tcp` request for `GET /`, passing on the 403 this server
+  # honestly answers an unsigned request. It costs a forked shell every period inside a cgroup
+  # whose memory budget is counted close, which is the whole reason the handle exists.
+  #
+  # `tcp` is weaker than either and is here for a reason that is not fallback: an open port on this
+  # server means the journal has been replayed, because the port is opened after recovery
+  # (Main.kt:52-65). What it cannot see is a process that is up and answering nothing.
   type: exec
   # 3 x 20 = 60 s before the pod is called failed. The port opens only after the journal is
   # replayed (Main.kt:52-65 -> HttpServer init), so a refused connection honestly means "still

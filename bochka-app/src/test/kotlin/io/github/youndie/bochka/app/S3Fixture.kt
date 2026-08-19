@@ -178,6 +178,7 @@ class S3Fixture(
      * флаг у [send]: подписанный preflight не бывает, и возможность его отправить только сбивала
      * бы с толку.
      */
+
     fun options(
         path: String,
         headers: List<Pair<String, String>> = emptyList(),
@@ -189,6 +190,26 @@ class S3Fixture(
                 .header("Host", host)
         for ((name, value) in headers) builder.header(name, value)
         val response = client.send(builder.build(), BodyHandlers.ofByteArray())
+        return Answer(response.statusCode(), response.headers(), response.body())
+    }
+
+    /**
+     * A request with no signature at all — what an orchestrator's probe sends.
+     *
+     * Deliberately not [send] with an empty key: the point of the health handle is that nothing in
+     * the head is checked, and a helper that signed it "harmlessly" would leave that untested.
+     */
+    fun unsigned(
+        method: String,
+        path: String,
+    ): Answer {
+        val request =
+            HttpRequest
+                .newBuilder(URI.create("http://127.0.0.1:$port$path"))
+                .method(method, HttpRequest.BodyPublishers.noBody())
+                .header("Host", host)
+                .build()
+        val response = client.send(request, BodyHandlers.ofByteArray())
         return Answer(response.statusCode(), response.headers(), response.body())
     }
 

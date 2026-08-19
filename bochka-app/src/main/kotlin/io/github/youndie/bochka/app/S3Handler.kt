@@ -87,7 +87,10 @@ class S3Handler(
         // Preflight подписи не имеет и иметь не может: браузер шлёт `OPTIONS` до всякой
         // авторизации. Исключение сделано **по маршруту**, а не по методу вообще, чтобы
         // «неподписанный» не расползлось на что-нибудь ещё.
-        if (route !is S3Router.Route.Preflight && route !is S3Router.Route.PostObject) {
+        if (route !is S3Router.Route.Preflight &&
+            route !is S3Router.Route.PostObject &&
+            route !is S3Router.Route.Health
+        ) {
             when (val verification = verifier.verify(head.toSignedRequest())) {
                 is SignatureVerifier.Result.Failure -> return error(head, verification.error, verification)
                 is SignatureVerifier.Result.Ok -> scopeRefusal(head, route, verification.accessKeyId)?.let { return it }
@@ -283,6 +286,18 @@ class S3Handler(
 
             is S3Router.Route.Preflight -> {
                 preflight(head, route)
+            }
+
+            // Отвечает `handle`, а не `screen`, хотя ответ известен заранее: проба обязана пройти
+            // тем же путём, что запрос, иначе она проверяет меньше, чем `tcpSocket` в других
+            // буквах. Тело — одно слово, чтобы ответ был читаем человеком, который зашёл руками.
+            is S3Router.Route.Health -> {
+                HttpResponse(
+                    200,
+                    "OK",
+                    headers = listOf("content-type" to "text/plain"),
+                    body = "ok\n".toByteArray(),
+                )
             }
 
             is S3Router.Route.HeadObject -> {

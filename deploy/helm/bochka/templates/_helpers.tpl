@@ -220,7 +220,11 @@ success for httpGet, so an httpGet probe on `/` is red forever. The image carrie
 and no nc; it does carry /usr/bin/bash, and bash has /dev/tcp.
 */}}
 {{- define "bochka.probeAction" -}}
-{{- if eq .Values.probes.type "exec" -}}
+{{- if eq .Values.probes.type "http" -}}
+httpGet:
+  path: /-/healthy
+  port: s3
+{{- else if eq .Values.probes.type "exec" -}}
 exec:
   command:
     - bash

@@ -13,6 +13,37 @@ class S3RouterTest {
     private val virtual = S3Router(virtualHostSuffixes = listOf("s3.example.com"))
 
     @Test
+    fun `the health handle is a path no bucket can be called`() {
+        // M-143. A kubelet needs an unauthenticated 200 or it forks a shell every period, and an
+        // S3 server has no spare namespace to put one in -- MinIO put its own under /minio, which
+        // is a name somebody's bucket can legally have. `-` cannot: one character is below the
+        // three-character floor and it is neither a letter nor a digit at either edge
+        // (`BucketNameRules`), so nothing legal is shadowed by taking it.
+        assertEquals(S3Router.Route.Health, pathStyle.route("GET", "h", "/-/healthy", ""))
+        assertEquals(S3Router.Route.Health, pathStyle.route("HEAD", "h", "/-/healthy", ""))
+    }
+
+    @Test
+    fun `nothing else under that path is the health handle`() {
+        // The hole is exactly one method on exactly one path. Anything else keeps meaning what it
+        // meant, which for a bucket called `-` is a refusal by name.
+        assertIs<S3Router.Route.PutObject>(pathStyle.route("PUT", "h", "/-/healthy", ""))
+        assertIs<S3Router.Route.GetObject>(pathStyle.route("GET", "h", "/-/ready", ""))
+        assertIs<S3Router.Route.GetObject>(pathStyle.route("GET", "h", "/-/healthy/deeper", ""))
+    }
+
+    @Test
+    fun `a virtual host addresses an object, health or not`() {
+        // Under virtual-host addressing the bucket comes from the Host header and the whole path
+        // is the key, so `-/healthy` is a perfectly ordinary key in somebody's bucket. Answering
+        // health there would make that key unreachable -- silently, and only for whoever stored it.
+        assertEquals(
+            S3Router.Route.GetObject("photos", ObjectKey.of("-/healthy")),
+            virtual.route("GET", "photos.s3.example.com", "/-/healthy", ""),
+        )
+    }
+
+    @Test
     fun `bucket operations route by method`() {
         assertEquals(S3Router.Route.ListBuckets, pathStyle.route("GET", "h", "/", ""))
         assertEquals(S3Router.Route.CreateBucket("photos"), pathStyle.route("PUT", "h", "/photos", ""))

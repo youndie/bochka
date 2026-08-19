@@ -125,7 +125,7 @@ expect_in "$work/minimal.yaml" 'fsGroupChangePolicy: OnRootMismatch' "no recursi
 expect_in "$work/minimal.yaml" 'runAsUser: 1000' "the uid is a number, because the image's User is a name"
 expect_in "$work/minimal.yaml" 'readOnlyRootFilesystem: true' "the root filesystem is read-only"
 expect_in "$work/minimal.yaml" 'dev/tcp' "the probe is a request, not an open socket"
-expect_not_in "$work/minimal.yaml" 'httpGet' "no httpGet probe: 403 is a failure to kubelet"
+expect_not_in "$work/minimal.yaml" 'httpGet' "the default probe is still exec: appVersion has no health handle"
 expect_not_in "$work/minimal.yaml" 'JAVA_OPTS' "the runtime profile is never touched from the chart"
 expect_not_in "$work/minimal.yaml" 'terminationGracePeriodSeconds' "no invented grace period"
 expect_not_in "$work/minimal.yaml" 'preStop' "no preStop hook pretending to drain connections"
@@ -313,6 +313,27 @@ else
       sed 's/^/          /' "$work/install.out" | tail -20
       kubectl describe pod -l app.kubernetes.io/instance="$RELEASE" 2>&1 | tail -40 | sed 's/^/          /'
       kubectl logs "sts/$RELEASE" 2>&1 | tail -20 | sed 's/^/          /'
+    fi
+
+    # The handle the exec probe exists to replace (M-143), checked by the only judge that matters.
+    # Rendering `httpGet` proves the template; kubelet accepting it proves the server, and those are
+    # different claims -- an httpGet probe against a path that answers 403 renders identically and
+    # restarts the pod forever. An upgrade rather than a second install: one changed field, one
+    # rolling restart, and `--wait` returns only when the new pod is Ready under the new probe.
+    if helm upgrade "$RELEASE" "$chart" \
+         --set image.repository="${IMAGE%:*}" \
+         --set image.tag="${IMAGE##*:}" \
+         --set auth.keys[0].id=chartkey \
+         --set auth.keys[0].secret=chartsecret \
+         --set tests.image="$TESTS_IMAGE" \
+         --set persistence.size=1Gi \
+         --set probes.type=http \
+         --wait --timeout 3m >"$work/http-probe.out" 2>&1; then
+      pass "probes.type: http reaches Ready, so kubelet got a 200 from /-/healthy"
+    else
+      fail "the pod never became ready under an httpGet probe on /-/healthy"
+      sed 's/^/          /' "$work/http-probe.out" | tail -20
+      kubectl describe pod -l app.kubernetes.io/instance="$RELEASE" 2>&1 | tail -30 | sed 's/^/          /'
     fi
 
     if helm test "$RELEASE" --logs >"$work/test.out" 2>&1; then

@@ -152,7 +152,7 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": { "type": "string", "enum": ["exec", "tcp", "none"] },
+        "type": { "type": "string", "enum": ["http", "exec", "tcp", "none"] },
         "startup": { "$ref": "#/definitions/probeTiming" },
         "readiness": { "$ref": "#/definitions/probeTiming" },
         "liveness": { "$ref": "#/definitions/probeTiming" }

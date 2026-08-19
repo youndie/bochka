@@ -23,6 +23,30 @@ class S3Router(
         /** `GET /` */
         data object ListBuckets : Route
 
+        /**
+         * `GET /-/healthy` — the one handle that answers without a signature and without a bucket.
+         *
+         * It exists for an orchestrator (M-143). A kubelet reads this server's honest `403` as a
+         * failed probe, so without an unauthenticated `200` the only workable probe is `exec`,
+         * which forks a shell every period inside a cgroup whose memory budget is counted close.
+         *
+         * The path is `-` because no bucket can be called that: one character is under the
+         * three-character floor and is neither a letter nor a digit at either edge
+         * ([BucketNameRules]). A handle under a legal name would shadow somebody's bucket — which
+         * is what the reference server does with `/minio`, and `minio` is a name anyone may take.
+         *
+         * Path-style only. Under virtual-host addressing the bucket comes from the `Host` header
+         * and the whole path is a key, so `-/healthy` is an ordinary key in somebody's bucket;
+         * answering health there would make that key unreachable, silently and only for whoever
+         * stored it. A probe addresses a pod by its own address, so it never needs that form.
+         *
+         * What a `200` here proves is narrow and stated on purpose: this process parsed a request,
+         * routed it and answered it, and it could not have been built without the journal having
+         * been replayed — the handler holds a store, and a store is not constructed until recovery
+         * finishes. It does not prove the disk is writable.
+         */
+        data object Health : Route
+
         data class CreateBucket(
             val bucket: String,
         ) : Route
@@ -285,6 +309,13 @@ class S3Router(
         val bucketFromHost = bucketFromHost(host)
 
         val trimmed = path.removePrefix("/")
+
+        // Before the bucket is parsed, because `-` is not a bucket and never will be. Path-style
+        // only, and two methods only: everything else under this path keeps meaning what it meant.
+        if (bucketFromHost == null && trimmed == HEALTH_PATH && (method == "GET" || method == "HEAD")) {
+            return Route.Health
+        }
+
         val bucket: String
         val rawKey: String
         if (bucketFromHost != null) {
@@ -604,6 +635,9 @@ class S3Router(
             }
 
     private companion object {
+        /** `/-/healthy`, minus the leading slash. Prometheus spells its own handles this way too. */
+        const val HEALTH_PATH = "-/healthy"
+
         /**
          * Настройки, которые bochka **хранит**, а не отвергает.
          *
