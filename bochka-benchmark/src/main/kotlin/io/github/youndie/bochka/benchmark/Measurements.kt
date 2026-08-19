@@ -5,6 +5,11 @@ import io.github.youndie.bochka.core.Metadata
 import io.github.youndie.bochka.core.ObjectKey
 import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.core.RecordLog
+import io.github.youndie.bochka.s3.Lifecycle
+import io.github.youndie.bochka.s3.LifecycleSweep
+import io.github.youndie.bochka.s3.Lifecycles
+import io.github.youndie.bochka.s3.xml.S3Documents
+import io.github.youndie.bochka.s3.xml.S3Requests
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
@@ -76,6 +81,14 @@ object Measurements {
 
                 "small" -> {
                     small(dir)
+                }
+
+                "sweep" -> {
+                    sweep(dir)
+                }
+
+                "readpath" -> {
+                    readPath(dir)
                 }
 
                 // Two halves of one measurement that needs two machines. `serve-network` is the
@@ -526,6 +539,204 @@ object Measurements {
         if (perRead > 0) {
             println("  so joining pays for itself after %.0f reads".format(joining.median.cpuSecondsPerGiB / perRead))
         }
+    }
+
+    /**
+     * M-178, the half a wire cannot answer: what the lifecycle lookup itself costs a read.
+     *
+     * The end-to-end run on the two-machine stand could not see it — three variants inside a spread
+     * of 1.2 to 1.7 — and that is a fact about the instrument rather than about the code: a request
+     * across a public link at 2.4 ms costs hundreds of microseconds, and the thing being looked for
+     * is a map lookup. Measuring it there is measuring the link.
+     *
+     * So it is measured where it happens, on one thread, with nothing else in the way. What is
+     * timed is exactly what M23 added to a read that was not doing it before: finding the bucket's
+     * rules, deciding whether the object is under one, and formatting the date the header carries.
+     * What is **not** here is everything a read already did — the signature, the socket, the file —
+     * which is the point: those did not change, and folding them in would bury the number again.
+     */
+    private fun readPath(dir: Path) {
+        println("== M-178: the lifecycle lookup on the read path ==")
+        val home = Files.createDirectories(dir.resolve("readpath"))
+        Files.deleteIfExists(home.resolve("index.log"))
+        val store = ObjectStore(root = home, durability = ObjectStore.Durability.NONE)
+        store.createBucket("nolc")
+        store.createBucket("nomatch")
+        store.createBucket("match")
+
+        fun rules(prefix: String) =
+            S3Documents.lifecycleResult(
+                S3Requests.parseLifecycle(
+                    (
+                        "<LifecycleConfiguration><Rule><ID>bench</ID>" +
+                            "<Expiration><Days>30</Days></Expiration>" +
+                            "<Prefix>$prefix</Prefix><Status>Enabled</Status></Rule></LifecycleConfiguration>"
+                    ).toByteArray(),
+                ),
+            )
+        store.putBucketSubresource("nomatch", "lifecycle", rules("other/"))
+        store.putBucketSubresource("match", "lifecycle", rules(""))
+
+        val lifecycles = Lifecycles(store)
+        val key = ObjectKey.of("photos/2026/08/img.jpg")
+        val created = java.time.Instant.parse("2026-08-19T14:30:00Z")
+        val httpDate =
+            java.time.format.DateTimeFormatter
+                .ofPattern("EEE, dd MMM yyyy HH:mm:ss 'GMT'", java.util.Locale.ENGLISH)
+                .withZone(java.time.ZoneOffset.UTC)
+
+        // The whole of what a read now does and did not before, including the string the client
+        // sees: a lookup that stops at "no rules" and one that ends in a formatted date are
+        // different amounts of work, and reporting only the first would flatter the feature.
+        // Every branch returns something different and every return is added up, because a branch
+        // that returns a constant zero is a branch the JIT may delete: the first run of this
+        // reported two nanoseconds for the bucket with no rules — six cycles, which is less than
+        // the two map lookups it makes, and therefore a measurement of the optimiser.
+        fun once(bucket: String): Int {
+            val lifecycle = lifecycles.of(bucket) ?: return 1
+            val hit = lifecycle.expiryOf(key, 1024, emptyMap(), created, Lifecycle.DAY) ?: return 2
+            return ("expiry-date=\"${httpDate.format(hit.first)}\", rule-id=\"${hit.second.id}\"").length
+        }
+
+        val rounds = System.getenv("BOCHKA_MEASURE_KEYS")?.toIntOrNull() ?: 2_000_000
+        for (bucket in listOf("nolc", "nomatch", "match")) {
+            // Warm the path before measuring it: the first thousand calls of anything on a JVM are
+            // the interpreter, and publishing those as the cost of a read would be publishing the
+            // cost of the first read after a restart.
+            var sink = 0
+            repeat(200_000) { sink += once(bucket) }
+
+            val nanos = ArrayList<Long>(repeats)
+            repeat(repeats) {
+                val started = Measurement.currentThreadCpuNanos()
+                repeat(rounds) { sink += once(bucket) }
+                nanos += (Measurement.currentThreadCpuNanos() - started) / rounds
+            }
+            nanos.sort()
+            val spread = nanos.last().toDouble() / nanos.first()
+            println(
+                "%-10s %8d ns per read  spread %.2f%s  (checksum %d)".format(
+                    bucket,
+                    nanos[nanos.size / 2],
+                    spread,
+                    if (spread > 1.3) "  ← too noisy to conclude from" else "",
+                    sink,
+                ),
+            )
+        }
+        store.close()
+    }
+
+    /**
+     * M-179 and M-180: what one lifecycle pass costs, by how much there is to walk.
+     *
+     * Not a [Measurement], and that is the point of writing it separately: everything else here is
+     * processor time **per byte**, and a sweep moves no bytes at all. Its cost is per *version* in
+     * the index, so forcing it into a per-byte figure would produce a number that divides by
+     * something the work does not depend on.
+     *
+     * **Nothing is due, and that is the measurement rather than a shortcut.** A pass that deletes
+     * is proportional to what it deletes, which is a property of the bucket's history; a pass that
+     * deletes nothing is what every bucket with rules pays every period, for ever. That is the
+     * number the derived period has to be compared against — if a pass over a million versions
+     * takes longer than the interval between passes, passes overlap, and today that was a guess.
+     *
+     * The store is built by writing the log and opening it, the way [index] does: the sweep with
+     * nothing due never opens a data file, so files for a million objects would cost minutes of
+     * fixture to be read zero times.
+     */
+    private fun sweep(dir: Path) {
+        println("== M-179/M-180: what a lifecycle pass costs ==")
+        // Everything matches, nothing is due for thirty thousand days: the walk happens in full and
+        // ends with an empty report.
+        val document =
+            S3Documents.lifecycleResult(
+                S3Requests.parseLifecycle(
+                    (
+                        "<LifecycleConfiguration><Rule><ID>bench</ID>" +
+                            "<Expiration><Days>30000</Days></Expiration>" +
+                            "<Prefix></Prefix><Status>Enabled</Status></Rule></LifecycleConfiguration>"
+                    ).toByteArray(),
+                ),
+            )
+
+        fun measureSweep(
+            label: String,
+            keys: Int,
+            versionsPerKey: Int,
+        ) {
+            val home = Files.createDirectories(dir.resolve("sweep-$keys-$versionsPerKey"))
+            val log = home.resolve("index.log")
+            Files.deleteIfExists(log)
+            RecordLog(log).use { fresh ->
+                fresh.recover { }
+                fresh.append(IndexRecord.encode(IndexRecord.BucketCreated("photos")))
+                fresh.append(IndexRecord.encode(IndexRecord.BucketSubresource("photos", "lifecycle", document)))
+                var sequence = 0L
+                for (i in 0 until keys) {
+                    val key = ObjectKey.of("photos/%08d/img.jpg".format(i))
+                    repeat(versionsPerKey) { generation ->
+                        fresh.append(
+                            IndexRecord.encode(
+                                IndexRecord.Put(
+                                    bucket = "photos",
+                                    key = key,
+                                    fileId = "0e2b9c34-6a1f-4a7d-9b8e-2f5c1d0a7e33",
+                                    size = 1024,
+                                    eTag = "\"d41d8cd98f00b204e9800998ecf8427e\"",
+                                    lastModifiedMillis = 1_755_400_000_000L,
+                                    metadata = Metadata(contentType = "image/jpeg"),
+                                    sequence = sequence++,
+                                    versionId = "v%d-%d".format(i, generation),
+                                ),
+                            ),
+                        )
+                    }
+                }
+                fresh.force()
+            }
+
+            val store = ObjectStore(root = home, durability = ObjectStore.Durability.NONE, maxObjects = Int.MAX_VALUE)
+            val sweeper = LifecycleSweep(store, Lifecycles(store), Lifecycle.DAY)
+            // One pass before the measured ones: the first walk of a freshly opened index pays for
+            // page faults and JIT, and reporting that as the cost of a pass would be reporting the
+            // cost of the first pass after a restart — a different question, and one nobody asked.
+            sweeper.sweep()
+
+            val walls = ArrayList<Long>(repeats)
+            val cpus = ArrayList<Long>(repeats)
+            repeat(repeats) {
+                val cpu0 = Measurement.currentThreadCpuNanos()
+                val wall0 = System.nanoTime()
+                val report = sweeper.sweep()
+                walls += System.nanoTime() - wall0
+                cpus += Measurement.currentThreadCpuNanos() - cpu0
+                check(report.empty) { "the fixture is not steady state: $report" }
+            }
+            walls.sort()
+            cpus.sort()
+            val wall = walls[walls.size / 2] / 1e9
+            val cpu = cpus[cpus.size / 2] / 1e9
+            val spread = walls.last().toDouble() / walls.first()
+            val versions = keys.toLong() * versionsPerKey
+            println(
+                "%-28s %9d versions  %7.3f s wall  %7.3f s cpu  %8.2f µs/version  spread %.2f%s".format(
+                    label,
+                    versions,
+                    wall,
+                    cpu,
+                    wall / versions * 1e6,
+                    spread,
+                    if (spread > 1.3) "  ← too noisy to conclude from" else "",
+                ),
+            )
+            store.close()
+        }
+
+        println("-- M-179: by number of keys, one version each")
+        for (keys in listOf(10_000, 100_000, 1_000_000)) measureSweep("$keys keys", keys, 1)
+        println("-- M-180: by versions per key, at a thousand keys")
+        for (versions in listOf(1, 10, 100)) measureSweep("$versions per key", 1_000, versions)
     }
 
     /**

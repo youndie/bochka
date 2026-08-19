@@ -6,6 +6,9 @@ plugins {
 
 dependencies {
     implementation(project(":bochka-core"))
+    // The lifecycle sweep is S3's, not the core's — the core does not know what `lifecycle` means,
+    // deliberately (M23). Measuring the sweep therefore needs the layer that does.
+    implementation(project(":bochka-s3"))
     implementation(libs.benchmark.runtime)
 }
 
