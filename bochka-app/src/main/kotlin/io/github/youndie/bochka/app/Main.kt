@@ -2,11 +2,14 @@ package io.github.youndie.bochka.app
 
 import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.http.HttpServer
+import io.github.youndie.bochka.s3.LifecycleSweep
+import io.github.youndie.bochka.s3.Lifecycles
 import io.github.youndie.bochka.s3.S3Router
 import io.github.youndie.bochka.s3.sigv4.Credentials
 import io.github.youndie.bochka.s3.sigv4.KeyScope
 import io.github.youndie.bochka.s3.sigv4.SignatureVerifier
 import java.nio.file.Path
+import java.time.Duration
 import kotlin.io.path.createTempDirectory
 
 /**
@@ -55,12 +58,18 @@ object Main {
                 root = dataDir,
                 maxObjects = configuration.int(Configuration.Key.MAX_OBJECTS) ?: ObjectStore.ceilingForHeap(),
             )
+        val lifecycleDay = Duration.ofSeconds(configuration.long(Configuration.Key.LIFECYCLE_DAY_SECONDS) ?: 86400)
+        if (!lifecycleDay.isPositive) {
+            System.err.println("bochka will not start: lifecycle.day.seconds must be positive, not $lifecycleDay")
+            kotlin.system.exitProcess(2)
+        }
         val handler =
             S3Handler(
                 store = store,
                 verifier = SignatureVerifier(credentials, region = region),
                 router = S3Router(virtualHostSuffixes = configuration.list(Configuration.Key.VIRTUAL_HOST_SUFFIXES)),
                 accelRedirect = configuration[Configuration.Key.ACCEL_REDIRECT]?.trimEnd('/'),
+                lifecycleDay = lifecycleDay,
             )
 
         val logged = LoggingHandler(handler, enabled = configuration[Configuration.Key.LOG] == "1")
@@ -80,6 +89,7 @@ object Main {
         println("object ceiling: ${store.maxObjects} (${ObjectStore.BYTES_PER_OBJECT} bytes of index each)")
 
         startHousekeeping(store, configuration.long(Configuration.Key.HOUSEKEEPING_MINUTES) ?: 60)
+        startLifecycle(store, lifecycleDay)
         Runtime.getRuntime().addShutdownHook(Thread { server.close() })
         Thread.currentThread().join()
     }
@@ -118,6 +128,42 @@ object Main {
         }.apply {
             isDaemon = true
             name = "bochka-housekeeping"
+            start()
+        }
+    }
+
+    /**
+     * Обход правил жизненного цикла — отдельным потоком от уборки, и вот почему.
+     *
+     * Уборка занимается своим хозяйством и опаздывать ей можно: сирота, подобранная через час,
+     * ничем не отличается от подобранной сразу. Здесь опоздание видно снаружи — объект, которому
+     * вышел срок, всё ещё отвечает на `GET`, — поэтому период не настраивается отдельно, а
+     * выводится из длительности «дня»: десятая его часть, но не чаще раза в секунду и не реже
+     * раза в час. У суток это час; у пятисекундного «дня», которым пользуется тест, — секунда.
+     *
+     * Отдельная настройка была бы четвёртым способом сказать то же самое и первым способом
+     * рассогласовать: «день» в секунду при обходе раз в час означает правила, которые не
+     * исполняются, и ни одна из двух настроек по отдельности не выглядит неверной.
+     */
+    private fun startLifecycle(
+        store: ObjectStore,
+        day: Duration,
+    ) {
+        val sweep = LifecycleSweep(store, Lifecycles(store), day)
+        val period = day.dividedBy(10).coerceIn(Duration.ofSeconds(1), Duration.ofHours(1))
+        println("lifecycle: a day lasts ${day.toSeconds()}s, sweeping every ${period.toSeconds()}s")
+
+        Thread {
+            while (true) {
+                runCatching {
+                    val report = sweep.sweep()
+                    if (!report.empty) println("lifecycle: $report")
+                }.onFailure { println("lifecycle sweep failed: $it") }
+                Thread.sleep(period.toMillis())
+            }
+        }.apply {
+            isDaemon = true
+            name = "bochka-lifecycle"
             start()
         }
     }

@@ -3,8 +3,10 @@ package io.github.youndie.bochka.s3.xml
 import io.github.youndie.bochka.core.ObjectKey
 import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.s3.CorsRules
+import io.github.youndie.bochka.s3.Lifecycle
 import io.github.youndie.bochka.s3.UriCodec
 import java.nio.charset.StandardCharsets
+import java.time.Instant
 
 /**
  * The two request bodies S3 takes as XML.
@@ -221,6 +223,257 @@ object S3Requests {
             else -> throw XmlReader.MalformedXmlException("LegalHold Status must be ON or OFF, not '$status'")
         }
     }
+
+    /**
+     * `<LifecycleConfiguration><Rule>…` — `s3-service-2.json:2127`, `:7896`.
+     *
+     * Разбор и **проверки** вместе, потому что проверки здесь разными кодами, а код отказа — это
+     * то, что клиент чинит. Документ, который не является документом (`Status`, написанный
+     * `enabled`), — `MalformedXML`; документ разборчивый и бессмысленный (`Days: 0`, два правила
+     * с одним `ID`) — `InvalidArgument`. Сьют пинит обе стороны:
+     * `test_lifecycle_invalid_status:9037` ждёт первое, `test_lifecycle_id_too_long:9012` и
+     * `test_lifecycle_same_id:9024` — второе.
+     */
+    fun parseLifecycle(body: ByteArray): Lifecycle {
+        val rules = ArrayList<Lifecycle.Rule>()
+        val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
+        reader.root("LifecycleConfiguration") { name ->
+            if (name != "Rule") return@root
+            rules += parseLifecycleRule(reader)
+        }
+        if (rules.isEmpty()) throw XmlReader.MalformedXmlException("<LifecycleConfiguration> without a <Rule>")
+        val ids = HashSet<String>()
+        for (rule in rules) {
+            if (!ids.add(rule.id)) throw InvalidArgument("two rules share the ID '${rule.id}'")
+        }
+        return Lifecycle(rules)
+    }
+
+    private fun parseLifecycleRule(reader: XmlReader): Lifecycle.Rule {
+        var id: String? = null
+        var status: String? = null
+        var prefix: String? = null
+        var filter: Lifecycle.Filter? = null
+        var expiration: Lifecycle.Expiration? = null
+        var noncurrent: Lifecycle.Noncurrent? = null
+        var abortDays: Int? = null
+        reader.children { field ->
+            when (field) {
+                "ID" -> {
+                    id = reader.textOf(field)
+                }
+
+                "Status" -> {
+                    status = reader.textOf(field).trim()
+                }
+
+                "Prefix" -> {
+                    prefix = reader.textOf(field)
+                }
+
+                "Filter" -> {
+                    filter = parseLifecycleFilter(reader)
+                }
+
+                "Expiration" -> {
+                    expiration = parseLifecycleExpiration(reader)
+                }
+
+                "NoncurrentVersionExpiration" -> {
+                    noncurrent = parseNoncurrentExpiration(reader)
+                }
+
+                "AbortIncompleteMultipartUpload" -> {
+                    abortDays = parseAbortIncomplete(reader)
+                }
+
+                // Отвергается по имени, а не пропускается: класс хранения здесь один, потому что
+                // диск один, и правилу «через тридцать дней в GLACIER» некуда исполняться.
+                // Принятое и неисполняемое правило клиент обнаруживает счётом за хранение, а не
+                // ошибкой — то же соображение, по которому отвергается `PutBucketPolicy`.
+                "Transition", "NoncurrentVersionTransition" -> {
+                    throw InvalidArgument("<$field>: this store has one storage class")
+                }
+            }
+        }
+        // Ровно два значения и с той же буквы: `ExpirationStatus` — перечисление
+        // (`s3-service-2.json:4881`), а `enabled` в нём нет.
+        if (status != "Enabled" && status != "Disabled") {
+            throw XmlReader.MalformedXmlException("<Status> must be Enabled or Disabled, not '$status'")
+        }
+        val stated = id?.trim()
+        if (stated != null && stated.length > Lifecycle.MAX_ID_LENGTH) {
+            throw InvalidArgument("<ID> is ${stated.length} characters, over ${Lifecycle.MAX_ID_LENGTH}")
+        }
+        return Lifecycle.Rule(
+            // Правило без `ID` его получает: `GetBucketLifecycleConfiguration` обязан ответить
+            // правилом с идентификатором (`test_lifecycle_get_no_id:8494`), а придумать его больше
+            // некому. Придуманный один раз — на записи, — и дальше живёт в сохранённом документе.
+            id = if (stated.isNullOrEmpty()) mintRuleId() else stated,
+            enabled = status == "Enabled",
+            prefix = prefix,
+            filter = filter,
+            expiration = expiration,
+            noncurrent = noncurrent,
+            abortIncompleteUploadDays = abortDays,
+        )
+    }
+
+    private fun parseLifecycleFilter(reader: XmlReader): Lifecycle.Filter {
+        var prefix: String? = null
+        val tags = ArrayList<Lifecycle.Tag>()
+        var greater: Long? = null
+        var less: Long? = null
+        var and: Lifecycle.And? = null
+        reader.children { field ->
+            when (field) {
+                "Prefix" -> {
+                    prefix = reader.textOf(field)
+                }
+
+                "Tag" -> {
+                    tags += parseLifecycleTag(reader)
+                }
+
+                "ObjectSizeGreaterThan" -> {
+                    greater = longOf(reader, field)
+                }
+
+                "ObjectSizeLessThan" -> {
+                    less = longOf(reader, field)
+                }
+
+                "And" -> {
+                    var andPrefix: String? = null
+                    val andTags = ArrayList<Lifecycle.Tag>()
+                    var andGreater: Long? = null
+                    var andLess: Long? = null
+                    reader.children { inner ->
+                        when (inner) {
+                            "Prefix" -> andPrefix = reader.textOf(inner)
+                            "Tag" -> andTags += parseLifecycleTag(reader)
+                            "ObjectSizeGreaterThan" -> andGreater = longOf(reader, inner)
+                            "ObjectSizeLessThan" -> andLess = longOf(reader, inner)
+                        }
+                    }
+                    and = Lifecycle.And(andPrefix, andTags, andGreater, andLess)
+                }
+            }
+        }
+        return Lifecycle.Filter(prefix, tags, greater, less, and)
+    }
+
+    private fun parseLifecycleTag(reader: XmlReader): Lifecycle.Tag {
+        var key: String? = null
+        var value: String? = null
+        reader.children { field ->
+            when (field) {
+                "Key" -> key = reader.textOf(field)
+                "Value" -> value = reader.textOf(field)
+            }
+        }
+        return Lifecycle.Tag(
+            key ?: throw XmlReader.MalformedXmlException("<Tag> without <Key>"),
+            value ?: throw XmlReader.MalformedXmlException("<Tag> without <Value>"),
+        )
+    }
+
+    private fun parseLifecycleExpiration(reader: XmlReader): Lifecycle.Expiration {
+        var days: Int? = null
+        var date: Instant? = null
+        var marker = false
+        reader.children { field ->
+            when (field) {
+                "Days" -> days = intOf(reader, field)
+                "Date" -> date = lifecycleDate(reader.textOf(field).trim())
+                "ExpiredObjectDeleteMarker" -> marker = reader.textOf(field).trim().equals("true", ignoreCase = true)
+            }
+        }
+        // Ноль дней законен у перехода и незаконен у истечения — сьют проверяет именно эту
+        // разницу (`test_lifecycle_expiration_days0:9111`), и ответ у неё `InvalidArgument`,
+        // а не «документ сломан».
+        days?.let { if (it <= 0) throw InvalidArgument("<Days> must be positive, not $it") }
+        if (days != null && date != null) throw XmlReader.MalformedXmlException("both <Days> and <Date>")
+        return Lifecycle.Expiration(days, date, marker)
+    }
+
+    /**
+     * Дата истечения — **всегда полночь UTC**, и это не придирка к формату.
+     *
+     * `test_lifecycle_set_invalid_date:9075` шлёт строку `'20200101'`, ожидая `400`. На провод
+     * приезжает `1970-08-22T19:08:21Z` — botocore понял это как секунды эпохи и выдал совершенно
+     * исправную дату. Отличить её от осмысленной нечем, кроме правила S3 «время всегда полночь
+     * UTC», и правило это заодно единственное, что делает `Date` датой, а не моментом.
+     */
+    private fun lifecycleDate(stated: String): Instant {
+        val instant =
+            try {
+                Instant.parse(stated)
+            } catch (_: java.time.format.DateTimeParseException) {
+                try {
+                    java.time.OffsetDateTime
+                        .parse(stated)
+                        .toInstant()
+                } catch (_: java.time.format.DateTimeParseException) {
+                    throw XmlReader.MalformedXmlException("<Date> is not a date: '$stated'")
+                }
+            }
+        if (instant != instant.truncatedTo(java.time.temporal.ChronoUnit.DAYS)) {
+            throw InvalidArgument("<Date> must be midnight UTC, got '$stated'")
+        }
+        return instant
+    }
+
+    private fun parseNoncurrentExpiration(reader: XmlReader): Lifecycle.Noncurrent {
+        var days: Int? = null
+        var newer: Int? = null
+        reader.children { field ->
+            when (field) {
+                "NoncurrentDays" -> days = intOf(reader, field)
+                "NewerNoncurrentVersions" -> newer = intOf(reader, field)
+            }
+        }
+        val stated = days ?: throw XmlReader.MalformedXmlException("<NoncurrentVersionExpiration> without days")
+        if (stated <= 0) throw InvalidArgument("<NoncurrentDays> must be positive, not $stated")
+        return Lifecycle.Noncurrent(stated, newer)
+    }
+
+    private fun parseAbortIncomplete(reader: XmlReader): Int {
+        var days: Int? = null
+        reader.children { field ->
+            if (field == "DaysAfterInitiation") days = intOf(reader, field)
+        }
+        val stated = days ?: throw XmlReader.MalformedXmlException("<AbortIncompleteMultipartUpload> without days")
+        if (stated <= 0) throw InvalidArgument("<DaysAfterInitiation> must be positive, not $stated")
+        return stated
+    }
+
+    private fun intOf(
+        reader: XmlReader,
+        field: String,
+    ): Int {
+        val raw = reader.textOf(field).trim()
+        return raw.toIntOrNull() ?: throw XmlReader.MalformedXmlException("<$field> is not a number: '$raw'")
+    }
+
+    private fun longOf(
+        reader: XmlReader,
+        field: String,
+    ): Long {
+        val raw = reader.textOf(field).trim()
+        return raw.toLongOrNull() ?: throw XmlReader.MalformedXmlException("<$field> is not a number: '$raw'")
+    }
+
+    private fun mintRuleId(): String =
+        java.util.UUID
+            .randomUUID()
+            .toString()
+            .replace("-", "")
+
+    /** Документ разобран, и то, что в нём написано, не может быть исполнено. `400 InvalidArgument`. */
+    class InvalidArgument(
+        override val message: String,
+    ) : RuntimeException(message)
 
     /** `<CORSConfiguration><CORSRule>…` — `s3-service-2.json:2241`, `:2253`. */
     fun parseCors(body: ByteArray): CorsRules {

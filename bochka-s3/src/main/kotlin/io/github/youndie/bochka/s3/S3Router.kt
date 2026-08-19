@@ -611,7 +611,7 @@ class S3Router(
          * умеем, должно перехватываться до общего отказа, и добавление новой настройки — это
          * строчка здесь, а не правка трёх ветвей маршрутизации.
          */
-        val CONFIGURABLE_SUBRESOURCES = setOf("tagging", "cors", "versioning", "object-lock")
+        val CONFIGURABLE_SUBRESOURCES = setOf("tagging", "cors", "versioning", "object-lock", "lifecycle")
 
         /**
          * Sub-resources answered on `GET` and refused on every other method (M20).
@@ -624,8 +624,13 @@ class S3Router(
          * The **accepting** side stays refused, deliberately: `PUT ?policy` accepted and not
          * applied is a lie a client finds out about through a leak rather than through an error
          * (M-133). Which is why this set is consulted in the `GET` branch only.
+         *
+         * `lifecycle` was here until M21 and is now configurable, which is the same move
+         * `tagging`, `versioning` and `object-lock` made before it — and it is a move in one
+         * direction only: a sub-resource leaves this set when the server starts **doing** what it
+         * describes, never because answering was convenient.
          */
-        val READ_ONLY_SUBRESOURCES = setOf("policy", "lifecycle", "acl")
+        val READ_ONLY_SUBRESOURCES = setOf("policy", "acl")
 
         /** Sub-resources of an **object** that carry a lock rather than a configuration (M18). */
         val LOCK_SUBRESOURCES = setOf("retention", "legal-hold")

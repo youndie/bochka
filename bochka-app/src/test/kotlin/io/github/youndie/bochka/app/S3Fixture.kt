@@ -35,6 +35,14 @@ class S3Fixture(
     accelRedirect: String? = null,
     /** What the fixture's one key may do; unrestricted unless a test narrows it (M19). */
     scope: io.github.youndie.bochka.s3.sigv4.KeyScope? = null,
+    /**
+     * Сколько длится «день» правила жизненного цикла.
+     *
+     * Сутки, как в поставке. Тест про истечение срока ставит миллисекунду — и тогда обход,
+     * который зовут руками, делает всё, что должен, без единой паузы: `sleep` в тесте либо
+     * замедляет его, либо делает мигающим, обычно и то и другое.
+     */
+    private val lifecycleDay: java.time.Duration = io.github.youndie.bochka.s3.Lifecycle.DAY,
 ) : AutoCloseable {
     val root: Path = Files.createTempDirectory("bochka-e2e")
     val store = ObjectStore(root, ObjectStore.Durability.NONE)
@@ -52,9 +60,20 @@ class S3Fixture(
                     ),
                 router = S3Router(virtualHostSuffixes),
                 accelRedirect = accelRedirect,
+                lifecycleDay = lifecycleDay,
             ),
             port = 0,
         )
+
+    /** Прогоняет правила жизненного цикла — тот же обход, что крутится в сервере фоном. */
+    fun sweepLifecycle(): io.github.youndie.bochka.s3.LifecycleSweep.Report =
+        io.github.youndie.bochka.s3
+            .LifecycleSweep(
+                store,
+                io.github.youndie.bochka.s3
+                    .Lifecycles(store),
+                lifecycleDay,
+            ).sweep()
 
     private val client: HttpClient = HttpClient.newBuilder().build()
 

@@ -157,10 +157,16 @@ class S3RouterTest {
         // остаётся отказом, и обе половины проверяются здесь рядом, чтобы одну нельзя было
         // подвинуть, не заметив другую.
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "policy"))
-        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "lifecycle"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "acl"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "policy"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "acl"))
+        // И четвёртый переезд, M21: `?lifecycle` был среди отвечающих на `GET` и отвергающих
+        // всё остальное — а стал настройкой на трёх методах. Направление у переездов одно:
+        // подресурс уходит из отвергающих тогда, когда сервер начинает **делать** то, что тот
+        // описывает, а не когда отвечать стало удобно.
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "lifecycle"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "lifecycle"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("DELETE", "h", "/photos", "lifecycle"))
     }
 
     @Test

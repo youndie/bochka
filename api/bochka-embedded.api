@@ -27,6 +27,8 @@ public final class io/github/youndie/bochka/embedded/Bochka : java/io/Closeable 
 	public static final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lio/github/youndie/bochka/embedded/Bochka;
 	public static final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)Lio/github/youndie/bochka/embedded/Bochka;
 	public static final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZ)Lio/github/youndie/bochka/embedded/Bochka;
+	public static final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZLjava/time/Duration;)Lio/github/youndie/bochka/embedded/Bochka;
+	public final fun sweepLifecycle ()Lio/github/youndie/bochka/s3/LifecycleSweep$Report;
 }
 
 public final class io/github/youndie/bochka/embedded/Bochka$Companion {
@@ -38,6 +40,7 @@ public final class io/github/youndie/bochka/embedded/Bochka$Companion {
 	public final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Lio/github/youndie/bochka/embedded/Bochka;
 	public final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)Lio/github/youndie/bochka/embedded/Bochka;
 	public final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZ)Lio/github/youndie/bochka/embedded/Bochka;
-	public static synthetic fun start$default (Lio/github/youndie/bochka/embedded/Bochka$Companion;ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZILjava/lang/Object;)Lio/github/youndie/bochka/embedded/Bochka;
+	public final fun start (ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZLjava/time/Duration;)Lio/github/youndie/bochka/embedded/Bochka;
+	public static synthetic fun start$default (Lio/github/youndie/bochka/embedded/Bochka$Companion;ILjava/nio/file/Path;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;ZZLjava/time/Duration;ILjava/lang/Object;)Lio/github/youndie/bochka/embedded/Bochka;
 }
 

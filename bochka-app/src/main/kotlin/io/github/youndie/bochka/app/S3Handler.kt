@@ -8,6 +8,8 @@ import io.github.youndie.bochka.http.HttpRequestParser
 import io.github.youndie.bochka.http.HttpResponse
 import io.github.youndie.bochka.s3.BucketNameRules
 import io.github.youndie.bochka.s3.ByteRanges
+import io.github.youndie.bochka.s3.Lifecycle
+import io.github.youndie.bochka.s3.Lifecycles
 import io.github.youndie.bochka.s3.ListingRequest
 import io.github.youndie.bochka.s3.ObjectHeaders
 import io.github.youndie.bochka.s3.ObjectKeyRules
@@ -28,6 +30,7 @@ import io.github.youndie.bochka.s3.xml.S3Requests
 import io.github.youndie.bochka.s3.xml.XmlReader
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import java.time.Duration
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
@@ -62,7 +65,18 @@ class S3Handler(
      * without this server seeing them go.
      */
     private val accelRedirect: String? = null,
+    /**
+     * Сколько длится «день» правила жизненного цикла.
+     *
+     * Сутки, и другого значения в поставке не бывает. Короче — во встроенном режиме и в прогоне
+     * чужого сьюта: правило «удалить через день» иначе невозможно проверить вовсе, а «S3, который
+     * поднимают в тесте» — это ниша, названная в README. Здесь оно нужно ровно затем, чтобы
+     * `x-amz-expiration` обещал тот же срок, по которому потом удалит обход.
+     */
+    private val lifecycleDay: Duration = Lifecycle.DAY,
 ) : HttpHandler {
+    private val lifecycles = Lifecycles(store)
+
     override fun screen(head: HttpRequestParser.Head): HttpResponse? {
         val route = route(head)
         if (route is S3Router.Route.NotImplemented) {
@@ -1205,7 +1219,9 @@ class S3Handler(
             HttpResponse(
                 200,
                 "OK",
-                headers = checksumHeaders(metadata.checksum) + ("ETag" to stored.eTag) + versionHeader(stored),
+                headers =
+                    checksumHeaders(metadata.checksum) + ("ETag" to stored.eTag) + versionHeader(stored) +
+                        expirationHeader(route.bucket, route.key, stored),
             )
         } catch (e: AwsChunkedDecoder.MalformedBody) {
             error(head, e.error, detail = e.message)
@@ -1428,6 +1444,7 @@ class S3Handler(
                     add("ETag" to stored.eTag)
                     add("Last-Modified" to httpDate(stored.lastModified))
                     addAll(versionHeader(stored))
+                    addAll(expirationHeader(bucket, key, stored))
                     stored.retention?.let {
                         add("x-amz-object-lock-mode" to it.mode)
                         add(
@@ -1909,6 +1926,78 @@ class S3Handler(
         }
 
     /**
+     * `?lifecycle` — правила, которые сервер обязан **исполнять**, а не просто хранить.
+     *
+     * Разбирается до записи и хранится отрисованным, как теги и CORS: то, что нельзя разобрать, не
+     * должно попасть в журнал и вернуться клиенту настройкой. Отрисовка при этом не приводит
+     * документ к канону — правило уезжает той же формой, какой приехало (см. [S3Documents]).
+     *
+     * Три отказа и три разных кода. `MalformedXML` — документ не является документом;
+     * `InvalidArgument` — документ разобран и исполнить его нельзя (ноль дней, повторённый `ID`,
+     * переход между классами хранения); `404 NoSuchLifecycleConfiguration` — правил просто нет.
+     * `DELETE` при этом отвечает `204` и когда снимать нечего: `test_lifecycle_delete:8462`
+     * пинит это дважды, до и после постановки правил.
+     */
+    private suspend fun bucketLifecycle(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.BucketSubresource,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse =
+        when (route.method) {
+            "GET" -> {
+                val stored =
+                    store.bucketSubresource(route.bucket, Lifecycles.NAME)
+                        ?: return error(head, S3Error.NO_SUCH_LIFECYCLE_CONFIGURATION, bucket = route.bucket)
+                xml(stored)
+            }
+
+            "DELETE" -> {
+                store.putBucketSubresource(route.bucket, Lifecycles.NAME, null)
+                HttpResponse(204, "No Content")
+            }
+
+            else -> {
+                val collected = ByteArrayOutputStream()
+                body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+                try {
+                    val parsed = S3Requests.parseLifecycle(collected.toByteArray())
+                    store.putBucketSubresource(route.bucket, Lifecycles.NAME, S3Documents.lifecycleResult(parsed))
+                    HttpResponse(200, "OK")
+                } catch (e: XmlReader.MalformedXmlException) {
+                    error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
+                } catch (e: S3Requests.InvalidArgument) {
+                    error(head, S3Error.INVALID_ARGUMENT, detail = e.message, bucket = route.bucket)
+                }
+            }
+        }
+
+    /**
+     * `x-amz-expiration: expiry-date="…", rule-id="…"` — когда объект под правилом со сроком.
+     *
+     * И **отсутствует**, когда не под ним: `test_lifecycle_expiration_header_tags_head:9192`
+     * ставит правило по одному тегу, читает заголовок, меняет правило на другой тег и требует,
+     * чтобы заголовка не стало. Половина, которую легко не сделать, — вторая.
+     *
+     * Срок считается из тех же правил, по которым потом удалит обход, поэтому единица «дня»
+     * приходит сюда из конфигурации, а не берётся сутками: заголовок, обещающий одно, и обход,
+     * делающий другое, — хуже, чем отсутствие обоих.
+     */
+    private fun expirationHeader(
+        bucket: String,
+        key: ObjectKey,
+        stored: ObjectStore.Stored,
+    ): List<Pair<String, String>> {
+        if (stored.deleteMarker) return emptyList()
+        val lifecycle = lifecycles.of(bucket) ?: return emptyList()
+        val (at, rule) =
+            lifecycle.expiryOf(key, stored.size, stored.metadata.tags, stored.lastModified, lifecycleDay)
+                ?: return emptyList()
+        return listOf(
+            "x-amz-expiration" to "expiry-date=\"${httpDate(at)}\", rule-id=\"${rule.id}\"",
+        )
+    }
+
+    /**
      * `?tagging` и `?cors` у бакета: положить, прочитать, снять.
      *
      * Документ разбирается **до** записи и хранится перерисованным, а не как пришёл: то, что
@@ -1925,13 +2014,13 @@ class S3Handler(
         // are refusals with codes of their own. Three sub-resources, two different right answers.
         if (route.name == "versioning") return bucketVersioning(head, route, body)
         if (route.name == "object-lock") return bucketObjectLock(head, route, body)
+        if (route.name == Lifecycles.NAME) return bucketLifecycle(head, route, body)
 
         // The truthful answers to questions this server has a defined answer for (M20). All three
         // are `GET`-only by routing: the accepting side stays refused, because a policy accepted
         // and not applied is found out through a leak rather than through an error.
         when (route.name) {
             "policy" -> return error(head, S3Error.NO_SUCH_BUCKET_POLICY, bucket = route.bucket)
-            "lifecycle" -> return error(head, S3Error.NO_SUCH_LIFECYCLE_CONFIGURATION, bucket = route.bucket)
             "acl" -> return xml(S3Documents.accessControlPolicy(OWNER, OWNER))
         }
 

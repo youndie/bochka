@@ -2,6 +2,7 @@ package io.github.youndie.bochka.s3.xml
 
 import io.github.youndie.bochka.core.ObjectKey
 import io.github.youndie.bochka.core.ObjectStore
+import io.github.youndie.bochka.s3.Lifecycle
 import io.github.youndie.bochka.s3.UriCodec
 
 /**
@@ -311,6 +312,65 @@ object S3Documents {
                     rule.maxAgeSeconds?.let { text("MaxAgeSeconds", it.toLong()) }
                 }
             }
+        }
+
+    /**
+     * `<LifecycleConfiguration>` — и отвечает он **тем документом, который прислали**.
+     *
+     * Правило с `<Prefix>` у самого правила и правило с `<Prefix>` внутри `<Filter>` — это два
+     * разных правила на проводе, хотя отбирают они одно и то же. `test_lifecycle_get:8451`
+     * сравнивает то, что положил, с тем, что получил, целиком, поэтому нормализация одной формы
+     * в другую — это не приведение к порядку, а другой ответ.
+     */
+    fun lifecycleResult(lifecycle: Lifecycle): ByteArray =
+        XmlWriter(256 + lifecycle.rules.size * 256).document("LifecycleConfiguration") {
+            for (rule in lifecycle.rules) {
+                element("Rule") {
+                    text("ID", rule.id)
+                    text("Prefix", rule.prefix)
+                    rule.filter?.let { filter ->
+                        element("Filter") {
+                            text("Prefix", filter.prefix)
+                            for (tag in filter.tags) lifecycleTag(tag)
+                            filter.sizeGreaterThan?.let { text("ObjectSizeGreaterThan", it) }
+                            filter.sizeLessThan?.let { text("ObjectSizeLessThan", it) }
+                            filter.and?.let { and ->
+                                element("And") {
+                                    text("Prefix", and.prefix)
+                                    for (tag in and.tags) lifecycleTag(tag)
+                                    and.sizeGreaterThan?.let { text("ObjectSizeGreaterThan", it) }
+                                    and.sizeLessThan?.let { text("ObjectSizeLessThan", it) }
+                                }
+                            }
+                        }
+                    }
+                    text("Status", if (rule.enabled) "Enabled" else "Disabled")
+                    rule.expiration?.let { expiration ->
+                        element("Expiration") {
+                            expiration.days?.let { text("Days", it.toLong()) }
+                            expiration.date?.let { text("Date", it.toString()) }
+                            if (expiration.expiredObjectDeleteMarker) text("ExpiredObjectDeleteMarker", true)
+                        }
+                    }
+                    rule.noncurrent?.let { noncurrent ->
+                        element("NoncurrentVersionExpiration") {
+                            text("NoncurrentDays", noncurrent.days.toLong())
+                            noncurrent.newerVersions?.let { text("NewerNoncurrentVersions", it.toLong()) }
+                        }
+                    }
+                    rule.abortIncompleteUploadDays?.let { days ->
+                        element("AbortIncompleteMultipartUpload") {
+                            text("DaysAfterInitiation", days.toLong())
+                        }
+                    }
+                }
+            }
+        }
+
+    private fun XmlWriter.lifecycleTag(tag: Lifecycle.Tag) =
+        element("Tag") {
+            text("Key", tag.key)
+            text("Value", tag.value)
         }
 
     /**

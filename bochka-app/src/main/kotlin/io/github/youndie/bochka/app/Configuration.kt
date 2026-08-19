@@ -57,6 +57,11 @@ class Configuration private constructor(
         VIRTUAL_HOST_SUFFIXES("virtual.host.suffixes", null, "domains under which a leading label is a bucket name"),
         LOG("log", "0", "1 to print a line per request"),
         HOUSEKEEPING_MINUTES("housekeeping.minutes", "60", "how often to compact and sweep; 0 to never"),
+        LIFECYCLE_DAY_SECONDS(
+            "lifecycle.day.seconds",
+            "86400",
+            "how long a lifecycle rule's day lasts; shorten it to test rules without waiting one",
+        ),
         MAX_OBJECTS("max.objects", null, "the ceiling on objects; derived from the heap if unset"),
         ACCEL_REDIRECT(
             "accel.redirect",

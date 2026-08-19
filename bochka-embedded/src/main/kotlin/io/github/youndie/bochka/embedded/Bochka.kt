@@ -6,12 +6,16 @@ import io.github.youndie.bochka.core.Metadata
 import io.github.youndie.bochka.core.ObjectKey
 import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.http.HttpServer
+import io.github.youndie.bochka.s3.Lifecycle
+import io.github.youndie.bochka.s3.LifecycleSweep
+import io.github.youndie.bochka.s3.Lifecycles
 import io.github.youndie.bochka.s3.S3Router
 import io.github.youndie.bochka.s3.sigv4.Credentials
 import io.github.youndie.bochka.s3.sigv4.SignatureVerifier
 import java.io.Closeable
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Duration
 
 /**
  * bochka inside somebody else's process.
@@ -44,6 +48,8 @@ class Bochka private constructor(
     private val failures: InjectedFailures,
     private val root: Path,
     private val ownsRoot: Boolean,
+    private val lifecycle: LifecycleSweep,
+    private val lifecycleThread: java.util.concurrent.ScheduledExecutorService,
     val accessKeyId: String,
     val secretKey: String,
     val region: String,
@@ -82,6 +88,16 @@ class Bochka private constructor(
     }
 
     /**
+     * Прогоняет правила жизненного цикла **сейчас** и говорит, что удалил.
+     *
+     * Фоновый обход идёт и сам, но тест, который его ждёт, — это тест со `sleep`, а `sleep`
+     * в тесте либо делает его медленным, либо делает его мигающим, обычно и то и другое. Здесь
+     * обход зовут, и он заканчивается до возврата: правило со сроком в один «день» при
+     * `lifecycleDay = Duration.ofMillis(1)` проверяется без единой паузы.
+     */
+    fun sweepLifecycle(): LifecycleSweep.Report = lifecycle.sweep()
+
+    /**
      * Кладёт объект напрямую, минуя HTTP: заготовка для теста, который начинается **с состояния**.
      *
      * Не «удобная обёртка над SDK»: тут нет ни подписи, ни сокета, ни разбора. Тест, которому
@@ -114,6 +130,7 @@ class Bochka private constructor(
     ) = failures.failNext(status, times)
 
     override fun close() {
+        lifecycleThread.shutdownNow()
         server.close()
         store.close()
         if (ownsRoot) {
@@ -143,6 +160,7 @@ class Bochka private constructor(
             region: String = "us-east-1",
             durable: Boolean = false,
             log: Boolean = false,
+            lifecycleDay: Duration = Lifecycle.DAY,
         ): Bochka {
             val root = directory ?: Files.createTempDirectory("bochka-embedded")
             val store =
@@ -155,10 +173,38 @@ class Bochka private constructor(
                     store = store,
                     verifier = SignatureVerifier(Credentials(mapOf(accessKeyId to secretKey)), region = region),
                     router = S3Router(),
+                    lifecycleDay = lifecycleDay,
                 )
             val failures = InjectedFailures(handler)
             val server = HttpServer(LoggingHandler(failures, enabled = log), bindAddress = "127.0.0.1", port = port)
-            return Bochka(store, server, failures, root, ownsRoot = directory == null, accessKeyId, secretKey, region)
+            val sweep = LifecycleSweep(store, Lifecycles(store), lifecycleDay)
+            // Фоновый обход есть и здесь, потому что правило, принятое и не исполняемое, врёт
+            // одинаково в сервере и в тестовом двойнике. Поток — демон и живёт до `close`:
+            // встроенная bochka заводится по одной на тест, и оставленный поток на тест — это
+            // сначала странные логи, а потом кончившаяся память.
+            val ticker =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
+                    Thread(runnable, "bochka-lifecycle").apply { isDaemon = true }
+                }
+            val period = lifecycleDay.dividedBy(10).coerceIn(Duration.ofMillis(50), Duration.ofHours(1))
+            ticker.scheduleWithFixedDelay(
+                { runCatching { sweep.sweep() } },
+                period.toMillis(),
+                period.toMillis(),
+                java.util.concurrent.TimeUnit.MILLISECONDS,
+            )
+            return Bochka(
+                store,
+                server,
+                failures,
+                root,
+                ownsRoot = directory == null,
+                sweep,
+                ticker,
+                accessKeyId,
+                secretKey,
+                region,
+            )
         }
     }
 }
