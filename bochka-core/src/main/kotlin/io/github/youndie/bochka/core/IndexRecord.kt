@@ -86,6 +86,16 @@ sealed interface IndexRecord {
         val retentionMode: String? = null,
         val retentionUntilMillis: Long = 0,
         val legalHold: Boolean = false,
+        /**
+         * How the bytes on the disk relate to the object, when a customer key was used (M26).
+         *
+         * Three fields rather than a flag, and never the key itself: the algorithm because a stored
+         * object has to say what it is, the MD5 to tell a right key from a wrong one, and the IV
+         * because counter mode needs one and it is not a secret.
+         */
+        val encryptionAlgorithm: String? = null,
+        val encryptionKeyMd5: String? = null,
+        val encryptionIv: ByteArray? = null,
     ) : IndexRecord
 
     /** Object lock on a bucket: the default rule, and by its presence that lock is on at all. */
@@ -268,6 +278,16 @@ sealed interface IndexRecord {
          */
         private const val KIND_UPLOAD_STARTED_LOCKED: Byte = 21
 
+        /**
+         * A version encrypted with a customer key: [KIND_PUT_LOCKED] plus the algorithm, the key's
+         * MD5 and the IV (M26).
+         *
+         * A new kind and not three more fields on the old one, by the rule this file is built on:
+         * a record already written must keep decoding to exactly what it meant. An old `PUT_LOCKED`
+         * is an unencrypted version, and that is the truth about it rather than a default.
+         */
+        private const val KIND_PUT_ENCRYPTED: Byte = 22
+
         /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
         private const val MAX_PARTS = 10_000L
 
@@ -365,7 +385,17 @@ sealed interface IndexRecord {
                 }
 
                 is Put -> {
-                    out.write(KIND_PUT_LOCKED.toInt())
+                    // The old kind while there is nothing new to say, because a reader that has
+                    // never seen an encrypted object should never have to learn the newer shape.
+                    out.write(
+                        if (record.encryptionAlgorithm ==
+                            null
+                        ) {
+                            KIND_PUT_LOCKED.toInt()
+                        } else {
+                            KIND_PUT_ENCRYPTED.toInt()
+                        },
+                    )
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putField(record.key.toByteArray())
                     out.putField(record.fileId.toByteArray(StandardCharsets.US_ASCII))
@@ -387,6 +417,11 @@ sealed interface IndexRecord {
                     out.putText(record.retentionMode)
                     out.putInt64(record.retentionUntilMillis)
                     out.write(if (record.legalHold) 1 else 0)
+                    if (record.encryptionAlgorithm != null) {
+                        out.putText(record.encryptionAlgorithm)
+                        out.putText(record.encryptionKeyMd5)
+                        out.putField(record.encryptionIv ?: ByteArray(0))
+                    }
                 }
             }
             return out.toByteArray()
@@ -510,7 +545,13 @@ sealed interface IndexRecord {
                     BucketObjectLock(bucket, mode, days.takeIf { it >= 0 }, years.takeIf { it >= 0 })
                 }
 
-                KIND_PUT, KIND_PUT_WITH_PARTS, KIND_PUT_WITH_TAGS, KIND_PUT_VERSIONED, KIND_PUT_LOCKED -> {
+                KIND_PUT,
+                KIND_PUT_WITH_PARTS,
+                KIND_PUT_WITH_TAGS,
+                KIND_PUT_VERSIONED,
+                KIND_PUT_LOCKED,
+                KIND_PUT_ENCRYPTED,
+                -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
                     val fileId = buffer.text()
@@ -518,15 +559,20 @@ sealed interface IndexRecord {
                     val lastModified = buffer.long
                     val eTag = buffer.text()
                     val withTags =
-                        kind == KIND_PUT_WITH_TAGS || kind == KIND_PUT_VERSIONED || kind == KIND_PUT_LOCKED
+                        kind == KIND_PUT_WITH_TAGS ||
+                            kind == KIND_PUT_VERSIONED ||
+                            kind == KIND_PUT_LOCKED ||
+                            kind == KIND_PUT_ENCRYPTED
                     val metadata = buffer.metadata(withTags = withTags)
                     val parts = if (kind == KIND_PUT_WITH_PARTS || withTags) buffer.parts() else emptyList()
                     // The older kinds carry no version at all, and decode to what they meant: the
                     // one entry a key had, called `null`, holding bytes. The store recognises that
                     // by [ObjectStore.NULL_VERSION] and replaces it on the next write, which is
                     // exactly the behaviour those logs were written under.
-                    val versioned = kind == KIND_PUT_VERSIONED || kind == KIND_PUT_LOCKED
-                    val lockable = kind == KIND_PUT_LOCKED
+                    val versioned =
+                        kind == KIND_PUT_VERSIONED || kind == KIND_PUT_LOCKED || kind == KIND_PUT_ENCRYPTED
+                    val lockable = kind == KIND_PUT_LOCKED || kind == KIND_PUT_ENCRYPTED
+                    val encrypted = kind == KIND_PUT_ENCRYPTED
                     Put(
                         bucket = bucket,
                         key = key,
@@ -542,6 +588,9 @@ sealed interface IndexRecord {
                         retentionMode = if (lockable) buffer.optionalText() else null,
                         retentionUntilMillis = if (lockable) buffer.long else 0,
                         legalHold = lockable && buffer.get().toInt() == 1,
+                        encryptionAlgorithm = if (encrypted) buffer.optionalText() else null,
+                        encryptionKeyMd5 = if (encrypted) buffer.optionalText() else null,
+                        encryptionIv = if (encrypted) buffer.bytes() else null,
                     )
                 }
 

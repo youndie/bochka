@@ -1,8 +1,10 @@
 package io.github.youndie.bochka.core
 
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 
 class IndexRecordTest {
     private fun roundTrip(record: IndexRecord) = assertEquals(record, IndexRecord.decode(IndexRecord.encode(record)))
@@ -133,6 +135,52 @@ class IndexRecordTest {
         assertEquals("etag-value", decoded.eTag)
         assertEquals(222, decoded.lastModifiedMillis)
         assertEquals("content-type", decoded.metadata.contentType)
+    }
+
+    @Test
+    fun `an encrypted version keeps its algorithm, its key md5 and its iv`() {
+        // M-186. Ключа среди них нет и быть не может: сервер, который его хранит, стирает всю
+        // разницу между шифрованием ключом клиента и своим собственным.
+        val record =
+            IndexRecord.Put(
+                bucket = "photos",
+                key = ObjectKey.of("secret.txt"),
+                fileId = "0e2b9c34-6a1f-4a7d-9b8e-2f5c1d0a7e33",
+                size = 1000,
+                eTag = "\"d41d8cd98f00b204e9800998ecf8427e\"",
+                lastModifiedMillis = 1_755_400_000_000L,
+                metadata = Metadata(contentType = "text/plain"),
+                encryptionAlgorithm = "AES256",
+                encryptionKeyMd5 = "DWygnHRtgiJ77HCm+1rvHw==",
+                encryptionIv = ByteArray(16) { it.toByte() },
+            )
+
+        val back = IndexRecord.decode(IndexRecord.encode(record)) as IndexRecord.Put
+
+        assertEquals("AES256", back.encryptionAlgorithm)
+        assertEquals("DWygnHRtgiJ77HCm+1rvHw==", back.encryptionKeyMd5)
+        assertContentEquals(ByteArray(16) { it.toByte() }, back.encryptionIv)
+    }
+
+    @Test
+    fun `a version written before encryption existed decodes as unencrypted`() {
+        // Правило этого файла: уже записанная запись обязана расшифровываться ровно в то, что она
+        // значила. «Не зашифрован» — это правда о ней, а не умолчание, которое кто-то подставил.
+        val record =
+            IndexRecord.Put(
+                bucket = "photos",
+                key = ObjectKey.of("plain.txt"),
+                fileId = "0e2b9c34-6a1f-4a7d-9b8e-2f5c1d0a7e34",
+                size = 5,
+                eTag = "\"x\"",
+                lastModifiedMillis = 1_755_400_000_000L,
+                metadata = Metadata(contentType = "text/plain"),
+            )
+
+        val back = IndexRecord.decode(IndexRecord.encode(record)) as IndexRecord.Put
+
+        assertNull(back.encryptionAlgorithm)
+        assertNull(back.encryptionIv)
     }
 
     @Test

@@ -115,7 +115,42 @@ class ObjectStore(
         val retention: Retention? = null,
         /** A legal hold: on until somebody turns it off, independent of [retention] (M-111). */
         val legalHold: Boolean = false,
+        /**
+         * How this version is encrypted, when the client brought a key (M26).
+         *
+         * Not part of [metadata] deliberately, and for the same reason as [retention]: metadata is
+         * what the client said **about** the object and gets replayed verbatim, while this is what
+         * the server did **to** it. Absent means the bytes on the disk are the bytes of the object.
+         */
+        val encryption: Encryption? = null,
     )
+
+    /**
+     * What the index remembers about an object encrypted with a customer key, and it is deliberately
+     * not the key.
+     *
+     * The MD5 is here to tell a right key from a wrong one — without it a wrong key decrypts to
+     * rubbish and the client is handed rubbish instead of a refusal. The IV is not a secret and
+     * cannot be derived from anything else: deriving it from [Stored.fileId] was considered and
+     * rejected, because the file id's job is to be a name, and a name that is also a cryptographic
+     * input can never be changed afterwards.
+     */
+    data class Encryption(
+        val algorithm: String,
+        val keyMd5: String,
+        val iv: ByteArray,
+    ) {
+        override fun equals(other: Any?): Boolean =
+            this === other ||
+                (
+                    other is Encryption &&
+                        algorithm == other.algorithm &&
+                        keyMd5 == other.keyMd5 &&
+                        iv.contentEquals(other.iv)
+                )
+
+        override fun hashCode(): Int = (algorithm.hashCode() * 31 + keyMd5.hashCode()) * 31 + iv.contentHashCode()
+    }
 
     /**
      * One part of a completed object: how long it was and what it hashed to.
@@ -334,6 +369,14 @@ class ObjectStore(
                                         Retention(it, record.retentionUntilMillis)
                                     },
                                 legalHold = record.legalHold,
+                                encryption =
+                                    record.encryptionAlgorithm?.let { algorithm ->
+                                        Encryption(
+                                            algorithm,
+                                            record.encryptionKeyMd5.orEmpty(),
+                                            record.encryptionIv ?: ByteArray(0),
+                                        )
+                                    },
                             )
                         // A record from before versions carries sequence 0 and the `null` version,
                         // and every write of that key carried the same pair. Replayed as an insert
@@ -862,6 +905,8 @@ class ObjectStore(
          */
         retention: Retention? = null,
         legalHold: Boolean = false,
+        /** Set when the client brought a key: the algorithm, the key's MD5 and the IV (M26). */
+        encryption: Encryption? = null,
     ): Stored =
         writing.withLock {
             val state = versioning(bucket)
@@ -902,6 +947,7 @@ class ObjectStore(
                     versionId = if (state == Versioning.ENABLED) mintVersionId() else NULL_VERSION,
                     retention = retention,
                     legalHold = legalHold,
+                    encryption = encryption,
                 )
 
             // Not versioning means the write **replaces** the null version rather than joining it,
@@ -971,6 +1017,9 @@ class ObjectStore(
         retentionMode = stored.retention?.mode,
         retentionUntilMillis = stored.retention?.untilMillis ?: 0,
         legalHold = stored.legalHold,
+        encryptionAlgorithm = stored.encryption?.algorithm,
+        encryptionKeyMd5 = stored.encryption?.keyMd5,
+        encryptionIv = stored.encryption?.iv,
     )
 
     /** Throws away bytes that were written and turned out not to be wanted. */
