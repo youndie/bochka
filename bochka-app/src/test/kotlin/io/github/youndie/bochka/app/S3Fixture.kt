@@ -65,15 +65,24 @@ class S3Fixture(
             port = 0,
         )
 
-    /** Прогоняет правила жизненного цикла — тот же обход, что крутится в сервере фоном. */
-    fun sweepLifecycle(): io.github.youndie.bochka.s3.LifecycleSweep.Report =
+    /**
+     * Прогоняет правила жизненного цикла — тот же обход, что крутится в сервере фоном.
+     *
+     * [now] существует затем, чтобы тест истечения не зависел от того, насколько быстра машина.
+     * «День» в тесте длится миллисекунду, и при часах по умолчанию вопрос «истёк ли срок» решает
+     * то, сколько прошло между записью объекта и обходом, — величина, которой у теста нет. Один
+     * прогон в CI на этом и упал: то же дерево, зелёное здесь пять раз подряд.
+     */
+    fun sweepLifecycle(
+        now: java.time.Instant = java.time.Instant.now(),
+    ): io.github.youndie.bochka.s3.LifecycleSweep.Report =
         io.github.youndie.bochka.s3
             .LifecycleSweep(
                 store,
                 io.github.youndie.bochka.s3
                     .Lifecycles(store),
                 lifecycleDay,
-            ).sweep()
+            ).sweep(now)
 
     private val client: HttpClient = HttpClient.newBuilder().build()
 

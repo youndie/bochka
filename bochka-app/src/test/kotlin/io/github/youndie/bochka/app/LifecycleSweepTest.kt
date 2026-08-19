@@ -1,6 +1,7 @@
 package io.github.youndie.bochka.app
 
 import java.time.Duration
+import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -26,7 +27,7 @@ class LifecycleSweepTest {
             }
             s3.rules(rule("rule1", "expire1/", "<Expiration><Days>1</Days></Expiration>"))
 
-            val report = s3.sweepLifecycle()
+            val report = s3.sweepLifecycle(later())
 
             assertEquals(2, report.objects, report.toString())
             assertEquals(404, s3.get("photos", "expire1/foo").status)
@@ -43,7 +44,7 @@ class LifecycleSweepTest {
             s3.put("photos", "expire1/foo", "x")
             s3.rules(rule("rule1", "expire1/", "<Expiration><Days>1</Days></Expiration>", status = "Disabled"))
 
-            assertTrue(s3.sweepLifecycle().empty)
+            assertTrue(s3.sweepLifecycle(later()).empty)
             assertEquals(200, s3.get("photos", "expire1/foo").status)
         }
     }
@@ -57,7 +58,7 @@ class LifecycleSweepTest {
             s3.put("photos", "expire1/foo", "x")
             s3.rules(rule("rule1", "expire1/", "<Expiration><Days>1</Days></Expiration>"))
 
-            assertTrue(s3.sweepLifecycle().empty)
+            assertTrue(s3.sweepLifecycle(later()).empty)
             assertEquals(200, s3.get("photos", "expire1/foo").status)
         }
     }
@@ -72,7 +73,7 @@ class LifecycleSweepTest {
             s3.put("photos", "expire1/foo", "x")
             s3.rules(rule("rule1", "expire1/", "<Expiration><Days>1</Days></Expiration>"))
 
-            assertEquals(1, s3.sweepLifecycle().objects)
+            assertEquals(1, s3.sweepLifecycle(later()).objects)
 
             val read = s3.get("photos", "expire1/foo")
             assertEquals(404, read.status)
@@ -98,7 +99,7 @@ class LifecycleSweepTest {
                 ),
             )
 
-            val report = s3.sweepLifecycle()
+            val report = s3.sweepLifecycle(later())
 
             assertEquals(3, report.versions, report.toString())
             assertEquals(0, report.objects, report.toString())
@@ -124,7 +125,7 @@ class LifecycleSweepTest {
                 ),
             )
 
-            assertEquals(4, s3.sweepLifecycle().versions)
+            assertEquals(4, s3.sweepLifecycle(later()).versions)
 
             val versions = s3.send("GET", "/photos", query = "versions").text
             assertEquals(6, Regex("<Version>").findAll(versions).count(), versions)
@@ -150,7 +151,7 @@ class LifecycleSweepTest {
                 ),
             )
             // Под надгробием ещё лежит версия — трогать нечего.
-            assertTrue(s3.sweepLifecycle().empty)
+            assertTrue(s3.sweepLifecycle(later()).empty)
             assertEquals(2, Regex("<(Version|DeleteMarker)>").findAll(versions(s3)).count(), versions(s3))
 
             // Появилось правило про неактуальные версии — и в одном обходе уходят обе: сначала
@@ -164,7 +165,7 @@ class LifecycleSweepTest {
                         "<Expiration><ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker></Expiration>",
                 ),
             )
-            val report = s3.sweepLifecycle()
+            val report = s3.sweepLifecycle(later())
 
             assertEquals(1, report.versions, report.toString())
             assertEquals(1, report.markers, report.toString())
@@ -186,7 +187,7 @@ class LifecycleSweepTest {
                     "<Status>Enabled</Status></Rule></LifecycleConfiguration>",
             )
 
-            assertEquals(1, s3.sweepLifecycle().objects)
+            assertEquals(1, s3.sweepLifecycle(later()).objects)
             assertEquals(200, s3.get("photos", "myobject_small").status)
             assertEquals(404, s3.get("photos", "myobject_big").status)
         }
@@ -207,7 +208,7 @@ class LifecycleSweepTest {
                 ),
             )
 
-            assertEquals(1, s3.sweepLifecycle().uploads)
+            assertEquals(1, s3.sweepLifecycle(later()).uploads)
 
             val listed = s3.send("GET", "/photos", query = "uploads").text
             assertTrue("test2/b" in listed, listed)
@@ -232,7 +233,7 @@ class LifecycleSweepTest {
                     "<Status>Enabled</Status></Rule></LifecycleConfiguration>",
             )
 
-            assertEquals(0, s3.sweepLifecycle().uploads)
+            assertEquals(0, s3.sweepLifecycle(later()).uploads)
             assertTrue("test1/a" in s3.send("GET", "/photos", query = "uploads").text)
         }
     }
@@ -277,7 +278,7 @@ class LifecycleSweepTest {
 
             // Обход прошёл, старая версия — под удержанием и осталась. Заодно: отказ по одной
             // версии не останавливает обход, он просто её не трогает.
-            s3.sweepLifecycle()
+            s3.sweepLifecycle(later())
 
             assertEquals(200, s3.get("photos", "held/a").status)
             assertEquals(2, Regex("<Version>").findAll(versions(s3)).count(), versions(s3))
@@ -293,6 +294,18 @@ class LifecycleSweepTest {
      * сработавшее правило от правила, применённого к чему угодно.
      */
     private fun instant(body: (S3Fixture) -> Unit) = S3Fixture(lifecycleDay = Duration.ofMillis(1)).use(body)
+
+    /**
+     * Момент, в который обход смотрит на срок, — явный, а не «сейчас».
+     *
+     * «День» здесь длится миллисекунду, поэтому при часах по умолчанию истечение решается тем,
+     * сколько времени прошло между записью объекта и обходом. Это свойство машины, а не кода:
+     * `LifecycleSweepTest` упал в CI на дереве, зелёном пять прогонов подряд здесь. Секунда вперёд
+     * — это тысяча «дней», то есть срок заведомо вышел у всего, у чего он вообще есть, и ни одна
+     * проверка «правило не сработало» от этого не ослабевает: там срабатывает или не срабатывает
+     * **правило**, а не часы.
+     */
+    private fun later(): Instant = Instant.now().plusSeconds(1)
 
     private fun S3Fixture.rules(document: String) {
         val answer = send("PUT", "/photos", query = "lifecycle", body = document.toByteArray())
