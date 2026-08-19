@@ -202,6 +202,11 @@ class HttpServer(
         connection: Connection,
         file: HttpResponse.FileSlice,
     ) {
+        val filter = file.through
+        if (filter != null) {
+            sendFiltered(connection, file, filter)
+            return
+        }
         java.nio.channels.FileChannel
             .open(file.path, java.nio.file.StandardOpenOption.READ)
             .use { source ->
@@ -215,6 +220,44 @@ class HttpServer(
                     } else {
                         connection.awaitWritable()
                     }
+                }
+            }
+    }
+
+    /**
+     * The other read path, and the only one there is when the bytes on the disk are not the bytes
+     * of the object.
+     *
+     * A read into the process, a transformation and a write — everything `transferTo` exists to
+     * avoid, and unavoidable here: the kernel cannot decrypt. Deliberately not a fallback for
+     * anything else. Nothing but SSE-C sets a filter, so an object that is not encrypted cannot
+     * end up here by accident, and there is a test asserting exactly that (M-188).
+     */
+    private suspend fun sendFiltered(
+        connection: Connection,
+        file: HttpResponse.FileSlice,
+        filter: HttpResponse.Filter,
+    ) {
+        val chunk = ByteArray(64 * 1024)
+        java.nio.channels.FileChannel
+            .open(file.path, java.nio.file.StandardOpenOption.READ)
+            .use { source ->
+                var position = file.offset
+                var remaining = file.length
+                while (remaining > 0) {
+                    val wanted = minOf(remaining, chunk.size.toLong()).toInt()
+                    val buffer = ByteBuffer.wrap(chunk, 0, wanted)
+                    var read = 0
+                    while (buffer.hasRemaining()) {
+                        val n = source.read(buffer, position + read)
+                        if (n < 0) break
+                        read += n
+                    }
+                    if (read <= 0) break
+                    filter.apply(chunk, 0, read)
+                    connection.writeFully(ByteBuffer.wrap(chunk, 0, read))
+                    position += read
+                    remaining -= read
                 }
             }
     }

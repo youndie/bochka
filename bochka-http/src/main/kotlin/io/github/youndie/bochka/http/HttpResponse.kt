@@ -47,7 +47,33 @@ data class HttpResponse(
         val path: java.nio.file.Path,
         val offset: Long,
         val length: Long,
+        /**
+         * A transformation applied to the bytes on their way to the socket, or null for the fast
+         * path.
+         *
+         * Present for exactly one thing: an object encrypted with a customer key (M26). Those
+         * bytes cannot go out with `transferTo` — the kernel would send the ciphertext — so they
+         * are read into the process, turned back into the object and written. That is the trade
+         * SSE-C costs, it is measured (`docs/measurements.md`), and it is stated here rather than
+         * discovered: the presence of this field **is** the slow path.
+         */
+        val through: Filter? = null,
     )
+
+    /**
+     * Bytes on their way out, changed in place.
+     *
+     * In place and not returning a new array, because this sits between the page cache and the
+     * socket on every byte of an object: allocating per chunk here is the one place in this server
+     * where it would show.
+     */
+    fun interface Filter {
+        fun apply(
+            buffer: ByteArray,
+            offset: Int,
+            length: Int,
+        )
+    }
 
     /** Whether the body goes on the wire. `HEAD` answers with the headers of a `GET` and no body. */
     fun render(withBody: Boolean = true): ByteArray {

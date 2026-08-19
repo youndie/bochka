@@ -19,6 +19,7 @@ import io.github.youndie.bochka.s3.PostPolicy
 import io.github.youndie.bochka.s3.PostSignature
 import io.github.youndie.bochka.s3.S3ErrorResponse
 import io.github.youndie.bochka.s3.S3Router
+import io.github.youndie.bochka.s3.SseC
 import io.github.youndie.bochka.s3.TagRules
 import io.github.youndie.bochka.s3.UriCodec
 import io.github.youndie.bochka.s3.sigv4.AwsChunkedDecoder
@@ -1239,6 +1240,16 @@ class S3Handler(
         val streaming = payloadHash in SignatureVerifier.ALL_STREAMING
         val checksums = PayloadChecksums.of { head.header(it) }
         val metadata = ObjectHeaders.read(head.headers).copy(checksum = checksums.stored())
+        // Refused here, before the body is read, like everything else decided from the head: a key
+        // whose MD5 does not describe it is a mistake the client made now, and storing the object
+        // to discover it at the first read turns a typo into an object nobody can open.
+        val sse =
+            try {
+                SseC.of { name -> head.header(name) }
+            } catch (refused: SseC.Refused) {
+                return error(head, refused.error, detail = refused.detail, key = route.key, bucket = route.bucket)
+            }
+        val encryption = sse?.let { ObjectStore.Encryption(it.algorithm, it.keyMd5, SseC.newIv()) }
         // The signed hash of a whole body is verified here rather than in the signature layer: it
         // is a statement about bytes, and the bytes only exist once they have been read.
         val signedHash =
@@ -1252,9 +1263,9 @@ class S3Handler(
         return try {
             staged =
                 if (streaming) {
-                    stageStreaming(head, verification, body, checksums)
+                    stageStreaming(head, verification, body, checksums, sse, encryption)
                 } else {
-                    stageWhole(body, checksums, signedHash)
+                    stageWhole(body, checksums, signedHash, sse, encryption)
                 }
 
             if (signedHash != null) {
@@ -1273,7 +1284,15 @@ class S3Handler(
                 return error(head, rejection.error, detail = rejection.detail, key = route.key, bucket = route.bucket)
             }
 
-            var stored = store.commit(route.bucket, route.key, metadata, staged, writePrecondition(head))
+            var stored =
+                store.commit(
+                    route.bucket,
+                    route.key,
+                    metadata,
+                    staged,
+                    writePrecondition(head),
+                    encryption = encryption,
+                )
             staged = null
             // `x-amz-object-lock-*` on the upload itself: the object arrives already protected,
             // which is the only way to close the window between a write and the retention that was
@@ -1288,7 +1307,7 @@ class S3Handler(
                 "OK",
                 headers =
                     checksumHeaders(metadata.checksum) + ("ETag" to stored.eTag) + versionHeader(stored) +
-                        expirationHeader(route.bucket, route.key, stored),
+                        expirationHeader(route.bucket, route.key, stored) + sseHeaders(stored),
             )
         } catch (e: AwsChunkedDecoder.MalformedBody) {
             error(head, e.error, detail = e.message)
@@ -1389,6 +1408,8 @@ class S3Handler(
         verification: SignatureVerifier.Result.Ok,
         body: HttpHandler.RequestBody,
         checksums: PayloadChecksums,
+        sse: SseC? = null,
+        encryption: ObjectStore.Encryption? = null,
     ): ObjectStore.Staged {
         // The real length of the object is here rather than in Content-Length, which describes the
         // framing and which the client removed anyway (§1.1).
@@ -1406,6 +1427,12 @@ class S3Handler(
                 ?.filter { it.isNotEmpty() }
                 ?: emptyList()
 
+        // The same cipher as the whole-body path, and it has to be here rather than only there:
+        // `aws-chunked` is what `aws s3 cp` sends by default (§1.1), so an SSE-C upload from the
+        // most ordinary client in the world comes through this function. Encrypting in one of the
+        // two would store the plaintext while the index says the object is encrypted — the shape
+        // of failure this repository refuses everywhere else: accepted and not carried out.
+        val cipher = if (sse != null && encryption != null) sse.cipherAt(encryption.iv, 0) else null
         return store.stage { out ->
             val sink =
                 AwsChunkedDecoder(
@@ -1413,8 +1440,14 @@ class S3Handler(
                     signing = verification.chunkSigning,
                     expectedTrailers = announced,
                 ) { bytes, offset, length ->
-                    out.write(bytes, offset, length)
                     checksums.update(bytes, offset, length)
+                    if (cipher == null) {
+                        out.write(bytes, offset, length)
+                    } else {
+                        val encrypted = ByteArray(length)
+                        cipher.update(bytes, offset, length, encrypted, 0)
+                        out.write(encrypted, 0, length)
+                    }
                 }
             body.forEach { bytes, offset, length -> sink.feed(bytes, offset, length) }
             sink.finish()
@@ -1425,14 +1458,27 @@ class S3Handler(
         body: HttpHandler.RequestBody,
         checksums: PayloadChecksums,
         signedHash: MessageDigest?,
-    ): ObjectStore.Staged =
-        store.stage { out ->
+        sse: SseC? = null,
+        encryption: ObjectStore.Encryption? = null,
+    ): ObjectStore.Staged {
+        // The checksums and the signed hash see the **plaintext**, and that is not a shortcut: a
+        // checksum describes the object, and the signature describes what the client put on the
+        // wire. Taken after the cipher, both would be true statements about the wrong bytes.
+        val cipher = if (sse != null && encryption != null) sse.cipherAt(encryption.iv, 0) else null
+        return store.stage { out ->
             body.forEach { bytes, offset, length ->
-                out.write(bytes, offset, length)
                 checksums.update(bytes, offset, length)
                 signedHash?.update(bytes, offset, length)
+                if (cipher == null) {
+                    out.write(bytes, offset, length)
+                } else {
+                    val encrypted = ByteArray(length)
+                    cipher.update(bytes, offset, length, encrypted, 0)
+                    out.write(encrypted, 0, length)
+                }
             }
         }
+    }
 
     /**
      * `x-amz-version-id`, when there is a version worth naming.
@@ -1504,12 +1550,22 @@ class S3Handler(
         if (found.deleteMarker) return deleteMarkerRefusal(head, bucket, key, found, named = versionId != null)
         val stored = found
         val path = store.pathOf(stored)
+        // The key the client brought, checked against what this version was written with, before a
+        // single byte is read. Three outcomes and they are three different answers (M-187).
+        val presented =
+            try {
+                SseC.of { name -> head.header(name) }
+            } catch (refused: SseC.Refused) {
+                return error(head, refused.error, detail = refused.detail, key = key, bucket = bucket)
+            }
+        sseRefusal(head, bucket, key, stored, presented)?.let { return it }
         val headers =
             overridden(
                 head,
                 buildList {
                     add("ETag" to stored.eTag)
                     add("Last-Modified" to httpDate(stored.lastModified))
+                    addAll(sseHeaders(stored))
                     addAll(versionHeader(stored))
                     addAll(expirationHeader(bucket, key, stored))
                     stored.retention?.let {
@@ -1588,7 +1644,17 @@ class S3Handler(
                         // bytes in that response, and the object's would be a true statement about
                         // bytes the client did not receive.
                         partChecksumIfAsked(head, stored, partNumber),
-                file = if (withBody) HttpResponse.FileSlice(path, slice.first, slice.second) else null,
+                file =
+                    if (withBody) {
+                        HttpResponse.FileSlice(
+                            path,
+                            slice.first,
+                            slice.second,
+                            decrypting(stored, presented, slice.first),
+                        )
+                    } else {
+                        null
+                    },
                 contentLength = slice.second,
             )
         }
@@ -1625,7 +1691,7 @@ class S3Handler(
                     200,
                     "OK",
                     headers = headers + checksumIfAsked(head, stored),
-                    file = HttpResponse.FileSlice(path, 0, stored.size),
+                    file = HttpResponse.FileSlice(path, 0, stored.size, decrypting(stored, presented, 0)),
                     // HEAD announces the length of the body it is not sending. Answering 0 made
                     // rclone treat a perfectly good upload as corrupted and delete it — and only
                     // rclone, because it is the one client of the four that checks afterwards.
@@ -1638,11 +1704,94 @@ class S3Handler(
                     206,
                     "Partial Content",
                     headers = headers + ("Content-Range" to ByteRanges.contentRange(range, stored.size)),
-                    file = HttpResponse.FileSlice(path, range.start, range.length),
+                    file =
+                        HttpResponse.FileSlice(
+                            path,
+                            range.start,
+                            range.length,
+                            decrypting(stored, presented, range.start),
+                        ),
                     contentLength = range.length,
                 )
             }
         }.let { if (withBody) it else it.copy(file = null) }
+    }
+
+    /**
+     * Whether the key the client brought fits the object it is asking for, and what to say if not.
+     *
+     * Three answers, and the difference between them is what the client does next. No key at all
+     * against an encrypted object is `400`: the request is incomplete, not forbidden, and a client
+     * told `403` goes off to re-sign a request that was signed correctly. A key against an object
+     * nobody encrypted is `400` for the same reason from the other side. A key that is well formed
+     * and **not the one** is `403` — that is a refusal of access, and the server knows it by the
+     * MD5 without trying to decrypt anything.
+     */
+    private fun sseRefusal(
+        head: HttpRequestParser.Head,
+        bucket: String,
+        key: ObjectKey,
+        stored: ObjectStore.Stored,
+        presented: SseC?,
+    ): HttpResponse? {
+        val encryption = stored.encryption
+        if (encryption == null) {
+            if (presented == null) return null
+            return error(
+                head,
+                S3Error.INVALID_ARGUMENT,
+                detail = "this object was not encrypted with a customer key",
+                key = key,
+                bucket = bucket,
+            )
+        }
+        if (presented == null) {
+            return error(
+                head,
+                S3Error.INVALID_ARGUMENT,
+                detail = "this object was encrypted with a customer key and the request carries none",
+                key = key,
+                bucket = bucket,
+            )
+        }
+        if (presented.keyMd5 != encryption.keyMd5) {
+            return error(
+                head,
+                S3Error.ACCESS_DENIED,
+                detail = "that is not the key this object was written with",
+                key = key,
+                bucket = bucket,
+            )
+        }
+        return null
+    }
+
+    /**
+     * What a written or read object says about its encryption: two headers of the three.
+     *
+     * `PutObjectOutput` and `GetObjectOutput` both name the algorithm and the key's MD5 and neither
+     * names the key (`s3-service-2.json:6385`). That absence is the whole difference between
+     * encrypting with the client's key and encrypting with the server's.
+     */
+    private fun sseHeaders(stored: ObjectStore.Stored): List<Pair<String, String>> =
+        stored.encryption?.let {
+            listOf(SseC.ALGORITHM_HEADER to it.algorithm, SseC.KEY_MD5_HEADER to it.keyMd5)
+        } ?: emptyList()
+
+    /** The filter that turns the stored bytes back into the object, or null when there is nothing to undo. */
+    private fun decrypting(
+        stored: ObjectStore.Stored,
+        presented: SseC?,
+        offset: Long,
+    ): HttpResponse.Filter? {
+        val encryption = stored.encryption ?: return null
+        val key = presented ?: return null
+        val cipher = key.cipherAt(encryption.iv, offset)
+        return HttpResponse.Filter { buffer, from, length ->
+            // In place: the cipher writes exactly as many bytes as it reads in counter mode, and
+            // the same array goes on to the socket.
+            cipher.update(buffer, from, length, buffer, from)
+        }
     }
 
     /**

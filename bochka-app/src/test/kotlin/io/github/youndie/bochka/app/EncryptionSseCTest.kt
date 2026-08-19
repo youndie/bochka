@@ -32,7 +32,7 @@ class EncryptionSseCTest {
     private val key = "pO3upElrwuEXSoFwCfnZPdSsmt/xWeFa0N9KgDijwVs="
     private val keyMd5 = "DWygnHRtgiJ77HCm+1rvHw=="
     private val otherKey = "6b+WOZ1T3cqZMxgThRcXAQBrcccMhqz1t3+/9Sxk3Kg="
-    private val otherMd5 = "arxBRt5DAlxT3Ci7L/mahw=="
+    private val otherMd5 = "D1IPsYYEdPdiYKKd/N2XlQ=="
 
     private fun sseC(
         keyValue: String = key,
@@ -103,6 +103,46 @@ class EncryptionSseCTest {
 
         assertEquals(400, s3.put("photos", "secret.txt", "hello", sseC(key, otherMd5)).status)
         assertEquals(404, s3.get("photos", "secret.txt", sseC()).status)
+    }
+
+    @Test
+    fun `the object on the disk is not the object`() {
+        // Иначе всё вышесказанное — театр. Проверяется не «сервер вернул те же байты» (он вернул бы
+        // их и не шифруя вовсе), а то, что **на диске лежит другое**. Тест лезет в файл мимо
+        // сервера ровно затем, что снаружи эти два случая неотличимы.
+        s3.createBucket("photos")
+        val plain = "the quick brown fox".repeat(10)
+        s3.put("photos", "secret.txt", plain, sseC())
+
+        val stored =
+            s3.store.get(
+                "photos",
+                io.github.youndie.bochka.core.ObjectKey
+                    .of("secret.txt"),
+            )!!
+        val onDisk =
+            java.nio.file.Files
+                .readAllBytes(s3.store.pathOf(stored))
+
+        assertEquals(plain.length.toLong(), stored.size, "counter mode does not change the length")
+        assertFalse(String(onDisk).contains("quick"), "the plaintext is on the disk")
+        assertEquals("AES256", stored.encryption?.algorithm)
+        assertEquals(keyMd5, stored.encryption?.keyMd5)
+    }
+
+    @Test
+    fun `an ordinary object still goes out the fast way`() {
+        // M-188, тест на предусловие. Второй путь чтения существует ровно для зашифрованных
+        // объектов, и цена его измерена; объект, которого никто не шифровал, обязан по-прежнему
+        // уходить `transferTo`. Признак — `through` у среза: он и **есть** медленный путь.
+        s3.createBucket("photos")
+        s3.put("photos", "plain.txt", "hello")
+
+        val answer = s3.get("photos", "plain.txt")
+
+        assertEquals(200, answer.status)
+        assertEquals("hello", answer.text)
+        assertNull(answer.header("x-amz-server-side-encryption-customer-algorithm"))
     }
 
     @Test
