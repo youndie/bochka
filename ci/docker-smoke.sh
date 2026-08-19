@@ -207,6 +207,17 @@ else
   fail "the server did not answer a request (got '$status')"
 fi
 
+# The handle an orchestrator uses (M-143), checked in the image because that is where a probe meets
+# it. In-process tests prove the route and ci/helm-chart.sh proves a kubelet accepts it; neither
+# would notice an image that ships an older jar than the tree it was built from.
+health_code=$(curl -s -o "$work/health.txt" -w '%{http_code}' --max-time 5 "http://127.0.0.1:$PORT/-/healthy")
+health_body=$(tr -d '\r\n' <"$work/health.txt")
+if [ "$health_code" = "200" ] && [ "$health_body" = "ok" ]; then
+  pass "an unsigned GET /-/healthy answers 200 with a body a person can read"
+else
+  fail "the health handle answered '$health_code' with body '$health_body'"
+fi
+
 # --- it stores something, which is the point ----------------------------------------------------
 if docker run --rm --network host \
      -e AWS_ACCESS_KEY_ID=smokekey -e AWS_SECRET_ACCESS_KEY=smokesecret \
