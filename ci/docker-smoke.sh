@@ -149,9 +149,27 @@ else
 fi
 
 # --- the configuration reached the process ------------------------------------------------------
-docker logs "$NAME" 2>&1 | grep -q "smokekey" &&
-  pass "the access key from the environment is in use" ||
+#
+# Polled rather than read once, and that was a real red build rather than caution. The banner is
+# printed **after** the socket is bound, so the readiness loop above — `curl` until the server
+# answers — proves the server is up and proves nothing about the log being written. Read once, this
+# went red on a loaded runner and green everywhere else, which is the worst state a check can be in:
+# the next genuine failure gets waved through as "that one flakes".
+#
+# The second half of the fix is the evidence. This printed nothing on failure, so the one run that
+# knew what the log held threw it away — the same rule the suite harness already learned, that
+# diagnosis which has to re-run the thing is diagnosis by guesswork.
+found=no
+for _ in $(seq 1 40); do
+  if docker logs "$NAME" 2>&1 | grep -q "smokekey"; then found=yes; break; fi
+  sleep 0.5
+done
+if [ "$found" = yes ]; then
+  pass "the access key from the environment is in use"
+else
   fail "the access key from the environment did not reach the process"
+  docker logs "$NAME" 2>&1 | tail -20
+fi
 
 # --- an unknown setting stops the process rather than being ignored -----------------------------
 #
