@@ -26,6 +26,11 @@ readonly HOME_DIR=${BOCHKA_MEASURE_HOME:-$HOME/.bochka-measure}
 readonly SEEDS=${BOCHKA_MEASURE_SEEDS:-$HOME/.bochka-seeds}
 readonly REPEATS=${BOCHKA_MEASURE_REPEATS:-3}
 readonly OUT=${BOCHKA_MEASURE_OUT:-$HOME/gc-results.txt}
+# How much of the heap the index is allowed to be. 0.5 is what the server publishes
+# (INDEX_HEAP_FRACTION), and it was measured under SerialGC; a concurrent collector needs room to
+# allocate while it marks, so the fraction at which the store is still alive is its own number and
+# not a number to carry over (M-154). Raising this is how that gets asked.
+readonly FRACTION=${BOCHKA_MEASURE_FRACTION:-0.5}
 # Everything of the shipped profile except the two things this varies.
 readonly PROFILE="-XX:ReservedCodeCacheSize=32M -XX:MaxDirectMemorySize=32M -Xss256k -XX:MaxMetaspaceSize=80M"
 readonly MAIN=io.github.youndie.bochka.benchmark.Measurements
@@ -53,7 +58,11 @@ for heap in $heaps; do
     printf 'FAILED to read the ceiling for %s — no run made\n' "$heap" | tee -a "$OUT"
     exit 1
   fi
-  printf '### heap %s — %s objects, the number this heap publishes\n' "$heap" "$keys" | tee -a "$OUT"
+  # The fill is the published ceiling scaled by the fraction being asked about, and it stays the
+  # same for every collector at this heap: a pause measured against two different live sets compares
+  # live sets.
+  keys=$(awk -v c="$keys" -v f="$FRACTION" 'BEGIN { printf "%d", c * f / 0.5 }')
+  printf '### heap %s — %s objects at fraction %s of the heap\n' "$heap" "$keys" "$FRACTION" | tee -a "$OUT"
   for gc in $collectors; do
     for run in $(seq 1 "$REPEATS"); do
       printf '\n--- %s %s run %s ---\n' "$heap" "$gc" "$run" | tee -a "$OUT"
