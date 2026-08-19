@@ -81,17 +81,31 @@ Every key lives in memory, so the number of index entries is bounded by the heap
 says so or not. Measured at **650 bytes of index per entry** (586 for a forty-byte key, 647 for a
 hundred-byte one — the larger is what the code uses), with half the heap allowed to be index:
 
-| `-Xmx` | `Runtime.maxMemory()` | Versions |
-|---|---|---|
-| 64 MiB, the development profile | 61.9 MiB | 49 908 |
-| **512 MiB, what ships** | **494.9 MiB** | **399 215** |
-| 4 GiB | 3959 MiB | 3 193 720 |
+| `-Xmx` | `Runtime.maxMemory()` | Versions | A full collection costs |
+|---|---|---|---|
+| 64 MiB, the development profile | 61.9 MiB | 49 908 | — |
+| **512 MiB, what ships** | **494.9 MiB** | **399 215** | **0.93 s** |
+| 2 GiB | 1979 MiB | 1 596 860 | 3.84 s |
+| 4 GiB | 3959 MiB | 3 193 720 | 7.56 s, and 27 s to open |
 
 The middle column is there because it is the one being divided, and it is **not** `-Xmx`. Under
 `-XX:+UseSerialGC` one survivor space is left out of the reported maximum — nothing can be
 allocated in both at once — so a 512 MiB heap reports 494.9 MiB. These numbers were `-Xmx / 2 / 650`
 for a year, which is about 3.4 % more objects than the process would ever accept; the ceiling it
 prints as `object ceiling` on its first line has always been the smaller one.
+
+**The last column is why the table is not an invitation.** The live set is the index, so a full
+collection grows with it, and every row above the shipped one describes a configuration this
+project has measured rather than one it recommends: 7.56 seconds of stop-the-world at 4 GiB is a
+request timeout, not a hiccup. Under the measured load a full collection did not happen at all — it
+is the price of the event and not its frequency — but the event does arrive, from a filling old
+generation or from somebody taking a heap dump. Above a gibibyte the process says so itself, on the
+line after the ceiling.
+
+**And the whole table is about one collector.** `Runtime.maxMemory()` is a property of the
+collector, so the ceiling is too: at the same `-Xmx512M` it is 367 404 under ParallelGC, 399 215
+under SerialGC and 412 977 under G1. That is why the startup log names the collector — a wrapper
+that swaps it moves a number published here without touching a word of it.
 
 **Versions, not objects**, and the distinction is only free in a bucket that does not version. In
 one that does, ten writes to a key are ten entries and a delete adds an eleventh — so a bucket with
