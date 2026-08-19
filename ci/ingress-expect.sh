@@ -109,6 +109,12 @@ pass "the release is up with an Ingress for $HOST"
 
 head -c $((MIB * 1024 * 1024)) /dev/zero >"$work/body.bin"
 
+# Well-formed and wrong, which is the whole point: a signature of the right shape gets as far as
+# being compared, and the refusal is the 403 this measurement is about. `deadbeef` is eight hex
+# characters and never reaches the comparison -- the server answers 400 for a malformed header,
+# which is correct of it and measures something else. Cost one run.
+readonly FAKE_SIGNATURE=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
 # The control, and it is the point of having one: the same refusal straight at the Service says what
 # this server does on its own, so anything different through the Ingress belongs to the Ingress.
 kubectl port-forward "svc/$RELEASE" 19100:9000 >"$work/pf.out" 2>&1 &
@@ -120,9 +126,9 @@ measure() { # url, extra curl args...
   curl -s -o /dev/null -k \
     -X PUT --data-binary "@$work/body.bin" \
     -H 'Expect: 100-continue' \
-    -H 'Authorization: AWS4-HMAC-SHA256 Credential=ingresskey/20260819/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=deadbeef' \
+    -H "Authorization: AWS4-HMAC-SHA256 Credential=ingresskey/$(date -u +%Y%m%d)/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=$FAKE_SIGNATURE" \
     -H 'x-amz-content-sha256: UNSIGNED-PAYLOAD' \
-    -H 'x-amz-date: 20260819T000000Z' \
+    -H "x-amz-date: $(date -u +%Y%m%dT%H%M%SZ)" \
     -w '%{http_code} %{size_upload} %{time_total}' \
     "$@" "$url" 2>/dev/null
 }
