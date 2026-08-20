@@ -33,7 +33,7 @@ write order is the one whose worst outcome is an orphan rather than a key pointi
 a `GET` is `transferTo` from that file straight into the socket.
 
 Objects can also be copied server-side, written and read conditionally (`If-Match` and the rest),
-listed with owners, and asked about without their bytes — `GetObjectAttributes`, `partNumber` on a
+listed with their owners, and asked about without their bytes — `GetObjectAttributes`, `partNumber` on a
 read, and the checksum of an assembled object, which is the checksum of its parts' checksums.
 
 Since then: bucket and object tags with a CORS configuration and preflight, browser `POST` form
@@ -42,6 +42,11 @@ and deletes by `versionId`, `ListObjectVersions` in pages — object lock with r
 modes and legal hold, access keys narrowed to a mode and a set of buckets, and lifecycle rules
 that are **applied** rather than stored: objects and noncurrent versions expire, orphaned delete
 markers and abandoned uploads go, and `x-amz-expiration` says when.
+
+Then an access model, in the layer that fits a store whose users are its access keys: an owner
+per bucket and per version, canned ACLs stored and **enforced**, and one order between the two
+models of permissions — the key scope narrows first, the ACL decides inside what it left, and
+neither can hand back what the other took away.
 
 And encryption with a key the client brings: `SSE-C` on single and multipart uploads, with the
 server keeping the algorithm and the key's MD5 and never the key. An object nobody encrypted is
@@ -361,7 +366,10 @@ disagreeing — which reads like a bug in your project and is a missing line.
 - **Not multi-class storage.** One disk means one storage class, so a lifecycle rule carrying a
   `Transition` is refused by name rather than stored and never acted on.
 - **Not an identity system.** Access keys are a static list in the configuration; no IAM, no bucket
-  policies, no STS.
+  policies, no STS. What it does have is the part that needs no user table: a bucket and an object
+  belong to the key that made them, and the six canned ACLs decide what other keys may do with
+  them. A grant to a named user is refused by name — it would be a permission language over people
+  this server does not know — and an unsigned request is still refused whatever the ACL says.
 - **Not encrypted with a key of its own.** No TLS termination and no SSE-S3 or SSE-KMS: the first
   would wrap the socket and the second would make this process a keeper of secrets, with rotation
   and an audit trail behind it. **SSE-C is there**, and it is the one place the trade is worth it:

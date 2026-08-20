@@ -123,6 +123,27 @@ class AccessModelTest {
     }
 
     @Test
+    fun `listing buckets answers your own, because the caller is usually a clean-up loop`() {
+        // Found by the suite rather than by reasoning, and it cost a whole run: `ListBuckets` has
+        // no bucket in its request to refuse about, so ownership can only appear here as a filter.
+        // Handing another key's buckets to the canonical caller — list, then empty what you find —
+        // makes every one of those loops fail on a refusal it can do nothing about. Six hundred
+        // and fifty-nine of the suite's tests errored in their fixtures on exactly that.
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+            assertEquals(200, s3.send("PUT", "/reports", asOther = true).status)
+
+            val mine = s3.send("GET", "/")
+            assertTrue("<Name>photos</Name>" in mine.text, mine.text)
+            assertTrue("<Name>reports</Name>" !in mine.text, mine.text)
+
+            val theirs = s3.send("GET", "/", asOther = true)
+            assertTrue("<Name>reports</Name>" in theirs.text, theirs.text)
+            assertTrue("<Name>photos</Name>" !in theirs.text, theirs.text)
+        }
+    }
+
+    @Test
     fun `a grant to a named user is refused by name rather than stored`() {
         // The rule the milestone is built on. A grant names a user; this server has access keys
         // and no user table, so accepting one means writing down a permission for somebody who

@@ -910,6 +910,13 @@ class S3Handler(
                 // then denies it has already told the caller the name exists. Invisibility is the
                 // stronger half of a scope, so it is the half applied first (M-127).
                 .filter { verifier.credentials.scopeFor(accessKeyId).sees(it.name) }
+                // Your buckets, not everybody's (M27). `ListBuckets` has no bucket in its request
+                // to be refused about, so ownership can only show up here as a filter — and it has
+                // to: the canonical caller is somebody's clean-up loop, which lists buckets and
+                // then empties what it finds. Handing it another key's buckets makes every one of
+                // those loops fail on a refusal it cannot do anything about. A bucket with no
+                // recorded owner stays visible to everyone, like the rest of the upgrade rule.
+                .filter { store.bucketOwner(it.name).let { owner -> owner == null || owner == accessKeyId } }
                 .filter { prefix == null || it.name.startsWith(prefix) }
                 .filter { after == null || it.name > after }
         val page = if (maxBuckets != null) matching.take(maxBuckets) else matching
@@ -1205,6 +1212,19 @@ class S3Handler(
             return error(head, e.error, detail = e.message, bucket = bucket)
         } catch (e: PostPolicy.Refused) {
             return error(head, e.error, detail = e.message, bucket = bucket)
+        }
+
+        // The form is the one operation whose authorisation is decided **after** its body arrives,
+        // so the ACL of the bucket is checked here rather than in `screen` — where every other
+        // route's is. Without this line a signed form would write into anybody's bucket.
+        val bucketResource = AccessControl.Resource(store.bucketOwner(bucket), store.bucketAcl(bucket))
+        if (!AccessControl.allowsObjectWrite(bucketResource, accessKeyId)) {
+            return error(
+                head,
+                S3Error.ACCESS_DENIED,
+                detail = "the acl of this bucket does not allow it",
+                bucket = bucket,
+            )
         }
 
         // The form's `acl` field is a canned name like the header's, and since M27 it is stored and
