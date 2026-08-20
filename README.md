@@ -3,7 +3,7 @@
 [![kotlin](https://img.shields.io/badge/Kotlin-2.4.10-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
-[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-431%2F744-yellowgreen)](ci/s3-tests.sh)
+[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-465%2F744-yellowgreen)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.2.0)
 
@@ -232,11 +232,11 @@ of `ceph/s3-tests` a single-process JVM store passes is comparable with other im
 which is true of no benchmark this project could run on its own. So it is published as soon as it
 exists, ahead of everything else:
 
-> **431 of 744 passed (58%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
+> **465 of 744 passed (63%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
 
-**316 of the 318 remaining failures** are things this store says in
-["What bochka is not"](#what-bochka-is-not) that it will never have — encryption, ACLs, policies,
-IAM, storage classes. Every failure is classified with a reason
+**276 of the 279 remaining failures** are things this store says in
+["What bochka is not"](#what-bochka-is-not) that it will never have — server-side encryption,
+grants to named users, bucket policies, IAM, storage classes. Every failure is classified with a reason
 ([docs/s3-tests.md](docs/s3-tests.md)), and one nobody has classified is reported by name as
 `unclassified` rather than folded into a category. That count is zero.
 
@@ -245,16 +245,17 @@ the classification rather than by running anything, because three families sat b
 had stopped being true when the features arrived. A label saying "out of scope" over a defect is
 worse than no label — the unclassified count is watched, and a closed-looking question is not.
 
-**Two are in scope and not done**, and both are there because a decision is unmade rather than
-because work is: a key holding C1 control characters, and the round trip of non-ASCII metadata.
+**Three are in scope and not done**, and each is there because a decision is unmade rather than
+because work is: a key holding C1 control characters, the round trip of non-ASCII metadata, and
+the ETag of a re-sent encrypted part.
 Each names in the classification file what would settle it, because a "deferred" with no criterion
 is a "deferred" for ever. That whole distinction was itself a finding — those entries once sat in
 the classification file while the backlog said there was nothing to do, which is two documents
 disagreeing about the same thing.
 
-Counted against what is in scope the score is 431 of 434 — 99% — and that number is here as a
+Counted against what is in scope the score is 465 of 468 — 99% — and that number is here as a
 warning rather than a boast: its denominator is chosen by this repository, and 99% of your own
-scope list is available to anyone willing to lengthen the list. **58% is the honest one because
+scope list is available to anyone willing to lengthen the list. **63% is the honest one because
 somebody else chose it.** What the number is for is the direction it moves, which is why the count
 of tests that ran is printed beside it — a rising score and a shrinking suite look identical
 otherwise.

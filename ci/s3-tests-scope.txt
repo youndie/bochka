@@ -46,7 +46,7 @@ out-of-scope	_version_if_match	a condition on a named version: the model allows 
 # from a server with no owner model is a fiction whichever version it is about. Routing
 # `?versionId` into an answer that cannot be true is worse than not answering. Decided in M-160,
 # and it returns with ACLs or not at all.
-out-of-scope	versioned_object_acl	the case reads an object ACL; ACLs need an owner model, and the version half of an operation that cannot answer is not a feature (M-160)
+out-of-scope	versioned_object_acl	ACL по версии: сама ACL с M27 есть, а `?versionId` у `GetObjectAcl`/`PutObjectAcl` — нет; операция отвечает про текущую версию (M-160)
 # Four rules stood here for M-161…M-163 and matched nothing at all: the cases they named have
 # passed since those tasks closed. A rule that cannot fire is the trap this file already learned
 # once from the other end — a narrow rule shadowed by a broad one — and it is worse in this
@@ -71,21 +71,36 @@ out-of-scope	delete_marker_expiration	same header as above; the marker does expi
 # debug clock — under which the server deletes an object **before** the date it advertised, and
 # that is the one guarantee the header gives.
 out-of-scope	lifecycle_expiration_header	the advertised expiry-date follows the same clock the sweep does; the case wants them to disagree
-out-of-scope	acl	access control lists: the access keys here are static (open question 4)
+# M27 сделал модель доступа: владелец у бакета и версии, шесть canned-имён, и всё это
+# **исполняется**. Одна широкая строка «ACL вне рамок» после этого стала враньём того же рода,
+# что и правило, которое не может сработать: она объясняла бы отсутствием того, что есть. Узкие
+# правила стоят выше общего и называют то, чего действительно нет, — гранты по имени, анонимный
+# доступ, блок публичного доступа, политики.
+#
+# Гранты — это решение, а не недоделка: грант называет **пользователя**, а у сервера есть ключи
+# доступа и нет таблицы пользователей. Принятый и неисполняемый грант обнаруживают утечкой.
+out-of-scope	acl_grant	гранты по имени пользователя или группы: у сервера ключи, а не пользователи (M27, решение)
+out-of-scope	header_acl_grants	то же самое заголовками `x-amz-grant-*`
+out-of-scope	acl_revoke	снятие всех грантов — это язык грантов, которого здесь нет
+out-of-scope	tags_acl_public	кейс раздаёт права группе грантом; группы — часть ACL, которой здесь нет
+out-of-scope	acl_bucket_policy_status	`PolicyStatus` считает публичность по политике бакета; политики — M29
+out-of-scope	ignore_public_acls	блок публичного доступа — отдельная возможность, не ACL
+out-of-scope	cors_presigned_get_object_tenant_v2	the case presigns with SigV2, which this server does not verify
+out-of-scope	cors_presigned_get_object_v2	the case presigns with SigV2, which this server does not verify
+out-of-scope	cors_presigned_put_object_tenant_v2	the case presigns with SigV2, which this server does not verify
+out-of-scope	cors_presigned_put_object_v2	the case presigns with SigV2, which this server does not verify
+out-of-scope	cors_presigned	кейс ходит по presign-ссылке с чужого origin без подписи; анонимный доступ — M28
+out-of-scope	object_acl	что осталось у объекта после M27 — гранты по имени: `READ_ACP`, `WRITE_ACP` и `FULL_CONTROL` конкретному ключу
+out-of-scope	acl	что осталось от ACL после M27 — гранты: canned-имена и владелец есть и исполняются (§3.6 контракта)
 out-of-scope	policy	bucket policies: the access keys here are static (open question 4)
 out-of-scope	_iam	IAM is a different service; this store authenticates with static keys
 out-of-scope	_sts	STS is a different service; this store authenticates with static keys
 out-of-scope	public_access_block	public access blocks belong with policies, which are out of scope
 out-of-scope	block_public	public access blocks belong with policies, which are out of scope
-out-of-scope	anonymous	anonymous access needs public-read ACLs, which are out of scope
+out-of-scope	anonymous	анонимный доступ — слой 2 модели доступа (M28); ACL для него уже есть, разрешения ещё нет
 out-of-scope	website	static website hosting is out of the v1 scope
 # CORS is implemented (M14), and the eleven cases under this name fail for three different reasons,
 # none of them "we do not have CORS". Splitting them is the point of this file.
-out-of-scope	cors_presigned_get_object_tenant_v2	the case presigns with SigV2, which this server does not verify
-out-of-scope	cors_presigned_get_object_v2	the case presigns with SigV2, which this server does not verify
-out-of-scope	cors_presigned_put_object_tenant_v2	the case presigns with SigV2, which this server does not verify
-out-of-scope	cors_presigned_put_object_v2	the case presigns with SigV2, which this server does not verify
-out-of-scope	cors_presigned	the case reads a presigned URL from another origin unsigned; anonymous access needs public-read ACLs
 out-of-scope	cors_origin	the case fetches across origins without a signature; anonymous access needs public-read ACLs
 out-of-scope	notification	bucket notifications are out of the v1 scope
 out-of-scope	replication	replication needs more than one node, which is the whole niche this is not
@@ -101,7 +116,7 @@ out-of-scope	post_object_set_invalid_success_code	the form carries no policy at 
 out-of-scope	post_object_success_redirect_action	the upload succeeds; the case then reads the redirect target unsigned, which needs public read
 out-of-scope	select	S3 Select is out of the v1 scope
 out-of-scope	restore	Glacier restore is out of the v1 scope
-out-of-scope	ownership	object ownership controls belong with ACLs, which are out of scope
+out-of-scope	ownership	`ObjectOwnership` — отдельная возможность, а не ACL: она отключает ACL целиком, и здесь её нет
 out-of-scope	tenant	multi-tenancy is a ceph extension, not S3
 out-of-scope	account	account-level operations are out of the v1 scope
 out-of-scope	user_policy	IAM user policies are a different service
@@ -118,7 +133,6 @@ out-of-scope	_current_object_if	the fixture enables versioning first ("current o
 out-of-scope	_current_if_match	the fixture enables versioning first; versioning is out of scope
 out-of-scope	object_current_if	the fixture enables versioning first; versioning is out of scope
 out-of-scope	_current_object	the fixture enables versioning first; versioning is out of scope
-out-of-scope	bucket_create_special_key_names	the fixture sets an ACL before it gets to the key names
 out-of-scope	list_multipart_upload_owner	the fixture sets an ACL; the owner needs an owner model anyway
 
 # --- in scope and not done. `deferred` is a task: it is either in BACKLOG.md or this file has
@@ -130,17 +144,14 @@ out-of-scope	list_multipart_upload_owner	the fixture sets an ACL; the owner need
 deferred	object_read_unreadable	the premise of the original task was wrong and that was the finding: the key arrives as %C2%AE%C2%8A-, which is well-formed UTF-8, so this is not a malformed key but a key holding C1 control characters, and S3 refuses it at the URI with "Couldn't parse the specified URI." Refusing those here contradicts a documented decision (Р2: keys are not restricted, and encoding-type=url exists because a listing must carry bytes XML cannot). Settled by a source that says which bytes are invalid in a request line, not by one case
 deferred	unicode_metadata	measured rather than guessed, and the earlier reason here was wrong: botocore does send non-ASCII metadata, as UTF-8, and reads the response back as latin-1. Passing this case means decoding the value as UTF-8 on the way in and re-encoding it as latin-1 on the way out, which makes metadata lossy above U+00FF — today it round-trips byte for byte. Settled by a source on what S3 stores, not by one case that only pins the asymmetry of one client
 
-out-of-scope	access_bucket	the matrix of ACL combinations; ACLs are out of scope
-out-of-scope	expected_bucket_owner	x-amz-expected-bucket-owner needs an owner model, which needs IAM
-out-of-scope	not_owned	ownership checks need an owner model, which needs IAM
-out-of-scope	nonowner	ownership checks need an owner model, which needs IAM
-out-of-scope	owner_enforced	object ownership controls belong with ACLs
-out-of-scope	owner_preferred	object ownership controls belong with ACLs
-out-of-scope	object_writer	object ownership controls belong with ACLs
+out-of-scope	not_owned	кейс раздаёт права грантом по имени; владелец с M27 есть, грантов нет
+out-of-scope	owner_enforced	`BucketOwnerEnforced` отключает ACL целиком; такой настройки здесь нет
+out-of-scope	owner_preferred	`BucketOwnerPreferred` меняет владельца записанного объекта; такой настройки здесь нет
+out-of-scope	object_writer	`ObjectWriter` — это `ObjectOwnership`, которого здесь нет
 out-of-scope	bucket_head_extended	x-rgw-object-count is a ceph extension, not S3
 out-of-scope	unordered	allow-unordered is a ceph extension, not S3
 out-of-scope	public_block	public access blocks belong with policies
-out-of-scope	obj_public	public objects need ACLs
+out-of-scope	obj_public	публичный объект читают без подписи, а неподписанный запрос — это M28
 out-of-scope	100_continue	the case sets a public-read ACL first; Expect: 100-continue itself is covered by the live-client harness
 out-of-scope	multi_object_delete_key_limit	the case deletes more than a thousand keys in one request, which the protocol does not allow; bochka now answers MalformedXML instead of closing the connection, and the case expects it to succeed
 out-of-scope	get_location	the case compares the region against the suite's own api_name setting
