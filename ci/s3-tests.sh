@@ -125,6 +125,11 @@ for section, key, secret in (
     cfg.set(section, "access_key", key)
     cfg.set(section, "secret_key", secret)
     cfg.set(section, "user_id", key)
+    # And the display name, for the same reason and out of the same fact: this server's users are
+    # its access keys, so what it can put in a `DisplayName` is the key. The sample's `M. Tester`
+    # is ceph's own fixture data, and leaving it in would have the suite comparing an ACL document
+    # against a name nothing here has ever heard of (M27).
+    cfg.set(section, "display_name", key)
     # The suite asks the server for a bucket's location and compares it with this. It is the name
     # of the region the deployment runs in, not a constant, so it has to agree with BOCHKA_REGION.
     # Set per section rather than in DEFAULT: the sample sets it inside the sections, and a value
