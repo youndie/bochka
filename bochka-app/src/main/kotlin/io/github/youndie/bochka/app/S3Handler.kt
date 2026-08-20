@@ -6,6 +6,7 @@ import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.http.HttpHandler
 import io.github.youndie.bochka.http.HttpRequestParser
 import io.github.youndie.bochka.http.HttpResponse
+import io.github.youndie.bochka.s3.AccessControl
 import io.github.youndie.bochka.s3.BucketNameRules
 import io.github.youndie.bochka.s3.ByteRanges
 import io.github.youndie.bochka.s3.Lifecycle
@@ -93,8 +94,15 @@ class S3Handler(
             route !is S3Router.Route.Health
         ) {
             when (val verification = verifier.verify(head.toSignedRequest())) {
-                is SignatureVerifier.Result.Failure -> return error(head, verification.error, verification)
-                is SignatureVerifier.Result.Ok -> scopeRefusal(head, route, verification.accessKeyId)?.let { return it }
+                is SignatureVerifier.Result.Failure -> {
+                    return error(head, verification.error, verification)
+                }
+
+                is SignatureVerifier.Result.Ok -> {
+                    scopeRefusal(head, route, verification.accessKeyId)?.let { return it }
+                    aclRefusal(head, route, verification.accessKeyId)?.let { return it }
+                    statedAclRefusal(head)?.let { return it }
+                }
             }
         }
 
@@ -258,7 +266,7 @@ class S3Handler(
             }
 
             is S3Router.Route.CreateBucket -> {
-                createBucket(head, route.bucket)
+                createBucket(head, route.bucket, verification.accessKeyId)
             }
 
             is S3Router.Route.DeleteBucket -> {
@@ -294,7 +302,7 @@ class S3Handler(
             }
 
             is S3Router.Route.CopyObject -> {
-                copyObject(head, route)
+                copyObject(head, route, verification.accessKeyId)
             }
 
             is S3Router.Route.GetObject -> {
@@ -311,6 +319,10 @@ class S3Handler(
 
             is S3Router.Route.ObjectLockSubresource -> {
                 objectLockSubresource(head, route, body)
+            }
+
+            is S3Router.Route.ObjectAcl -> {
+                objectAcl(head, route, body)
             }
 
             is S3Router.Route.ObjectTagging -> {
@@ -353,7 +365,7 @@ class S3Handler(
             }
 
             is S3Router.Route.CreateMultipartUpload -> {
-                createUpload(head, route)
+                createUpload(head, route, verification.accessKeyId)
             }
 
             is S3Router.Route.UploadPart -> {
@@ -399,6 +411,7 @@ class S3Handler(
     private fun copyObject(
         head: HttpRequestParser.Head,
         route: S3Router.Route.CopyObject,
+        accessKeyId: String,
     ): HttpResponse {
         if (!store.hasBucket(route.sourceBucket)) {
             return error(head, S3Error.NO_SUCH_BUCKET, bucket = route.sourceBucket)
@@ -438,7 +451,9 @@ class S3Handler(
         }
 
         val metadata = if (replacing) ObjectHeaders.read(head.headers) else source.metadata
-        val stored = store.copy(source, route.bucket, route.key, metadata)
+        // The copy belongs to whoever made it, not to whoever owned the source: a copy is a new
+        // object, and S3 gives it the caller as its owner.
+        val stored = store.copy(source, route.bucket, route.key, metadata, accessKeyId, statedAcl(head))
         return xml(
             S3Documents.copyObjectResult(stored.eTag, timestamp(stored.lastModified)),
         )
@@ -449,6 +464,7 @@ class S3Handler(
     private fun createUpload(
         head: HttpRequestParser.Head,
         route: S3Router.Route.CreateMultipartUpload,
+        accessKeyId: String,
     ): HttpResponse {
         // The metadata travels on this request and not on the parts: the parts are bytes, the
         // object is what they become, and only this request knows anything about the object. The
@@ -485,6 +501,11 @@ class S3Handler(
                 // The key is not kept — only what identifies it. Every part brings the key again,
                 // which is what S3 asks of them, and this is what those parts are checked against.
                 encryption = startingKey?.let { ObjectStore.Encryption(it.algorithm, it.keyMd5, ByteArray(0)) },
+                // Kept with the upload rather than applied at the completion: the object appears
+                // minutes later, and an `x-amz-acl` that lived only in this request would be a
+                // permission accepted and then quietly dropped.
+                owner = accessKeyId,
+                acl = statedAcl(head),
             )
 
         // Both go back as **headers**: `CreateMultipartUploadOutput` gives them
@@ -907,8 +928,21 @@ class S3Handler(
     private fun createBucket(
         head: HttpRequestParser.Head,
         bucket: String,
+        accessKeyId: String,
     ): HttpResponse {
-        store.createBucket(bucket)
+        val stated = AccessControl.Canned.of(head.header("x-amz-acl"))?.wireName
+        if (!store.createBucket(bucket, owner = accessKeyId, acl = stated)) {
+            // The name is one namespace for every key, so a second creator is refused rather than
+            // handed a share of somebody's bucket. Recreating your own stays the success it has
+            // always been — `mb` is idempotent in every client — **until** an ACL is in it on
+            // either side: "make it exist like this" is a different request from "make sure it
+            // exists", and a bucket that already holds objects is not re-shared on the way past.
+            val owner = store.bucketOwner(bucket)
+            if (owner != null && (owner != accessKeyId || stated != null || store.bucketAcl(bucket) != null)) {
+                return error(head, S3Error.BUCKET_ALREADY_EXISTS, bucket = bucket)
+            }
+            return HttpResponse(200, "OK", headers = listOf("Location" to "/$bucket"))
+        }
         // `x-amz-bucket-object-lock-enabled` is the only way object lock is ever switched on: S3
         // has no operation that adds it later, so a bucket either was created for it or never can
         // be. It brings versioning with it — a retention on something that can be overwritten in
@@ -1164,16 +1198,17 @@ class S3Handler(
             return error(head, e.error, detail = e.message, bucket = bucket)
         }
 
-        // `acl` is a boundary, not a field to store. `private` is what this server does, so it can
-        // be accepted truthfully; `public-read-write` (`test_post_object_anonymous_request:1948`)
-        // would promise anonymous access that does not exist here, and a promise kept nowhere is
-        // found out by a leak rather than by an error — the same rule that refuses `PutBucketAcl`.
+        // The form's `acl` field is a canned name like the header's, and since M27 it is stored and
+        // enforced rather than refused. `public-read` still promises **less** here than it does on
+        // AWS — an unsigned reader is refused until M28 opens that door — and the honest place for
+        // that difference is the contract, not a refusal: a form that names a canned ACL now gets
+        // the sharing among keys that it asked for.
         val acl = form["acl"]
-        if (acl != null && acl != "private") {
+        if (acl != null && AccessControl.Canned.of(acl) == null) {
             return error(
                 head,
-                S3Error.ACCESS_DENIED,
-                detail = "acl '$acl' is not honoured by this server; only 'private' is",
+                S3Error.INVALID_ARGUMENT,
+                detail = "acl '$acl' is not one this server enforces",
                 bucket = bucket,
             )
         }
@@ -1239,6 +1274,8 @@ class S3Handler(
                     staged,
                     ObjectStore.Precondition(),
                     encryption = encryption,
+                    owner = accessKeyId,
+                    acl = acl,
                 )
             staged = null
             formSuccess(form, bucket, key, stored.eTag, accessKeyId)
@@ -1377,6 +1414,8 @@ class S3Handler(
                     staged,
                     writePrecondition(head),
                     encryption = encryption,
+                    owner = verification.accessKeyId,
+                    acl = statedAcl(head),
                 )
             staged = null
             // `x-amz-object-lock-*` on the upload itself: the object arrives already protected,
@@ -2402,7 +2441,7 @@ class S3Handler(
         // and not applied is found out through a leak rather than through an error.
         when (route.name) {
             "policy" -> return error(head, S3Error.NO_SUCH_BUCKET_POLICY, bucket = route.bucket)
-            "acl" -> return xml(S3Documents.accessControlPolicy(OWNER, OWNER))
+            "acl" -> return bucketAcl(head, route, body)
         }
 
         val absent = if (route.name == "tagging") S3Error.NO_SUCH_TAG_SET else S3Error.NO_SUCH_CORS_CONFIGURATION
@@ -2440,6 +2479,88 @@ class S3Handler(
                 HttpResponse(200, "OK")
             }
         }
+    }
+
+    /**
+     * `?acl` on a bucket: read the truth, or set a canned name (M-193, M-194).
+     *
+     * The read side answers the owner and the grants the canned name implies; the accepting side
+     * takes `x-amz-acl` and nothing else. A request whose ACL lives in the body is a list of
+     * grants to named users, and this server refuses it by name rather than storing it — the rule
+     * it already applies to a bucket policy, for the same reason: an unenforced permission is
+     * found out as a leak.
+     *
+     * The body is read before the refusal, not after. It is a few hundred bytes here, but the
+     * order is the one M26 paid for: answering while a client is still sending leaves both sides
+     * waiting, and the suite reports it as a timeout rather than as a refusal.
+     */
+    private suspend fun bucketAcl(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.BucketSubresource,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        val owner = store.bucketOwner(route.bucket) ?: OWNER
+        if (route.method == "GET") {
+            return xml(
+                S3Documents.accessControlPolicy(owner, owner, store.bucketAcl(route.bucket), bucketOwnerId = owner),
+            )
+        }
+        body.forEach { _, _, _ -> }
+        if (route.method != "PUT") {
+            return error(head, S3Error.NOT_IMPLEMENTED, detail = "not implemented: ${route.method} ?acl")
+        }
+        val stated =
+            AccessControl.Canned.of(head.header("x-amz-acl"))
+                ?: return error(
+                    head,
+                    S3Error.NOT_IMPLEMENTED,
+                    detail = "not implemented: an access control policy of grants; this server takes x-amz-acl",
+                    bucket = route.bucket,
+                )
+        store.setBucketAcl(route.bucket, stated.wireName)
+        return HttpResponse(200, "OK")
+    }
+
+    /**
+     * `?acl` on an object, and the same two halves as the bucket's.
+     *
+     * The owner reported is the version's own, which is not always the bucket's: a key written by
+     * one access key into another's `public-read-write` bucket belongs to whoever wrote it. That
+     * is the difference the `bucket-owner-*` canned names exist for, and reporting the bucket's
+     * owner here would make them describe nothing.
+     */
+    private suspend fun objectAcl(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.ObjectAcl,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        val named = route.versionId
+        val stored =
+            (if (named == null) store.get(route.bucket, route.key) else store.get(route.bucket, route.key, named))
+                ?: return error(head, S3Error.NO_SUCH_KEY, key = route.key, bucket = route.bucket)
+        val owner = stored.owner ?: store.bucketOwner(route.bucket) ?: OWNER
+        if (route.method == "GET") {
+            return xml(
+                S3Documents.accessControlPolicy(
+                    owner,
+                    owner,
+                    stored.acl,
+                    bucketOwnerId = store.bucketOwner(route.bucket),
+                ),
+            )
+        }
+        body.forEach { _, _, _ -> }
+        val stated =
+            AccessControl.Canned.of(head.header("x-amz-acl"))
+                ?: return error(
+                    head,
+                    S3Error.NOT_IMPLEMENTED,
+                    detail = "not implemented: an access control policy of grants; this server takes x-amz-acl",
+                    key = route.key,
+                    bucket = route.bucket,
+                )
+        store.setObjectAcl(route.bucket, route.key, stated.wireName)
+        return HttpResponse(200, "OK")
     }
 
     /**
@@ -2832,6 +2953,10 @@ class S3Handler(
                 if (route.method == "GET") KeyScope.Need.READ else KeyScope.Need.WRITE
             }
 
+            is S3Router.Route.ObjectAcl -> {
+                if (route.method == "GET") KeyScope.Need.READ else KeyScope.Need.WRITE
+            }
+
             is S3Router.Route.ObjectLockSubresource -> {
                 if (route.method == "GET") KeyScope.Need.READ else KeyScope.Need.WRITE
             }
@@ -2874,6 +2999,184 @@ class S3Handler(
         return null
     }
 
+    /** The canned ACL the request names, if it names one this server enforces. */
+    private fun statedAcl(head: HttpRequestParser.Head): String? =
+        AccessControl.Canned.of(head.header("x-amz-acl"))?.wireName
+
+    /**
+     * Refuses an ACL this server would have to pretend about (M-194).
+     *
+     * Two shapes of pretence, and both are refused rather than stored: a canned name nobody here
+     * enforces, and an explicit grant. A grant names a **user** — `x-amz-grant-read: id="..."` —
+     * and this server has access keys and no user table, so accepting one means writing down a
+     * permission for somebody who does not exist and never applying it. That is the rule the whole
+     * milestone is built on: a permission accepted and not enforced is found out as a leak rather
+     * than as an error.
+     *
+     * In `screen` because `PUT` carries a body: a refusal decided from the head must be answered
+     * before the client starts sending one.
+     */
+    private fun statedAclRefusal(head: HttpRequestParser.Head): HttpResponse? {
+        head.headers.firstOrNull { (name, _) -> name.startsWith("x-amz-grant-", ignoreCase = true) }?.let { (name, _) ->
+            return error(
+                head,
+                S3Error.NOT_IMPLEMENTED,
+                detail = "not implemented: $name; this server takes canned ACLs, not grants to named users",
+            )
+        }
+        val stated = head.header("x-amz-acl") ?: return null
+        if (AccessControl.Canned.of(stated) != null) return null
+        return error(
+            head,
+            S3Error.INVALID_ARGUMENT,
+            detail =
+                "'$stated' is not an ACL this server enforces; it takes " +
+                    AccessControl.Canned.entries.joinToString(", ") { it.wireName },
+        )
+    }
+
+    /**
+     * Refuses what the owner and the canned ACL do not allow — after the key scope and never
+     * before it (M-196, M27).
+     *
+     * The order is the whole of the answer to "two models of permissions, which one wins": the
+     * scope narrows first and this decides inside what it left. Both are refusals, neither is a
+     * grant, so no arrangement of ACLs can hand back what configuration took away.
+     *
+     * From the head, like [scopeRefusal] and for the same reason: an overwrite refused after five
+     * gigabytes have arrived costs five gigabytes, and — worse — a refusal written after the body
+     * has begun leaves the client pushing bytes at a server that has already answered, which the
+     * suite reports as a timeout rather than as a refusal (M26).
+     *
+     * A bucket with no recorded owner returns early and unrestricted. That is the upgrade rule,
+     * and it is not a special case bolted on: the unit of this model is the bucket, so a bucket
+     * created before the model existed has no model.
+     */
+    private fun aclRefusal(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
+        accessKeyId: String,
+    ): HttpResponse? {
+        val bucketName = bucketOf(route) ?: return null
+        val bucket = AccessControl.Resource(store.bucketOwner(bucketName), store.bucketAcl(bucketName))
+        if (bucket.unrestricted) return null
+
+        val allowed =
+            when (route) {
+                // Creating a bucket that exists is not an access question — it is answered with
+                // `BucketAlreadyExists` by the handler, which is what a client needs to hear.
+                is S3Router.Route.CreateBucket -> {
+                    true
+                }
+
+                // Deleting a bucket is not something a canned ACL can grant: `public-read-write`
+                // opens the objects in a bucket, not the bucket's own existence.
+                is S3Router.Route.DeleteBucket -> {
+                    accessKeyId == bucket.owner
+                }
+
+                is S3Router.Route.ListObjects,
+                is S3Router.Route.ListObjectsV2,
+                is S3Router.Route.ListObjectVersions,
+                is S3Router.Route.ListMultipartUploads,
+                is S3Router.Route.HeadBucket,
+                is S3Router.Route.GetBucketLocation,
+                -> {
+                    AccessControl.allows(bucket, accessKeyId, AccessControl.Permission.READ, bucket.owner)
+                }
+
+                // The bucket's own settings — its ACL, its tags, its versioning — belong to whoever
+                // owns it. A canned name says who may read the data, and never who may re-configure
+                // the thing holding it.
+                is S3Router.Route.BucketSubresource -> {
+                    val permission =
+                        if (route.method == "GET") {
+                            AccessControl.Permission.READ_ACP
+                        } else {
+                            AccessControl.Permission.WRITE_ACP
+                        }
+                    AccessControl.allows(bucket, accessKeyId, permission, bucket.owner)
+                }
+
+                is S3Router.Route.GetObject -> {
+                    objectRead(bucketName, route.key, route.versionId, accessKeyId, bucket)
+                }
+
+                is S3Router.Route.HeadObject -> {
+                    objectRead(bucketName, route.key, route.versionId, accessKeyId, bucket)
+                }
+
+                is S3Router.Route.GetObjectAttributes -> {
+                    objectRead(bucketName, route.key, route.versionId, accessKeyId, bucket)
+                }
+
+                is S3Router.Route.ObjectTagging -> {
+                    if (route.method == "GET") {
+                        objectRead(bucketName, route.key, null, accessKeyId, bucket)
+                    } else {
+                        AccessControl.allowsObjectWrite(bucket, accessKeyId)
+                    }
+                }
+
+                is S3Router.Route.ObjectAcl -> {
+                    val obj = objectResource(bucketName, route.key, route.versionId) ?: return null
+                    val permission =
+                        if (route.method == "GET") {
+                            AccessControl.Permission.READ_ACP
+                        } else {
+                            AccessControl.Permission.WRITE_ACP
+                        }
+                    AccessControl.allows(obj, accessKeyId, permission, bucket.owner)
+                }
+
+                // Everything else writes objects, and writing an object asks the bucket. That is
+                // not a simplification: the suite's matrix has a `public-read-write` bucket accept
+                // an overwrite of a **private** object, so the object's own ACL is not consulted
+                // on the way in (`test_access_bucket_publicreadwrite_object_private`).
+                else -> {
+                    AccessControl.allowsObjectWrite(bucket, accessKeyId)
+                }
+            }
+
+        if (allowed) return null
+        return error(
+            head,
+            S3Error.ACCESS_DENIED,
+            detail = "the acl of this ${if (keyOf(route) == null) "bucket" else "object"} does not allow it",
+            key = keyOf(route),
+            bucket = bucketName,
+        )
+    }
+
+    /**
+     * The object as the access model sees it, or `null` when there is no such object.
+     *
+     * `null` means "do not refuse here": a key that is not there is a `404`, and answering `403`
+     * for it would tell a stranger which keys exist — the same reasoning that makes a bucket
+     * outside a key's scope answer `NoSuchBucket`.
+     */
+    private fun objectResource(
+        bucket: String,
+        key: ObjectKey,
+        versionId: String?,
+    ): AccessControl.Resource? {
+        val stored =
+            (if (versionId == null) store.currentVersion(bucket, key) else store.get(bucket, key, versionId))
+                ?: return null
+        return AccessControl.Resource(stored.owner, stored.acl)
+    }
+
+    private fun objectRead(
+        bucket: String,
+        key: ObjectKey,
+        versionId: String?,
+        accessKeyId: String,
+        bucketResource: AccessControl.Resource,
+    ): Boolean {
+        val obj = objectResource(bucket, key, versionId) ?: return true
+        return AccessControl.allowsObjectRead(obj, accessKeyId, bucketResource.owner)
+    }
+
     private fun bucketOf(route: S3Router.Route): String? =
         when (route) {
             is S3Router.Route.CreateBucket -> route.bucket
@@ -2892,6 +3195,7 @@ class S3Handler(
             is S3Router.Route.GetObjectAttributes -> route.bucket
             is S3Router.Route.BucketSubresource -> route.bucket
             is S3Router.Route.ObjectTagging -> route.bucket
+            is S3Router.Route.ObjectAcl -> route.bucket
             is S3Router.Route.Preflight -> route.bucket
             is S3Router.Route.CreateMultipartUpload -> route.bucket
             is S3Router.Route.UploadPart -> route.bucket
@@ -2923,6 +3227,7 @@ class S3Handler(
             is S3Router.Route.CopyObject -> route.key
             is S3Router.Route.GetObjectAttributes -> route.key
             is S3Router.Route.ObjectTagging -> route.key
+            is S3Router.Route.ObjectAcl -> route.key
             is S3Router.Route.CreateMultipartUpload -> route.key
             is S3Router.Route.UploadPart -> route.key
             is S3Router.Route.UploadPartCopy -> route.key

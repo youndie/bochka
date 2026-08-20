@@ -377,6 +377,23 @@ enum class S3Error(
         404,
     ),
 
+    /**
+     * The name is taken, and by somebody else — or by a bucket that already carries an ACL.
+     *
+     * Bucket names are one namespace for everybody, so a second creator gets a conflict rather
+     * than a share (`test_bucket_create_exists_nonowner`). The second half is less obvious and is
+     * the suite's too: recreating **your own** bucket is a success while nothing about its sharing
+     * changes, and a conflict as soon as an ACL is involved on either side
+     * (`test_bucket_recreate_new_acl`, `test_bucket_recreate_overwrite_acl`) — because that
+     * request is not "make sure this exists", it is "make it exist like **this**", and the server
+     * is not going to re-share a bucket that already holds somebody's objects.
+     */
+    BUCKET_ALREADY_EXISTS(
+        "BucketAlreadyExists",
+        "The requested bucket name is not available.",
+        409,
+    ),
+
     /** `:769`. */
     BUCKET_NOT_EMPTY(
         "BucketNotEmpty",

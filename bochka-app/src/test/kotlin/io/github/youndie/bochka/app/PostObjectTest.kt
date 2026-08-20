@@ -211,12 +211,14 @@ class PostObjectTest {
 
     @Test
     fun `an acl this server does not honour is refused rather than accepted and ignored`() {
-        // The rule that refuses `PutBucketAcl`: a client whose `public-read-write` was accepted
-        // finds out it was not applied by a leak, not by an error.
+        // The boundary moved in M27 and the test moved with it. `public-read-write` used to be
+        // refused here, because storing a permission nobody enforced would be found out as a leak;
+        // it is enforced now, so the form is honoured. What stays refused is a name this server
+        // still does not implement — the rule is unchanged, only the list of what it covers.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
 
-            val answer =
+            val honoured =
                 s3.postForm(
                     "photos",
                     s3.signedPolicy(
@@ -229,8 +231,24 @@ class PostObjectTest {
                     "тело".toByteArray(),
                 )
 
-            assertEquals(403, answer.status, answer.text)
-            assertEquals(404, s3.get("photos", "report.txt").status)
+            assertEquals(204, honoured.status, honoured.text)
+            assertEquals(200, s3.get("photos", "report.txt").status)
+
+            val refused =
+                s3.postForm(
+                    "photos",
+                    s3.signedPolicy(
+                        policy(
+                            conditions =
+                                """{"bucket": "photos"}, ["starts-with", "${'$'}key", ""], """ +
+                                    """{"acl": "log-delivery-write"}""",
+                        ),
+                    ) + listOf("key" to "logs.txt", "acl" to "log-delivery-write"),
+                    "тело".toByteArray(),
+                )
+
+            assertEquals(400, refused.status, refused.text)
+            assertEquals(404, s3.get("photos", "logs.txt").status)
         }
     }
 

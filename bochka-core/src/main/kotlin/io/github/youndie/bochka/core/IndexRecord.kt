@@ -214,6 +214,15 @@ sealed interface IndexRecord {
          */
         val encryptionAlgorithm: String? = null,
         val encryptionKeyMd5: String? = null,
+        /**
+         * Who started the upload and how the finished object will be shared (M-192).
+         *
+         * Here rather than at the completion for the reason the lock above gives: the object is
+         * born minutes later, and an upload that forgot these across a restart would finish as an
+         * object owned by whoever happened to complete it, shared the way nobody asked.
+         */
+        val owner: String? = null,
+        val acl: String? = null,
     ) : IndexRecord
 
     data class UploadPart(
@@ -354,6 +363,13 @@ sealed interface IndexRecord {
         /** The canned ACL of a bucket, changed after creation. */
         private const val KIND_BUCKET_ACL: Byte = 27
 
+        /**
+         * An upload that knows who it belongs to: [KIND_UPLOAD_STARTED_LOCKED] plus the owner, the
+         * canned ACL, and the encryption behind a presence byte — same shape and same reason as
+         * [KIND_PUT_OWNED].
+         */
+        private const val KIND_UPLOAD_STARTED_OWNED: Byte = 28
+
         /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
         private const val MAX_PARTS = 10_000L
 
@@ -408,11 +424,12 @@ sealed interface IndexRecord {
                 }
 
                 is UploadStarted -> {
+                    val owned = record.owner != null || record.acl != null
                     out.write(
-                        if (record.encryptionAlgorithm == null) {
-                            KIND_UPLOAD_STARTED_LOCKED.toInt()
-                        } else {
-                            KIND_UPLOAD_STARTED_ENCRYPTED.toInt()
+                        when {
+                            owned -> KIND_UPLOAD_STARTED_OWNED.toInt()
+                            record.encryptionAlgorithm == null -> KIND_UPLOAD_STARTED_LOCKED.toInt()
+                            else -> KIND_UPLOAD_STARTED_ENCRYPTED.toInt()
                         },
                     )
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
@@ -425,9 +442,14 @@ sealed interface IndexRecord {
                     out.putText(record.retentionMode)
                     out.putInt64(record.retentionUntilMillis)
                     out.write(if (record.legalHold) 1 else 0)
+                    if (owned) out.write(if (record.encryptionAlgorithm == null) 0 else 1)
                     if (record.encryptionAlgorithm != null) {
                         out.putText(record.encryptionAlgorithm)
                         out.putText(record.encryptionKeyMd5)
+                    }
+                    if (owned) {
+                        out.putText(record.owner)
+                        out.putText(record.acl)
                     }
                 }
 
@@ -586,6 +608,7 @@ sealed interface IndexRecord {
                 KIND_UPLOAD_STARTED_WITH_TAGS,
                 KIND_UPLOAD_STARTED_LOCKED,
                 KIND_UPLOAD_STARTED_ENCRYPTED,
+                KIND_UPLOAD_STARTED_OWNED,
                 -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
@@ -595,31 +618,39 @@ sealed interface IndexRecord {
                     val withTags =
                         kind == KIND_UPLOAD_STARTED_WITH_TAGS ||
                             kind == KIND_UPLOAD_STARTED_LOCKED ||
-                            kind == KIND_UPLOAD_STARTED_ENCRYPTED
+                            kind == KIND_UPLOAD_STARTED_ENCRYPTED ||
+                            kind == KIND_UPLOAD_STARTED_OWNED
                     val metadata = buffer.metadata(withTags = withTags)
                     val carriesChecksum = kind != KIND_UPLOAD_STARTED
                     // Замок приехал с видом 21. Загрузка, начатая до него, замка и не несла —
                     // и это верное чтение старой записи, а не удобное.
-                    val lockable = kind == KIND_UPLOAD_STARTED_LOCKED || kind == KIND_UPLOAD_STARTED_ENCRYPTED
-                    val encrypted = kind == KIND_UPLOAD_STARTED_ENCRYPTED
+                    val lockable =
+                        kind == KIND_UPLOAD_STARTED_LOCKED ||
+                            kind == KIND_UPLOAD_STARTED_ENCRYPTED ||
+                            kind == KIND_UPLOAD_STARTED_OWNED
+                    val owned = kind == KIND_UPLOAD_STARTED_OWNED
+                    val checksumAlgorithm = if (carriesChecksum) buffer.optionalText() else null
+                    val checksumType = if (carriesChecksum) buffer.optionalText() else null
+                    val retentionMode = if (lockable) buffer.optionalText() else null
+                    val retentionUntil = if (lockable) buffer.long else 0
+                    val legalHold = lockable && buffer.get().toInt() == 1
+                    val encrypted =
+                        if (owned) buffer.get().toInt() == 1 else kind == KIND_UPLOAD_STARTED_ENCRYPTED
                     UploadStarted(
                         bucket = bucket,
                         key = key,
                         uploadId = uploadId,
                         startedAtMillis = startedAt,
                         metadata = metadata,
-                        checksumAlgorithm =
-                            if (carriesChecksum) {
-                                buffer.optionalText()
-                            } else {
-                                null
-                            },
-                        checksumType = if (carriesChecksum) buffer.optionalText() else null,
-                        retentionMode = if (lockable) buffer.optionalText() else null,
-                        retentionUntilMillis = if (lockable) buffer.long else 0,
-                        legalHold = lockable && buffer.get().toInt() == 1,
+                        checksumAlgorithm = checksumAlgorithm,
+                        checksumType = checksumType,
+                        retentionMode = retentionMode,
+                        retentionUntilMillis = retentionUntil,
+                        legalHold = legalHold,
                         encryptionAlgorithm = if (encrypted) buffer.optionalText() else null,
                         encryptionKeyMd5 = if (encrypted) buffer.optionalText() else null,
+                        owner = if (owned) buffer.optionalText() else null,
+                        acl = if (owned) buffer.optionalText() else null,
                     )
                 }
 

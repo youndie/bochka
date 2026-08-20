@@ -443,6 +443,8 @@ class ObjectStore(
                                             Retention(it, record.retentionUntilMillis)
                                         },
                                     legalHold = record.legalHold,
+                                    owner = record.owner,
+                                    acl = record.acl,
                                     encryption =
                                         record.encryptionAlgorithm?.let {
                                             Encryption(it, record.encryptionKeyMd5.orEmpty(), ByteArray(0))
@@ -1205,6 +1207,8 @@ class ObjectStore(
         bucket: String,
         key: ObjectKey,
         metadata: Metadata,
+        owner: String? = null,
+        acl: String? = null,
     ): Stored {
         val fileId = UUID.randomUUID().toString()
         val target = pathOf(fileId)
@@ -1227,7 +1231,7 @@ class ObjectStore(
         // The ETag comes across rather than being recomputed: it describes the bytes, the bytes are
         // the same bytes, and recomputing an MD5 of five gigabytes to learn what is already known
         // would be the expensive way to get the same string.
-        return commit(bucket, key, metadata, Staged(fileId, source.size, source.eTag))
+        return commit(bucket, key, metadata, Staged(fileId, source.size, source.eTag), owner = owner, acl = acl)
     }
 
     /**
@@ -1690,6 +1694,9 @@ class ObjectStore(
          */
         val retention: Retention? = null,
         val legalHold: Boolean = false,
+        /** Who started it and how the finished object will be shared (M-192). */
+        val owner: String? = null,
+        val acl: String? = null,
     )
 
     data class Part(
@@ -1759,6 +1766,8 @@ class ObjectStore(
         retention: Retention? = null,
         legalHold: Boolean = false,
         encryption: Encryption? = null,
+        owner: String? = null,
+        acl: String? = null,
     ): Upload {
         val upload =
             Upload(
@@ -1772,6 +1781,8 @@ class ObjectStore(
                 retention = retention,
                 legalHold = legalHold,
                 encryption = encryption,
+                owner = owner,
+                acl = acl,
             )
         uploads[upload.id] = UploadState(upload)
         write(
@@ -1788,6 +1799,8 @@ class ObjectStore(
                 legalHold = legalHold,
                 encryptionAlgorithm = encryption?.algorithm,
                 encryptionKeyMd5 = encryption?.keyMd5,
+                owner = owner,
+                acl = acl,
             ),
         )
         return upload
@@ -1994,6 +2007,11 @@ class ObjectStore(
                 // and the reader picks by offset. A single IV here would be a field nobody uses,
                 // which is the kind of field somebody later mistakes for the answer.
                 encryption = state.upload.encryption,
+                // From the upload rather than from whoever completed it: the object belongs to the
+                // key that started the upload, which is what S3 says and the only reading that
+                // survives a completion retried by somebody else's automation.
+                owner = state.upload.owner,
+                acl = state.upload.acl,
             )
         uploads.remove(uploadId)
         remember(uploadId, Completion(state.upload.bucket, state.upload.key, stored.eTag, stored.metadata.checksum))
@@ -2021,9 +2039,11 @@ class ObjectStore(
         retention: Retention?,
         legalHold: Boolean,
         encryption: Encryption?,
+        owner: String?,
+        acl: String?,
     ): Stored =
         try {
-            commit(bucket, key, metadata, staged, precondition, parts, retention, legalHold, encryption)
+            commit(bucket, key, metadata, staged, precondition, parts, retention, legalHold, encryption, owner, acl)
         } catch (e: Throwable) {
             Files.deleteIfExists(pathOf(staged.fileId))
             throw e
@@ -2194,6 +2214,8 @@ class ObjectStore(
                                 legalHold = state.upload.legalHold,
                                 encryptionAlgorithm = state.upload.encryption?.algorithm,
                                 encryptionKeyMd5 = state.upload.encryption?.keyMd5,
+                                owner = state.upload.owner,
+                                acl = state.upload.acl,
                             ),
                         ),
                     )

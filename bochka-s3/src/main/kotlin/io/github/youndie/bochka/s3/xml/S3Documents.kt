@@ -19,6 +19,13 @@ import io.github.youndie.bochka.s3.UriCodec
  * lets the whole protocol layer be tested on recorded bytes (Р8).
  */
 object S3Documents {
+    /** The two groups a canned ACL can name, spelled the way AWS spells them. */
+    private const val ALL_USERS = "http://acs.amazonaws.com/groups/global/AllUsers"
+
+    private const val AUTHENTICATED_USERS = "http://acs.amazonaws.com/groups/global/AuthenticatedUsers"
+
+    private val XSI_NAMESPACE = "xmlns:xsi" to "http://www.w3.org/2001/XMLSchema-instance"
+
     /** How keys are written in a listing: `encoding-type=url` was asked for, or it was not. */
     enum class KeyEncoding {
         NONE,
@@ -436,40 +443,96 @@ object S3Documents {
         }
 
     /**
-     * `<AccessControlPolicy>` — the owner with `FULL_CONTROL`, and nothing else.
+     * `<AccessControlPolicy>` — the owner, and one grant per thing the canned name says (M27).
      *
-     * The one document in this file that is genuinely a stand-in, and it is written to be a
-     * **true** one: there are no access controls here, so the honest report is that the caller
-     * owns the thing and may do everything to it. A client reading it learns that nothing is
-     * restricted, which is the case.
+     * It was a stand-in until this milestone: no owner model meant the honest answer was "you own
+     * it and nothing is restricted". Now it reports what the server will actually enforce, which
+     * is the only reason to answer at all — an ACL document that does not describe the behaviour
+     * is worse than `NotImplemented`, because a client believes it.
      *
-     * It answers the read side only. `PutBucketAcl` stays refused, because a grant accepted and
-     * not enforced is discovered as a leak rather than as an error.
+     * Grants are **derived** from the canned name rather than stored. A stored grant list would be
+     * a permission language over users this server does not have (see
+     * [io.github.youndie.bochka.s3.AccessControl]); derived ones cannot drift from what the
+     * evaluator does, because they are the same fact written twice for two audiences.
+     *
+     * The group URIs are AWS's own constants, and are what botocore compares against.
      */
     fun accessControlPolicy(
         ownerId: String,
         ownerDisplayName: String,
+        acl: String? = null,
+        bucketOwnerId: String? = null,
     ): ByteArray =
-        XmlWriter(384).document("AccessControlPolicy") {
+        XmlWriter(512).document("AccessControlPolicy") {
             element("Owner") {
                 text("ID", ownerId)
                 text("DisplayName", ownerDisplayName)
             }
             element("AccessControlList") {
-                element("Grant") {
-                    // Without the `xsi:type="CanonicalUser"` attribute real S3 puts here: this
-                    // writer has no attributes, and botocore reads the grantee by its elements
-                    // rather than by that type. Written down because it is a difference from the
-                    // wire, not an oversight — a client that keys off the attribute would see a
-                    // grantee of no type.
-                    element("Grantee") {
-                        text("ID", ownerId)
-                        text("DisplayName", ownerDisplayName)
+                grant(ownerId, ownerDisplayName, "FULL_CONTROL")
+                when (acl) {
+                    "public-read" -> {
+                        groupGrant(ALL_USERS, "READ")
                     }
-                    text("Permission", "FULL_CONTROL")
+
+                    "public-read-write" -> {
+                        groupGrant(ALL_USERS, "READ")
+                        groupGrant(ALL_USERS, "WRITE")
+                    }
+
+                    "authenticated-read" -> {
+                        groupGrant(AUTHENTICATED_USERS, "READ")
+                    }
+
+                    "bucket-owner-read" -> {
+                        bucketOwnerId?.takeIf { it != ownerId }?.let { grant(it, it, "READ") }
+                    }
+
+                    "bucket-owner-full-control" -> {
+                        bucketOwnerId?.takeIf { it != ownerId }?.let { grant(it, it, "FULL_CONTROL") }
+                    }
+
+                    else -> {
+                        Unit
+                    }
                 }
             }
         }
+
+    /**
+     * One grant to a named key.
+     *
+     * `xsi:type` is the member botocore calls `Type`, and every ACL test in the suite compares it.
+     * The namespace is declared on the element itself rather than on the document root because
+     * that is what S3 puts on the wire, and a client that copies the document back is then handing
+     * back something valid.
+     */
+    private fun XmlWriter.grant(
+        id: String,
+        displayName: String,
+        permission: String,
+    ) {
+        element("Grant") {
+            element("Grantee", listOf(XSI_NAMESPACE, "xsi:type" to "CanonicalUser")) {
+                text("ID", id)
+                text("DisplayName", displayName)
+            }
+            text("Permission", permission)
+        }
+    }
+
+    /** One grant to one of the two groups a canned name can name. */
+    private fun XmlWriter.groupGrant(
+        uri: String,
+        permission: String,
+    ) {
+        element("Grant") {
+            element("Grantee", listOf(XSI_NAMESPACE, "xsi:type" to "Group")) {
+                text("URI", uri)
+            }
+            text("Permission", permission)
+        }
+    }
 
     fun listAllMyBucketsResult(
         buckets: List<BucketEntry>,

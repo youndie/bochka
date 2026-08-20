@@ -54,7 +54,7 @@ class S3Fixture(
                 verifier =
                     SignatureVerifier(
                         Credentials(
-                            mapOf(ACCESS_KEY to SECRET),
+                            mapOf(ACCESS_KEY to SECRET, OTHER_ACCESS_KEY to OTHER_SECRET),
                             scope?.let { mapOf(ACCESS_KEY to it) } ?: emptyMap(),
                         ),
                     ),
@@ -128,6 +128,14 @@ class S3Fixture(
          * setting the header by hand is refused as contradicting the length.
          */
         chunked: Boolean = false,
+        /**
+         * Sign as the second key rather than the first (M27).
+         *
+         * Two keys and not two fixtures, because what the access model is about is two keys
+         * against **one** store: a second server would share nothing and could not tell a private
+         * object from somebody else's.
+         */
+        asOther: Boolean = false,
     ): Answer {
         val timestamp = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").format(ZonedDateTime.now(ZoneOffset.UTC))
         val hash = payloadHash ?: Sigv4.sha256Hex(body)
@@ -148,9 +156,11 @@ class S3Fixture(
                 CanonicalRequest.PathMode.VERBATIM,
             )
         val scope = "${timestamp.take(8)}/$REGION/s3/aws4_request"
+        val key = if (asOther) OTHER_ACCESS_KEY else ACCESS_KEY
+        val secret = if (asOther) OTHER_SECRET else SECRET
         val signature =
             Sigv4.signature(
-                Sigv4.signingKey(SECRET, timestamp.take(8), REGION, "s3"),
+                Sigv4.signingKey(secret, timestamp.take(8), REGION, "s3"),
                 Sigv4.stringToSign(timestamp, scope, canonical),
             )
 
@@ -170,7 +180,7 @@ class S3Fixture(
                 .header("x-amz-date", timestamp)
                 .header(
                     "Authorization",
-                    "${Sigv4.ALGORITHM} Credential=$ACCESS_KEY/$scope, " +
+                    "${Sigv4.ALGORITHM} Credential=$key/$scope, " +
                         "SignedHeaders=${signedNames.joinToString(";")}, Signature=$signature",
                 )
         for ((name, value) in headers) builder.header(name, value)
@@ -288,7 +298,10 @@ class S3Fixture(
         return listOf("AWSAccessKeyId" to ACCESS_KEY, "policy" to policy, "signature" to signature)
     }
 
-    fun createBucket(bucket: String): Answer = send("PUT", "/$bucket")
+    fun createBucket(
+        bucket: String,
+        headers: List<Pair<String, String>> = emptyList(),
+    ): Answer = send("PUT", "/$bucket", headers = headers)
 
     fun put(
         bucket: String,
@@ -319,6 +332,11 @@ class S3Fixture(
     companion object {
         const val ACCESS_KEY = "bochkaadmin"
         const val SECRET = "bochkasecret"
+
+        /** A second key, for the half of the access model that needs somebody else (M27). */
+        const val OTHER_ACCESS_KEY = "bochkaother"
+
+        const val OTHER_SECRET = "bochkaothersecret"
         const val REGION = "us-east-1"
     }
 }

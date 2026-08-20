@@ -58,6 +58,40 @@ class XmlWriter(
         ascii(">")
     }
 
+    /**
+     * An element with attributes, which is needed exactly once: `<Grantee xsi:type="...">` (M27).
+     *
+     * The type of a grantee travels as an attribute and nowhere else, and botocore reads it into
+     * the `Type` member every ACL-comparing test looks at. Writing the grantee without it produces
+     * a document that is well-formed, parses cleanly, and describes a grantee of no kind — the
+     * shape of wrongness this writer's own KDoc used to record as a known difference from the
+     * wire, because until now nothing needed the attribute.
+     *
+     * Attribute values are ASCII here — namespace URIs and the words `Group` and `CanonicalUser` —
+     * and are written as such rather than escaped: a caller passing anything else is a bug in this
+     * file rather than data from a client.
+     */
+    fun element(
+        name: String,
+        attributes: List<Pair<String, String>>,
+        body: XmlWriter.() -> Unit,
+    ) {
+        ascii("<")
+        ascii(name)
+        for ((attribute, value) in attributes) {
+            ascii(" ")
+            ascii(attribute)
+            ascii("=\"")
+            ascii(value)
+            ascii("\"")
+        }
+        ascii(">")
+        body()
+        ascii("</")
+        ascii(name)
+        ascii(">")
+    }
+
     /** Writes nothing when [value] is null — S3 leaves absent members out rather than empty. */
     fun text(
         name: String,
