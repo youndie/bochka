@@ -917,8 +917,11 @@ class S3Handler(
         return xml(
             S3Documents.listAllMyBucketsResult(
                 buckets = page.map { S3Documents.BucketEntry(it.name, timestamp(it.createdAt)) },
-                ownerId = OWNER,
-                ownerDisplayName = OWNER,
+                // The caller: `ListBuckets` answers the buckets of whoever asked, so the owner of
+                // that answer is that key. `OWNER` is what a store with no owners has to say, and
+                // it stays as the fallback for exactly those.
+                ownerId = accessKeyId,
+                ownerDisplayName = accessKeyId,
                 nextContinuationToken = page.lastOrNull()?.name?.takeIf { matching.size > page.size },
                 prefix = prefix,
             ),
@@ -1116,7 +1119,13 @@ class S3Handler(
 
     private fun ObjectStore.Page.entries(): List<S3Documents.ObjectEntry> =
         keys.map { (key, stored) ->
-            S3Documents.ObjectEntry(key, timestamp(stored.lastModified), stored.eTag, stored.size)
+            S3Documents.ObjectEntry(
+                key,
+                timestamp(stored.lastModified),
+                stored.eTag,
+                stored.size,
+                owner = stored.owner,
+            )
         }
 
     private fun ListingRequest.encoding(): S3Documents.KeyEncoding =

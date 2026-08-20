@@ -38,6 +38,14 @@ object S3Documents {
         val eTag: String,
         val size: Long,
         val storageClass: String = "STANDARD",
+        /**
+         * Who wrote this version (M27).
+         *
+         * Per entry rather than per listing, because a bucket open for writing holds objects
+         * belonging to more than one key — that is the whole difference the access model makes to
+         * a listing, and a single owner for the page would report it wrong exactly when it matters.
+         */
+        val owner: String? = null,
     )
 
     data class BucketEntry(
@@ -155,9 +163,10 @@ object S3Documents {
                     // Only when `fetch-owner=true` asked for it: `shapes.ListObjectsV2Request`
                     // has the parameter precisely because the owner is not sent by default.
                     if (owner != null) {
+                        val id = entry.owner ?: owner
                         element("Owner") {
-                            text("ID", owner)
-                            text("DisplayName", owner)
+                            text("ID", id)
+                            text("DisplayName", id)
                         }
                     }
                 }
