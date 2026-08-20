@@ -5,6 +5,7 @@ import io.github.youndie.bochka.core.Metadata
 import io.github.youndie.bochka.core.ObjectKey
 import io.github.youndie.bochka.core.ObjectStore
 import io.github.youndie.bochka.core.RecordLog
+import io.github.youndie.bochka.s3.AccessControl
 import io.github.youndie.bochka.s3.Lifecycle
 import io.github.youndie.bochka.s3.LifecycleSweep
 import io.github.youndie.bochka.s3.Lifecycles
@@ -98,6 +99,10 @@ object Measurements {
 
                 "readpath" -> {
                     readPath(dir)
+                }
+
+                "acl" -> {
+                    accessPath(dir)
                 }
 
                 "sse" -> {
@@ -742,6 +747,87 @@ object Measurements {
             println(
                 "%-10s %8d ns per read  spread %.2f%s  (checksum %d)".format(
                     bucket,
+                    nanos[nanos.size / 2],
+                    spread,
+                    if (spread > 1.3) "  ← too noisy to conclude from" else "",
+                    sink,
+                ),
+            )
+        }
+        store.close()
+    }
+
+    /**
+     * M-209: what the access model costs a read, measured where it happens.
+     *
+     * The same shape as [readPath] and for the same reason: what M27 added to a request that was
+     * not doing it before is a handful of map lookups and — on an object read — one lookup in the
+     * index for the version's owner. A wire cannot see that; a request across a socket costs
+     * hundreds of microseconds and this is nanoseconds, so measuring it end to end would measure
+     * the socket (M-178 learned that the expensive way).
+     *
+     * Three variants, and the first is the one that matters: a bucket with no recorded owner is
+     * every deployment that existed before this milestone, and it pays only the early return.
+     */
+    private fun accessPath(dir: Path) {
+        println("== M-209: the access check on the read path ==")
+        val home = Files.createDirectories(dir.resolve("accesspath"))
+        Files.deleteIfExists(home.resolve("index.log"))
+        val store = ObjectStore(root = home, durability = ObjectStore.Durability.NONE)
+        store.createBucket("legacy")
+        store.createBucket("owned", owner = "main", acl = "private")
+        store.createBucket("shared", owner = "main", acl = "public-read")
+
+        val key = ObjectKey.of("photos/2026/08/img.jpg")
+        // Written **with** an owner where the bucket has one: an object whose owner is null makes
+        // the decision short-circuit, and the number would then be a floor rather than the cost.
+        kotlinx.coroutines.runBlocking {
+            for ((bucket, acl) in listOf("legacy" to null, "owned" to "private", "shared" to "public-read")) {
+                val staged = store.stage { out -> out.write(ByteArray(1024), 0, 1024) }
+                store.commit(
+                    bucket = bucket,
+                    key = key,
+                    metadata = Metadata.EMPTY,
+                    staged = staged,
+                    owner = if (acl == null) null else "main",
+                    acl = acl,
+                )
+            }
+        }
+
+        // Exactly what `S3Handler.aclRefusal` does for a `GET`, and nothing else: the bucket's
+        // owner and ACL, then — when there is an owner — the version's, then the decision. Every
+        // branch returns something different and all of it is summed, because a branch returning a
+        // constant is a branch the JIT is free to delete (M-178 published two nanoseconds once,
+        // and that was the optimiser rather than the code).
+        fun once(
+            bucket: String,
+            requester: String,
+        ): Int {
+            val resource = AccessControl.Resource(store.bucketOwner(bucket), store.bucketAcl(bucket))
+            if (resource.unrestricted) return 1
+            val stored = store.currentVersion(bucket, key) ?: return 2
+            val obj = AccessControl.Resource(stored.owner, stored.acl)
+            return if (AccessControl.allowsObjectRead(obj, requester, resource.owner)) 3 else 4
+        }
+
+        val rounds = System.getenv("BOCHKA_MEASURE_KEYS")?.toIntOrNull() ?: 2_000_000
+        for ((bucket, requester) in listOf("legacy" to "main", "owned" to "main", "shared" to "stranger")) {
+            var sink = 0
+            repeat(200_000) { sink += once(bucket, requester) }
+
+            val nanos = ArrayList<Long>(repeats)
+            repeat(repeats) {
+                val started = Measurement.currentThreadCpuNanos()
+                repeat(rounds) { sink += once(bucket, requester) }
+                nanos += (Measurement.currentThreadCpuNanos() - started) / rounds
+            }
+            nanos.sort()
+            val spread = nanos.last().toDouble() / nanos.first()
+            println(
+                "%-8s as %-9s %6d ns per read  spread %.2f%s  (checksum %d)".format(
+                    bucket,
+                    requester,
                     nanos[nanos.size / 2],
                     spread,
                     if (spread > 1.3) "  ← too noisy to conclude from" else "",

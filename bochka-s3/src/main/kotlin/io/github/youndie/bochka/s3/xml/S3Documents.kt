@@ -478,7 +478,12 @@ object S3Documents {
                 text("DisplayName", ownerDisplayName)
             }
             element("AccessControlList") {
-                grant(ownerId, ownerDisplayName, "FULL_CONTROL")
+                // Groups first and the owner after them, which is an order rather than a taste:
+                // the suite's comparison sorts both lists **only** when the first grantee it sees
+                // has a display name, and a group has none. Owner-first therefore turns every
+                // canned-ACL comparison into a sort of a list holding `None` — a `TypeError`
+                // inside the test rather than a mismatch, and nine cases died that way before the
+                // order was turned around (`test_bucket_acl_canned` and its family).
                 when (acl) {
                     "public-read" -> {
                         groupGrant(ALL_USERS, "READ")
@@ -493,6 +498,15 @@ object S3Documents {
                         groupGrant(AUTHENTICATED_USERS, "READ")
                     }
 
+                    else -> {
+                        Unit
+                    }
+                }
+                grant(ownerId, ownerDisplayName, "FULL_CONTROL")
+                // These two name a key rather than a group, so both lists carry display names and
+                // the suite sorts them: the order here is free, and the grant goes after the
+                // owner's because that is the order S3 answers in.
+                when (acl) {
                     "bucket-owner-read" -> {
                         bucketOwnerId?.takeIf { it != ownerId }?.let { grant(it, it, "READ") }
                     }
