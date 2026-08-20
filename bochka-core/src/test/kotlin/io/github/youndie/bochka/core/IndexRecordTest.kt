@@ -184,6 +184,96 @@ class IndexRecordTest {
     }
 
     @Test
+    fun `an owned version keeps who wrote it and how it is shared`() {
+        // M-192. The owner is the access key that wrote the version, and the ACL is a canned name
+        // rather than a list of grants: a grant names a user, and this server has keys.
+        val record =
+            IndexRecord.Put(
+                bucket = "photos",
+                key = ObjectKey.of("holiday.jpg"),
+                fileId = "0e2b9c34-6a1f-4a7d-9b8e-2f5c1d0a7e35",
+                size = 10,
+                eTag = "\"x\"",
+                lastModifiedMillis = 1_755_400_000_000L,
+                metadata = Metadata(contentType = "image/jpeg"),
+                owner = "s3main",
+                acl = "public-read",
+            )
+
+        val back = IndexRecord.decode(IndexRecord.encode(record)) as IndexRecord.Put
+
+        assertEquals("s3main", back.owner)
+        assertEquals("public-read", back.acl)
+    }
+
+    @Test
+    fun `an owned version can also be encrypted`() {
+        // The two newest fields of a version arrived in different milestones, and a record has to
+        // carry both at once or the second one silently costs the first.
+        val record =
+            IndexRecord.Put(
+                bucket = "photos",
+                key = ObjectKey.of("secret.jpg"),
+                fileId = "0e2b9c34-6a1f-4a7d-9b8e-2f5c1d0a7e36",
+                size = 10,
+                eTag = "\"x\"",
+                lastModifiedMillis = 1_755_400_000_000L,
+                metadata = Metadata(contentType = "image/jpeg"),
+                encryptionAlgorithm = "AES256",
+                encryptionKeyMd5 = "DWygnHRtgiJ77HCm+1rvHw==",
+                encryptionIv = ByteArray(16) { it.toByte() },
+                owner = "s3alt",
+                acl = "private",
+            )
+
+        val back = IndexRecord.decode(IndexRecord.encode(record)) as IndexRecord.Put
+
+        assertEquals("s3alt", back.owner)
+        assertEquals("private", back.acl)
+        assertEquals("AES256", back.encryptionAlgorithm)
+        assertContentEquals(ByteArray(16) { it.toByte() }, back.encryptionIv)
+    }
+
+    @Test
+    fun `a version written before owners existed has no owner`() {
+        // The other half of the rule: an old record means exactly what it meant. A version with
+        // no owner is not owned by the process that happens to read it.
+        val record =
+            IndexRecord.Put(
+                bucket = "photos",
+                key = ObjectKey.of("old.txt"),
+                fileId = "0e2b9c34-6a1f-4a7d-9b8e-2f5c1d0a7e37",
+                size = 5,
+                eTag = "\"x\"",
+                lastModifiedMillis = 1_755_400_000_000L,
+                metadata = Metadata(contentType = "text/plain"),
+            )
+
+        val back = IndexRecord.decode(IndexRecord.encode(record)) as IndexRecord.Put
+
+        assertNull(back.owner)
+        assertNull(back.acl)
+    }
+
+    @Test
+    fun `a bucket remembers who created it, and its acl is a record of its own`() {
+        roundTrip(IndexRecord.BucketCreated("photos", 1_755_400_000_000L, owner = "s3main", acl = "private"))
+        // Separate from creation because it changes after creation, like versioning: `PutBucketAcl`
+        // rewriting the creation record would have to carry a creation time it did not witness.
+        roundTrip(IndexRecord.BucketAcl("photos", "public-read"))
+    }
+
+    @Test
+    fun `a bucket created before owners existed has none`() {
+        val back =
+            IndexRecord.decode(IndexRecord.encode(IndexRecord.BucketCreated("photos", 1L))) as
+                IndexRecord.BucketCreated
+
+        assertNull(back.owner)
+        assertNull(back.acl)
+    }
+
+    @Test
     fun `a record from a newer version is refused rather than misread`() {
         assertFailsWith<IllegalArgumentException> { IndexRecord.decode(byteArrayOf(99, 0, 0, 0, 0)) }
     }

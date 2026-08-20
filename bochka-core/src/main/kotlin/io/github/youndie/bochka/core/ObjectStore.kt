@@ -123,6 +123,15 @@ class ObjectStore(
          * the server did **to** it. Absent means the bytes on the disk are the bytes of the object.
          */
         val encryption: Encryption? = null,
+        /**
+         * The access key that wrote this version, and how it is shared (M-192).
+         *
+         * `null` on both counts for a version written before this milestone, and that is read as
+         * "unrestricted" rather than as "private": a version whose owner was never recorded cannot
+         * be handed to whoever asks for it first.
+         */
+        val owner: String? = null,
+        val acl: String? = null,
     )
 
     /**
@@ -245,7 +254,21 @@ class ObjectStore(
      * bucket, for ever. That is not a missing feature so much as a wrong answer — a client sorting
      * its buckets by age gets them in map order and no way to tell.
      */
-    private val buckets = ConcurrentHashMap<String, Instant>()
+    private val buckets = ConcurrentHashMap<String, BucketState>()
+
+    /**
+     * What a bucket knows about itself besides its name.
+     *
+     * [owner] is the access key that created it and [acl] the canned name it is shared under, and
+     * both are `null` for a bucket created before the access model existed (M-192). That pair of
+     * nulls is load-bearing: it is how an upgraded store keeps answering the keys that were using
+     * it yesterday, instead of locking them out of buckets nobody is recorded as owning.
+     */
+    data class BucketState(
+        val createdAt: Instant,
+        val owner: String? = null,
+        val acl: String? = null,
+    )
 
     /**
      * Именованные настройки бакета — теги, CORS и что появится дальше — байтами, как они пришли.
@@ -314,7 +337,14 @@ class ObjectStore(
             log.recover { payload ->
                 when (val record = IndexRecord.decode(payload)) {
                     is IndexRecord.BucketCreated -> {
-                        buckets[record.bucket] = Instant.ofEpochMilli(record.createdAtMillis)
+                        buckets[record.bucket] =
+                            BucketState(Instant.ofEpochMilli(record.createdAtMillis), record.owner, record.acl)
+                    }
+
+                    is IndexRecord.BucketAcl -> {
+                        // Only for a bucket that is there: an ACL replayed onto a deleted bucket
+                        // would resurrect it as a nameless entry with a creation time of zero.
+                        buckets.computeIfPresent(record.bucket) { _, state -> state.copy(acl = record.acl) }
                     }
 
                     is IndexRecord.BucketSubresource -> {
@@ -379,6 +409,8 @@ class ObjectStore(
                                             record.encryptionIv ?: ByteArray(0),
                                         )
                                     },
+                                owner = record.owner,
+                                acl = record.acl,
                             )
                         // A record from before versions carries sequence 0 and the `null` version,
                         // and every write of that key carried the same pair. Replayed as an insert
@@ -460,10 +492,54 @@ class ObjectStore(
 
     val objectCount: Int get() = objects.size
 
-    fun createBucket(name: String): Boolean {
+    fun createBucket(
+        name: String,
+        owner: String? = null,
+        acl: String? = null,
+    ): Boolean {
         val createdAt = Instant.now()
-        if (buckets.putIfAbsent(name, createdAt) != null) return false
-        write(IndexRecord.BucketCreated(name, createdAt.toEpochMilli()))
+        if (buckets.putIfAbsent(name, BucketState(createdAt, owner, acl)) != null) return false
+        write(IndexRecord.BucketCreated(name, createdAt.toEpochMilli(), owner, acl))
+        return true
+    }
+
+    /** Who created the bucket, or `null` for one created before owners were recorded (M-192). */
+    fun bucketOwner(name: String): String? = buckets[name]?.owner
+
+    /** The canned ACL of the bucket, or `null` while nobody has named one. */
+    fun bucketAcl(name: String): String? = buckets[name]?.acl
+
+    /**
+     * Changes the canned ACL of an existing bucket. `false` when there is no such bucket.
+     *
+     * Its own log record rather than a rewritten creation, for the reason [IndexRecord.BucketAcl]
+     * gives: this call knows the new ACL and nothing else about the bucket.
+     */
+    fun setBucketAcl(
+        name: String,
+        acl: String,
+    ): Boolean {
+        if (buckets.computeIfPresent(name) { _, state -> state.copy(acl = acl) } == null) return false
+        write(IndexRecord.BucketAcl(name, acl))
+        return true
+    }
+
+    /**
+     * Changes the canned ACL of the current version of an object, leaving its bytes alone.
+     *
+     * The same shape as [setTags], and for the same reason: written at the version's own sequence,
+     * because an ACL says what may be done with a version rather than which version is current.
+     * A new sequence would make `PutObjectAcl` quietly promote an old version over a newer one.
+     */
+    fun setObjectAcl(
+        bucket: String,
+        key: ObjectKey,
+        acl: String,
+    ): Boolean {
+        val entry = currentEntry(bucket, key)?.takeIf { !it.value.deleteMarker } ?: return false
+        val stored = entry.value.copy(acl = acl)
+        objects[entry.key] = stored
+        write(putRecord(bucket, key, entry.key.sequence, stored))
         return true
     }
 
@@ -735,7 +811,7 @@ class ObjectStore(
     }
 
     /** Every bucket, in name order — which is the order `ListBuckets` pages through. */
-    fun bucketList(): List<Bucket> = buckets.entries.map { Bucket(it.key, it.value) }.sortedBy { it.name }
+    fun bucketList(): List<Bucket> = buckets.entries.map { Bucket(it.key, it.value.createdAt) }.sortedBy { it.name }
 
     fun bucketNames(): List<String> = buckets.keys.sorted()
 
@@ -914,6 +990,9 @@ class ObjectStore(
         legalHold: Boolean = false,
         /** Set when the client brought a key: the algorithm, the key's MD5 and the IV (M26). */
         encryption: Encryption? = null,
+        /** Who is writing it, and under which canned ACL, when the deployment records owners (M-192). */
+        owner: String? = null,
+        acl: String? = null,
     ): Stored =
         writing.withLock {
             val state = versioning(bucket)
@@ -955,6 +1034,8 @@ class ObjectStore(
                     retention = retention,
                     legalHold = legalHold,
                     encryption = encryption,
+                    owner = owner,
+                    acl = acl,
                 )
 
             // Not versioning means the write **replaces** the null version rather than joining it,
@@ -1027,6 +1108,8 @@ class ObjectStore(
         encryptionAlgorithm = stored.encryption?.algorithm,
         encryptionKeyMd5 = stored.encryption?.keyMd5,
         encryptionIv = stored.encryption?.iv,
+        owner = stored.owner,
+        acl = stored.acl,
     )
 
     /** Throws away bytes that were written and turned out not to be wanted. */
@@ -2064,8 +2147,12 @@ class ObjectStore(
 
             var records = 0L
             RecordLog(temp).use { fresh ->
-                for ((bucket, createdAt) in buckets) {
-                    fresh.append(IndexRecord.encode(IndexRecord.BucketCreated(bucket, createdAt.toEpochMilli())))
+                for ((bucket, state) in buckets) {
+                    fresh.append(
+                        IndexRecord.encode(
+                            IndexRecord.BucketCreated(bucket, state.createdAt.toEpochMilli(), state.owner, state.acl),
+                        ),
+                    )
                     records++
                     // Настройки — тоже живое состояние: уплотнение, потерявшее их, потеряло бы
                     // конфигурацию, о которой клиенту уже ответили.
@@ -2075,20 +2162,14 @@ class ObjectStore(
                     }
                 }
                 for ((located, stored) in objects) {
-                    fresh.append(
-                        IndexRecord.encode(
-                            IndexRecord.Put(
-                                bucket = located.bucket,
-                                key = located.key,
-                                fileId = stored.fileId,
-                                size = stored.size,
-                                eTag = stored.eTag,
-                                lastModifiedMillis = stored.lastModified.toEpochMilli(),
-                                metadata = stored.metadata,
-                                parts = stored.parts,
-                            ),
-                        ),
-                    )
+                    // Through [putRecord], which is the one place that knows what a version is
+                    // made of. This loop used to build the record itself from eight of its fields,
+                    // and the ones it did not name were lost on the next compaction: the version
+                    // id, the sequence, the tombstone flag, the lock and the encryption. Every one
+                    // of those surfaces somewhere other than compaction — as an object that
+                    // decrypts to rubbish, a deleted key that came back, a hold that stopped
+                    // holding — which is why no test noticed for four milestones.
+                    fresh.append(IndexRecord.encode(putRecord(located.bucket, located.key, located.sequence, stored)))
                     records++
                 }
                 // Uploads in flight are state too, and a compaction that dropped them would lose
@@ -2104,6 +2185,15 @@ class ObjectStore(
                                 metadata = state.upload.metadata,
                                 checksumAlgorithm = state.upload.checksumAlgorithm,
                                 checksumType = state.upload.checksumType,
+                                // The lock and the key the upload was started under, for the same
+                                // reason the version above carries its own: an upload that came
+                                // out of a compaction without them finishes as an unlocked object,
+                                // or accepts parts under a key it can no longer check.
+                                retentionMode = state.upload.retention?.mode,
+                                retentionUntilMillis = state.upload.retention?.untilMillis ?: 0,
+                                legalHold = state.upload.legalHold,
+                                encryptionAlgorithm = state.upload.encryption?.algorithm,
+                                encryptionKeyMd5 = state.upload.encryption?.keyMd5,
                             ),
                         ),
                     )
@@ -2120,6 +2210,7 @@ class ObjectStore(
                                     eTag = part.eTag,
                                     lastModifiedMillis = part.lastModified.toEpochMilli(),
                                     checksum = part.checksum,
+                                    iv = part.iv,
                                 ),
                             ),
                         )

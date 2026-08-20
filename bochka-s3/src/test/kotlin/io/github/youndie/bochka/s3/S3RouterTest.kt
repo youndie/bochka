@@ -166,7 +166,7 @@ class S3RouterTest {
         // The important half. `GET /photos?versions` answered with an empty listing tells the
         // client there are no versions, which is a lie shaped exactly like an answer.
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos", "notification"))
-        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos/a.txt", "acl"))
+        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("GET", "h", "/photos/a.txt", "restore"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PATCH", "h", "/photos/a.txt", ""))
     }
 
@@ -188,9 +188,15 @@ class S3RouterTest {
         // остаётся отказом, и обе половины проверяются здесь рядом, чтобы одну нельзя было
         // подвинуть, не заметив другую.
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "policy"))
-        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "acl"))
         assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "policy"))
-        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "acl"))
+        // И пятый переезд, M27: `?acl` ушёл из отвечающих на `GET` к настройкам на обоих методах,
+        // и у объекта появился свой маршрут. Направление то же самое: сервер начал **делать** то,
+        // что этот подресурс описывает — владелец и canned ACL решают, кому что можно, — а до тех
+        // пор `PUT ?acl` был отказом по имени.
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "acl"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "acl"))
+        assertIs<S3Router.Route.ObjectAcl>(pathStyle.route("GET", "h", "/photos/a.txt", "acl"))
+        assertIs<S3Router.Route.ObjectAcl>(pathStyle.route("PUT", "h", "/photos/a.txt", "acl"))
         // И четвёртый переезд, M23: `?lifecycle` был среди отвечающих на `GET` и отвергающих
         // всё остальное — а стал настройкой на трёх методах. Направление у переездов одно:
         // подресурс уходит из отвергающих тогда, когда сервер начинает **делать** то, что тот

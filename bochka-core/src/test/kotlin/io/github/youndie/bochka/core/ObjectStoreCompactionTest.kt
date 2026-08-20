@@ -93,6 +93,62 @@ class ObjectStoreCompactionTest {
         }
 
     @Test
+    fun `a version keeps everything it says about itself through a compaction`() =
+        runTest {
+            // Compaction rewrites the log from memory, so every field of a version has to make the
+            // trip. The ones that do not are invisible from outside until somebody needs them: an
+            // object whose IV was dropped decrypts to rubbish, a tombstone that came back as an
+            // object resurrects deleted data, and a legal hold that vanished is a lock that does
+            // not lock. None of those look like a compaction bug from where they surface.
+            val iv = ByteArray(16) { it.toByte() }
+            store().use { s ->
+                s.createBucket("b", owner = "s3main", acl = "public-read")
+                s.setVersioning("b", ObjectStore.Versioning.ENABLED)
+                s.commit(
+                    bucket = "b",
+                    key = ObjectKey.of("secret.txt"),
+                    metadata = Metadata(contentType = "text/plain"),
+                    staged = s.stage { out -> out.write("cipher".toByteArray(), 0, 6) },
+                    encryption = ObjectStore.Encryption("AES256", "DWygnHRtgiJ77HCm+1rvHw==", iv),
+                    owner = "s3main",
+                    acl = "private",
+                )
+                s.commit(
+                    bucket = "b",
+                    key = ObjectKey.of("held.txt"),
+                    metadata = Metadata(contentType = "text/plain"),
+                    staged = s.stage { out -> out.write("plain".toByteArray(), 0, 5) },
+                    legalHold = true,
+                )
+                s.delete("b", ObjectKey.of("held.txt"))
+                s.compact()
+            }
+
+            store().use { reopened ->
+                assertEquals("s3main", reopened.bucketOwner("b"))
+                assertEquals("public-read", reopened.bucketAcl("b"))
+
+                val secret = reopened.get("b", ObjectKey.of("secret.txt"))
+                assertEquals("AES256", secret?.encryption?.algorithm)
+                assertContentEquals(iv, secret?.encryption?.iv)
+                assertEquals("s3main", secret?.owner)
+                assertEquals("private", secret?.acl)
+                assertTrue(secret!!.versionId != ObjectStore.NULL_VERSION, "a versioned write keeps its id")
+
+                // The tombstone is the current version of the key, and the version under it still
+                // carries its hold.
+                assertTrue(
+                    reopened.currentVersion("b", ObjectKey.of("held.txt"))!!.deleteMarker,
+                    "a tombstone stays one",
+                )
+                assertTrue(
+                    reopened.versions("b", ObjectKey.of("held.txt")).any { it.legalHold },
+                    "the version under the tombstone keeps its legal hold",
+                )
+            }
+        }
+
+    @Test
     fun `an upload in flight survives compaction`() =
         runTest {
             // A compaction that dropped uploads would throw away parts a client has already been

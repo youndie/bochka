@@ -25,6 +25,30 @@ sealed interface IndexRecord {
          * after the next one.
          */
         val createdAtMillis: Long = 0,
+        /**
+         * The access key that created it, and `null` for a bucket created before owners existed
+         * (M-192).
+         *
+         * `null` is not "nobody" spelled differently: it is the state of a bucket whose creator
+         * this log never recorded, and the access model reads it as "unrestricted" for exactly
+         * that reason. Filling it in at recovery — with the first key to touch the bucket, say —
+         * would hand somebody a bucket they never created.
+         */
+        val owner: String? = null,
+        /** The canned ACL it was created with, when the request named one. */
+        val acl: String? = null,
+    ) : IndexRecord
+
+    /**
+     * The canned ACL of a bucket, changed after its creation.
+     *
+     * Its own record rather than a rewrite of [BucketCreated], and for the same reason as
+     * [BucketVersioning]: `PutBucketAcl` knows the new ACL and nothing else, so rewriting the
+     * creation record would make it carry a creation time it did not witness.
+     */
+    data class BucketAcl(
+        override val bucket: String,
+        val acl: String,
     ) : IndexRecord
 
     data class BucketDeleted(
@@ -96,6 +120,15 @@ sealed interface IndexRecord {
         val encryptionAlgorithm: String? = null,
         val encryptionKeyMd5: String? = null,
         val encryptionIv: ByteArray? = null,
+        /**
+         * Who wrote this version, and how they shared it (M-192).
+         *
+         * The owner is an access key id rather than a user: the whole access model here is built
+         * on the fact that the suite itself equates the two (`user_id` in `make-conf.py`), and a
+         * user table would be a second identity store answering the same question.
+         */
+        val owner: String? = null,
+        val acl: String? = null,
     ) : IndexRecord
 
     /** Object lock on a bucket: the default rule, and by its presence that lock is on at all. */
@@ -305,6 +338,22 @@ sealed interface IndexRecord {
         /** A part of one: [KIND_UPLOAD_PART_WITH_CHECKSUM] plus the IV it was encrypted with. */
         private const val KIND_UPLOAD_PART_ENCRYPTED: Byte = 24
 
+        /**
+         * A version with an owner and a canned ACL (M-192).
+         *
+         * It carries the encryption of [KIND_PUT_ENCRYPTED] behind a presence byte rather than in
+         * the kind, because owner and encryption are independent: four kinds for two optional
+         * groups is how a record encoding starts multiplying, and the next optional group would
+         * make it eight.
+         */
+        private const val KIND_PUT_OWNED: Byte = 25
+
+        /** A bucket with an owner and a canned ACL: [KIND_BUCKET_CREATED_AT] plus the two. */
+        private const val KIND_BUCKET_CREATED_OWNED: Byte = 26
+
+        /** The canned ACL of a bucket, changed after creation. */
+        private const val KIND_BUCKET_ACL: Byte = 27
+
         /** Part numbers run 1..10 000, so a record claiming more than that is corrupt. */
         private const val MAX_PARTS = 10_000L
 
@@ -319,9 +368,20 @@ sealed interface IndexRecord {
             val out = ByteArrayOutputStream(128)
             when (record) {
                 is BucketCreated -> {
-                    out.write(KIND_BUCKET_CREATED_AT.toInt())
+                    val owned = record.owner != null || record.acl != null
+                    out.write(if (owned) KIND_BUCKET_CREATED_OWNED.toInt() else KIND_BUCKET_CREATED_AT.toInt())
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
                     out.putInt64(record.createdAtMillis)
+                    if (owned) {
+                        out.putText(record.owner)
+                        out.putText(record.acl)
+                    }
+                }
+
+                is BucketAcl -> {
+                    out.write(KIND_BUCKET_ACL.toInt())
+                    out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
+                    out.putText(record.acl)
                 }
 
                 is BucketSubresource -> {
@@ -421,13 +481,12 @@ sealed interface IndexRecord {
                 is Put -> {
                     // The old kind while there is nothing new to say, because a reader that has
                     // never seen an encrypted object should never have to learn the newer shape.
+                    val owned = record.owner != null || record.acl != null
                     out.write(
-                        if (record.encryptionAlgorithm ==
-                            null
-                        ) {
-                            KIND_PUT_LOCKED.toInt()
-                        } else {
-                            KIND_PUT_ENCRYPTED.toInt()
+                        when {
+                            owned -> KIND_PUT_OWNED.toInt()
+                            record.encryptionAlgorithm == null -> KIND_PUT_LOCKED.toInt()
+                            else -> KIND_PUT_ENCRYPTED.toInt()
                         },
                     )
                     out.putField(record.bucket.toByteArray(StandardCharsets.UTF_8))
@@ -451,10 +510,20 @@ sealed interface IndexRecord {
                     out.putText(record.retentionMode)
                     out.putInt64(record.retentionUntilMillis)
                     out.write(if (record.legalHold) 1 else 0)
+                    if (owned) {
+                        // The presence byte the kind no longer carries. Written even when there is
+                        // no encryption, because the reader has to know whether to read it before
+                        // it can reach the owner behind it.
+                        out.write(if (record.encryptionAlgorithm == null) 0 else 1)
+                    }
                     if (record.encryptionAlgorithm != null) {
                         out.putText(record.encryptionAlgorithm)
                         out.putText(record.encryptionKeyMd5)
                         out.putField(record.encryptionIv ?: ByteArray(0))
+                    }
+                    if (owned) {
+                        out.putText(record.owner)
+                        out.putText(record.acl)
                     }
                 }
             }
@@ -470,6 +539,15 @@ sealed interface IndexRecord {
 
                 KIND_BUCKET_CREATED_AT -> {
                     BucketCreated(buffer.text(), buffer.long)
+                }
+
+                KIND_BUCKET_CREATED_OWNED -> {
+                    BucketCreated(buffer.text(), buffer.long, buffer.optionalText(), buffer.optionalText())
+                }
+
+                KIND_BUCKET_ACL -> {
+                    val bucket = buffer.text()
+                    BucketAcl(bucket, buffer.optionalText().orEmpty())
                 }
 
                 KIND_BUCKET_SUBRESOURCE -> {
@@ -595,6 +673,7 @@ sealed interface IndexRecord {
                 KIND_PUT_VERSIONED,
                 KIND_PUT_LOCKED,
                 KIND_PUT_ENCRYPTED,
+                KIND_PUT_OWNED,
                 -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
@@ -606,7 +685,8 @@ sealed interface IndexRecord {
                         kind == KIND_PUT_WITH_TAGS ||
                             kind == KIND_PUT_VERSIONED ||
                             kind == KIND_PUT_LOCKED ||
-                            kind == KIND_PUT_ENCRYPTED
+                            kind == KIND_PUT_ENCRYPTED ||
+                            kind == KIND_PUT_OWNED
                     val metadata = buffer.metadata(withTags = withTags)
                     val parts = if (kind == KIND_PUT_WITH_PARTS || withTags) buffer.parts() else emptyList()
                     // The older kinds carry no version at all, and decode to what they meant: the
@@ -614,9 +694,25 @@ sealed interface IndexRecord {
                     // by [ObjectStore.NULL_VERSION] and replaces it on the next write, which is
                     // exactly the behaviour those logs were written under.
                     val versioned =
-                        kind == KIND_PUT_VERSIONED || kind == KIND_PUT_LOCKED || kind == KIND_PUT_ENCRYPTED
-                    val lockable = kind == KIND_PUT_LOCKED || kind == KIND_PUT_ENCRYPTED
-                    val encrypted = kind == KIND_PUT_ENCRYPTED
+                        kind == KIND_PUT_VERSIONED ||
+                            kind == KIND_PUT_LOCKED ||
+                            kind == KIND_PUT_ENCRYPTED ||
+                            kind == KIND_PUT_OWNED
+                    val lockable = kind == KIND_PUT_LOCKED || kind == KIND_PUT_ENCRYPTED || kind == KIND_PUT_OWNED
+                    val owned = kind == KIND_PUT_OWNED
+                    val sequence = if (versioned) buffer.long else 0
+                    val versionId = if (versioned) buffer.text() else ObjectStore.NULL_VERSION
+                    val deleteMarker = versioned && buffer.get().toInt() == 1
+                    val retentionMode = if (lockable) buffer.optionalText() else null
+                    val retentionUntil = if (lockable) buffer.long else 0
+                    val legalHold = lockable && buffer.get().toInt() == 1
+                    // Whether the encryption fields are there at all. The older kind says it by
+                    // being itself; kind 25 says it with a byte, because it also carries the owner
+                    // and the reader has to get past the encryption to reach it.
+                    val encrypted = if (owned) buffer.get().toInt() == 1 else kind == KIND_PUT_ENCRYPTED
+                    val encryptionAlgorithm = if (encrypted) buffer.optionalText() else null
+                    val encryptionKeyMd5 = if (encrypted) buffer.optionalText() else null
+                    val encryptionIv = if (encrypted) buffer.bytes() else null
                     Put(
                         bucket = bucket,
                         key = key,
@@ -626,15 +722,17 @@ sealed interface IndexRecord {
                         eTag = eTag,
                         metadata = metadata,
                         parts = parts,
-                        sequence = if (versioned) buffer.long else 0,
-                        versionId = if (versioned) buffer.text() else ObjectStore.NULL_VERSION,
-                        deleteMarker = versioned && buffer.get().toInt() == 1,
-                        retentionMode = if (lockable) buffer.optionalText() else null,
-                        retentionUntilMillis = if (lockable) buffer.long else 0,
-                        legalHold = lockable && buffer.get().toInt() == 1,
-                        encryptionAlgorithm = if (encrypted) buffer.optionalText() else null,
-                        encryptionKeyMd5 = if (encrypted) buffer.optionalText() else null,
-                        encryptionIv = if (encrypted) buffer.bytes() else null,
+                        sequence = sequence,
+                        versionId = versionId,
+                        deleteMarker = deleteMarker,
+                        retentionMode = retentionMode,
+                        retentionUntilMillis = retentionUntil,
+                        legalHold = legalHold,
+                        encryptionAlgorithm = encryptionAlgorithm,
+                        encryptionKeyMd5 = encryptionKeyMd5,
+                        encryptionIv = encryptionIv,
+                        owner = if (owned) buffer.optionalText() else null,
+                        acl = if (owned) buffer.optionalText() else null,
                     )
                 }
 

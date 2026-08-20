@@ -184,6 +184,19 @@ class S3Router(
             val versionId: String? = null,
         ) : Route
 
+        /**
+         * `?acl` on an object: read it, or set a canned one (M27).
+         *
+         * Two methods and not three — S3 has no `DeleteObjectAcl`, because an object always has an
+         * ACL; "none" is spelled `private`.
+         */
+        data class ObjectAcl(
+            val bucket: String,
+            val key: ObjectKey,
+            val method: String,
+            val versionId: String? = null,
+        ) : Route
+
         /** `?tagging` у объекта: те же три метода, но теги живут в метаданных объекта. */
         data class ObjectTagging(
             val bucket: String,
@@ -515,6 +528,10 @@ class S3Router(
                         Route.ObjectTagging(bucket, key, "PUT")
                     }
 
+                    "acl" in params -> {
+                        Route.ObjectAcl(bucket, key, "PUT", params["versionId"])
+                    }
+
                     params.keys.any { it in LOCK_SUBRESOURCES } -> {
                         Route.ObjectLockSubresource(
                             bucket,
@@ -562,6 +579,10 @@ class S3Router(
 
                     "tagging" in params -> {
                         Route.ObjectTagging(bucket, key, "GET")
+                    }
+
+                    "acl" in params -> {
+                        Route.ObjectAcl(bucket, key, "GET", params["versionId"])
                     }
 
                     params.keys.any { it in LOCK_SUBRESOURCES } -> {
@@ -645,7 +666,8 @@ class S3Router(
          * умеем, должно перехватываться до общего отказа, и добавление новой настройки — это
          * строчка здесь, а не правка трёх ветвей маршрутизации.
          */
-        val CONFIGURABLE_SUBRESOURCES = setOf("tagging", "cors", "versioning", "object-lock", "lifecycle")
+        val CONFIGURABLE_SUBRESOURCES =
+            setOf("tagging", "cors", "versioning", "object-lock", "lifecycle", "acl")
 
         /**
          * Sub-resources answered on `GET` and refused on every other method (M20).
@@ -664,7 +686,7 @@ class S3Router(
          * direction only: a sub-resource leaves this set when the server starts **doing** what it
          * describes, never because answering was convenient.
          */
-        val READ_ONLY_SUBRESOURCES = setOf("policy", "acl")
+        val READ_ONLY_SUBRESOURCES = setOf("policy")
 
         /** Sub-resources of an **object** that carry a lock rather than a configuration (M18). */
         val LOCK_SUBRESOURCES = setOf("retention", "legal-hold")
