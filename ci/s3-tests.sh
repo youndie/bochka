@@ -17,6 +17,38 @@ readonly IMAGE=python:3.11-slim
 # `S3TESTS_LC_DAY` overrides it — not `BOCHKA_*`, because the server refuses a name in its own
 # namespace that it does not know, and would print its usage instead of starting.
 readonly LC_DAY=${S3TESTS_LC_DAY:-5}
+
+# Where the server under test is. Empty — which is CI and every run before M30 — means the one this
+# script starts itself on the loopback. `host:port` scores a **deployment** instead, and the number
+# then includes everything standing between the suite and the server (M-212).
+#
+# That is the whole point of the switch rather than a convenience: a proxy that rewrites a header,
+# caps a body or cuts a slow upload changes this score, and nothing else in this repository would
+# notice. `ETag` replaced by nginx already cost five green tests once.
+#
+# Two things the harness cannot do for a server it did not start, and both are the operator's:
+#   * `BOCHKA_LIFECYCLE_DAY_SECONDS` on that server has to equal S3TESTS_LC_DAY here, or the
+#     lifecycle family measures nothing while looking like it passed;
+#   * the three keys below have to exist there. A remote run against a store with other keys is a
+#     few hundred fixture errors, not a low score.
+readonly ENDPOINT=${BOCHKA_S3TESTS_ENDPOINT:-}
+# `1` makes the suite speak https and keeps certificate verification off — a stand's certificate is
+# usually its own, and this run is about what the proxy does to the requests, not about PKI.
+readonly ENDPOINT_TLS=${BOCHKA_S3TESTS_TLS:-0}
+
+if [ -n "$ENDPOINT" ]; then
+  case "$ENDPOINT" in
+    *:*) ;;
+    *) echo "BOCHKA_S3TESTS_ENDPOINT must be host:port, not \"$ENDPOINT\"" >&2; exit 3 ;;
+  esac
+  HOST=${ENDPOINT%:*}
+  TARGET_PORT=${ENDPOINT##*:}
+else
+  HOST=127.0.0.1
+  TARGET_PORT=$PORT
+fi
+readonly HOST TARGET_PORT
+readonly IS_SECURE=$([ "$ENDPOINT_TLS" = 1 ] && echo True || echo False)
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 log="$work/bochka.log"
@@ -48,7 +80,13 @@ preserve() {
   for name in bochka.log pytest.out results.xml suite-revision; do
     [ -f "$work/$name" ] && cp "$work/$name" "$EVIDENCE/$name" 2>/dev/null
   done
-  echo "kept the server log and the raw output in $EVIDENCE" >&2
+  if [ -n "$ENDPOINT" ]; then
+    # There is no server log to keep for a server this script did not start, and saying
+    # otherwise sends the next reader looking for a file that was never written.
+    echo "kept the raw output in $EVIDENCE; the server log is on the deployment" >&2
+  else
+    echo "kept the server log and the raw output in $EVIDENCE" >&2
+  fi
 }
 
 cleanup() {
@@ -78,30 +116,39 @@ trap cleanup EXIT
 
 command -v docker >/dev/null || { echo "docker is not installed; the suite cannot run" >&2; exit 3; }
 
-"$root/gradlew" -p "$root" -q :bochka-app:installDist || { echo "build failed" >&2; exit 3; }
+if [ -z "$ENDPOINT" ]; then
+  "$root/gradlew" -p "$root" -q :bochka-app:installDist || { echo "build failed" >&2; exit 3; }
 
-# `BOCHKA_LOG=1` is on for the whole run, and it is the half of this that matters: a preserved log
-# with nothing in it but the startup banner answers no question at all. It costs a few megabytes of
-# a file that is thrown away on a green run.
-# `BOCHKA_LIFECYCLE_DAY_SECONDS` and the suite's `lc_debug_interval` below are one setting written
-# twice, and they must agree. A lifecycle rule counts days; a test that waited one would never be
-# run by anybody, so the suite shortens the day and the server has to shorten it the same way —
-# exactly like `api_name`, which is already set from both ends a few lines down.
-#
-# Five and not the suite's default of ten, and that was arithmetic rather than taste: the longest
-# case sleeps ten intervals (`test_lifecycle_expiration_size_gt`), and ten times ten is over the
-# sixty-second per-test timeout. At five it is fifty, and the timeout still measures a hang.
-BOCHKA_PORT=$PORT BOCHKA_BIND_ADDRESS=0.0.0.0 BOCHKA_DATA_DIR="$work/data" BOCHKA_LOG=1 \
-  BOCHKA_LIFECYCLE_DAY_SECONDS=$LC_DAY \
-  BOCHKA_KEYS="s3main:s3mainsecret,s3alt:s3altsecret,s3tenant:s3tenantsecret" \
-  "$root/bochka-app/build/install/bochka-app/bin/bochka-app" >"$log" 2>&1 &
+  # `BOCHKA_LOG=1` is on for the whole run, and it is the half of this that matters: a preserved log
+  # with nothing in it but the startup banner answers no question at all. It costs a few megabytes of
+  # a file that is thrown away on a green run.
+  # `BOCHKA_LIFECYCLE_DAY_SECONDS` and the suite's `lc_debug_interval` below are one setting written
+  # twice, and they must agree. A lifecycle rule counts days; a test that waited one would never be
+  # run by anybody, so the suite shortens the day and the server has to shorten it the same way —
+  # exactly like `api_name`, which is already set from both ends a few lines down.
+  #
+  # Five and not the suite's default of ten, and that was arithmetic rather than taste: the longest
+  # case sleeps ten intervals (`test_lifecycle_expiration_size_gt`), and ten times ten is over the
+  # sixty-second per-test timeout. At five it is fifty, and the timeout still measures a hang.
+  BOCHKA_PORT=$PORT BOCHKA_BIND_ADDRESS=0.0.0.0 BOCHKA_DATA_DIR="$work/data" BOCHKA_LOG=1 \
+    BOCHKA_LIFECYCLE_DAY_SECONDS=$LC_DAY \
+    BOCHKA_KEYS="s3main:s3mainsecret,s3alt:s3altsecret,s3tenant:s3tenantsecret" \
+    "$root/bochka-app/build/install/bochka-app/bin/bochka-app" >"$log" 2>&1 &
 server_pid=$!
+else
+  echo "scoring the deployment at $HOST:$TARGET_PORT rather than a server this script starts"
+  echo "  a lifecycle day is $LC_DAY s here; the same number has to be set on that server"
+fi
 
 for _ in $(seq 1 50); do
-  (exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null && break
+  (exec 3<>/dev/tcp/"$HOST"/"$TARGET_PORT") 2>/dev/null && break
   sleep 0.2
 done
-(exec 3<>/dev/tcp/127.0.0.1/$PORT) 2>/dev/null || { echo "bochka did not come up" >&2; cat "$log" >&2; exit 3; }
+if ! (exec 3<>/dev/tcp/"$HOST"/"$TARGET_PORT") 2>/dev/null; then
+  echo "nothing is answering on $HOST:$TARGET_PORT" >&2
+  [ -z "$ENDPOINT" ] && cat "$log" >&2
+  exit 3
+fi
 
 # The configuration is built from the suite's own sample rather than written by hand: its loader
 # insists on sections that have nothing to do with S3 — `iam`, `webidentity` — and fails collection
@@ -110,9 +157,9 @@ cat > "$work/make-conf.py" <<'PYCONF'
 import configparser, sys
 cfg = configparser.RawConfigParser()
 cfg.read("/s3-tests/s3tests.conf.SAMPLE")
-cfg.set("DEFAULT", "host", "127.0.0.1")
-cfg.set("DEFAULT", "port", sys.argv[1])
-cfg.set("DEFAULT", "is_secure", "False")
+cfg.set("DEFAULT", "host", sys.argv[1])
+cfg.set("DEFAULT", "port", sys.argv[2])
+cfg.set("DEFAULT", "is_secure", sys.argv[3])
 cfg.set("DEFAULT", "ssl_verify", "False")
 cfg.set("fixtures", "bucket prefix", "bochka-{random}-")
 for section, key, secret in (
@@ -139,7 +186,7 @@ for section, key, secret in (
 # (`s3tests/functional/__init__.py:248`) and defaults it to ten, so leaving it out here would have
 # the tests sleeping for ten-second days against a server whose day is five — which reads as
 # "lifecycle works" while proving nothing, because everything is over-due by the time it looks.
-cfg.set("s3 main", "lc_debug_interval", sys.argv[2])
+cfg.set("s3 main", "lc_debug_interval", sys.argv[4])
 with open("/work/s3tests.conf", "w") as out:
     cfg.write(out)
 PYCONF
@@ -179,7 +226,7 @@ docker run --rm --network host -v "$work:/work" \
   # comment ends it. That is not hypothetical, it happened here.
   pip install -q -r requirements.txt pytest-timeout >/dev/null 2>&1
   git rev-parse --short HEAD > /work/suite-revision
-  python /work/make-conf.py '"$PORT"' '"$LC_DAY"'
+  python /work/make-conf.py '"$HOST"' '"$TARGET_PORT"' '"$IS_SECURE"' '"$LC_DAY"'
   S3TEST_CONF=/work/s3tests.conf timeout 5400 python -m pytest s3tests/functional/test_s3.py \
     -p no:cacheprovider -q --no-header -rN --continue-on-collection-errors \
     --timeout=60 --timeout-method=signal --junit-xml=/work/results.xml \
