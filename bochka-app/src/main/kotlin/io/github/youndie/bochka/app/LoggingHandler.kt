@@ -24,10 +24,19 @@ class LoggingHandler(
         head: HttpRequestParser.Head,
         cause: Throwable,
     ): HttpResponse {
-        // Always printed, whatever the log flag says: this is the server admitting a bug, and it
-        // is the one line whose absence would leave nothing to look at.
-        println("bochka failed ${head.method} ${head.path}: $cause")
-        return delegate.failed(head, cause)
+        val response = delegate.failed(head, cause)
+        // The same shape as every other answer, and that is the whole of M-205. This used to print
+        // `bochka failed PUT /photos/holiday.jpg: cause` — which reached the log, and answered none
+        // of the questions a log is asked. No status, so counting `500`s found none and `grep
+        // '\-> 500'` matched nothing in a log full of them. No query, so `?acl`, `?tagging`,
+        // `?uploads` and a plain write were one line. No framing, so the one thing that most often
+        // explains a failure was missing from the failures.
+        //
+        // Printed whatever the flag says, and that half was right from the start: a server
+        // admitting a bug is not a logging preference. With `BOCHKA_LOG` off the client's `500`
+        // would otherwise be the only evidence that anything happened.
+        log(head, response.status, "failed", response, cause)
+        return response
     }
 
     override fun screen(head: HttpRequestParser.Head): HttpResponse? {
@@ -50,6 +59,8 @@ class LoggingHandler(
         status: Int,
         stage: String,
         response: HttpResponse,
+        /** What went wrong, when the stage is `failed`; the cause goes last so the columns stay greppable. */
+        cause: Throwable? = null,
     ) {
         val payload = head.header("x-amz-content-sha256") ?: "-"
         val framing =
@@ -69,7 +80,7 @@ class LoggingHandler(
             }
         println(
             "bochka $stage ${head.method} ${head.target} -> $status framing=$framing" +
-                locks(head) + answered(response),
+                locks(head) + answered(response) + (cause?.let { " cause=$it" } ?: ""),
         )
     }
 
