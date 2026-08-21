@@ -4,6 +4,7 @@ import java.time.Duration
 import java.time.Instant
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFails
 import kotlin.test.assertTrue
 
 /**
@@ -286,6 +287,31 @@ class LifecycleSweepTest {
     }
 
     private fun versions(s3: S3Fixture) = s3.send("GET", "/photos", query = "versions").text
+
+    /**
+     * Обход, который сломался, обязан сказать это, а не отчитаться нулём (M-207).
+     *
+     * `runCatching { … }.fold({ удалили }, { не удалили })` превращал **любое** исключение
+     * в «нечего было удалять» — и обход, сломанный по-настоящему, был неотличим от обхода,
+     * которому нечего делать. Разница видна только снаружи: объекты со сроком перестают исчезать,
+     * а лог каждый круг сообщает, что всё в порядке.
+     *
+     * Отказ здесь устроен хирургически: у стора закрывается журнал. Чтение индекса живёт в памяти
+     * и продолжает работать, поэтому падает ровно запись — то самое место, где стояло `runCatching`.
+     */
+    @Test
+    fun `сломанный обход падает, а не отчитывается нулём`() {
+        instant { s3 ->
+            s3.createBucket("photos")
+            s3.put("photos", "expire/foo", "x")
+            s3.rules(rule("rule1", "expire/", "<Expiration><Days>1</Days></Expiration>"))
+            s3.store.close()
+
+            val thrown = assertFails { s3.sweepLifecycle(later()) }
+
+            assertTrue(thrown !is AssertionError, "обход отчитался вместо того, чтобы упасть: $thrown")
+        }
+    }
 
     /**
      * Фикстура, у которой «день» длится миллисекунду: всё, что имеет срок, наступает сразу.

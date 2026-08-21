@@ -188,7 +188,17 @@ class Bochka private constructor(
                 }
             val period = lifecycleDay.dividedBy(10).coerceIn(Duration.ofMillis(50), Duration.ofHours(1))
             ticker.scheduleWithFixedDelay(
-                { runCatching { sweep.sweep() } },
+                {
+                    // Поймать здесь **обязательно**, и по причине, не имеющей отношения к тому,
+                    // что случилось: у `scheduleWithFixedDelay` исключение из задачи отменяет её
+                    // навсегда — и молча. Обход перестал бы выполняться вовсе, а узнать об этом
+                    // было бы неоткуда.
+                    //
+                    // Но причина **называется** (M-207): раньше здесь стоял голый
+                    // `runCatching { … }`, и сломанный обход в встроенном режиме был неотличим
+                    // от исправного. Печатается так же, как в `Main.startLifecycle`.
+                    runCatching { sweep.sweep() }.onFailure { println("lifecycle sweep failed: $it") }
+                },
                 period.toMillis(),
                 period.toMillis(),
                 java.util.concurrent.TimeUnit.MILLISECONDS,
