@@ -159,6 +159,12 @@ out-of-scope	bucket_list_return_data	the case reads an object ACL to compare own
 out-of-scope	object_raw	the "raw" family builds its own unsigned or ACL-dependent requests; anonymous access needs public-read ACLs
 out-of-scope	object_anon	anonymous writes need public-write ACLs
 out-of-scope	obj_enc_conflict	contradictory server-side-encryption headers; encryption is out of scope
+# `bucket_gone` matches four tests and the reason below explains one of them. `test_atomic_write_bucket_gone`
+# is not that one: it deletes the bucket **while the upload is running** and expects 404, and bochka answers
+# 200 for an object that is then gone (M-220). It sat under the broad rule as "out of scope" for as long as
+# it passed — which it does over plain http, where the framing hides the race. Narrow rules first (M-221).
+defect	atomic_write_bucket_gone	a PUT into a bucket deleted mid-upload answers 200 and the object is gone (M-220)
+defect	multipart_checksum_object_attributes	a checksum that arrived in the trailer is verified and then dropped, so nothing reports it (M-219)
 out-of-scope	bucket_gone	the case deletes the bucket under an anonymous client and expects 404 before the 403
 out-of-scope	object_gone	the case reads under an anonymous client and expects 404 before the 403
 out-of-scope	ifnonmatch	conditional writes, as above
