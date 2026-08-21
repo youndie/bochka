@@ -55,6 +55,11 @@ class Configuration private constructor(
             "narrow a key: id=ro, id=rw@bucket|bucket; a key not named here keeps everything",
         ),
         VIRTUAL_HOST_SUFFIXES("virtual.host.suffixes", null, "domains under which a leading label is a bucket name"),
+        ANONYMOUS(
+            "anonymous",
+            "0",
+            "1 to let an unsigned request through to the ACL; off, an unsigned request is 403 whatever the ACL says",
+        ),
         LOG("log", "0", "1 to print a line per request"),
         HOUSEKEEPING_MINUTES("housekeeping.minutes", "60", "how often to compact and sweep; 0 to never"),
         LIFECYCLE_DAY_SECONDS(

@@ -84,12 +84,38 @@ class AccessControlTest {
     }
 
     @Test
-    fun `no unsigned request gets anything in this layer`() {
-        // Layer two (M28) is where this changes, deliberately and with its own negative tests.
+    fun `an unsigned request gets exactly what public says and nothing else`() {
+        // Layer two (M28). What moved is one line of this model; what did not move is everything
+        // around it, and the assertions below are mostly about that — the milestone's own risk is
+        // that "anonymous" leaks one permission wider than the canned name allows.
+        assertTrue(AccessControl.allows(bucket("public-read"), null, AccessControl.Permission.READ))
+        assertFalse(AccessControl.allows(bucket("public-read"), null, AccessControl.Permission.WRITE))
+
+        assertTrue(AccessControl.allows(bucket("public-read-write"), null, AccessControl.Permission.READ))
+        assertTrue(AccessControl.allows(bucket("public-read-write"), null, AccessControl.Permission.WRITE))
+
+        // The permissions of the ACL itself never open to a stranger, signed or not: `public-read`
+        // is not "public-read-and-rewritable-permissions", and a caller who could rewrite the ACL
+        // would promote themselves to full control in one request.
         for (acl in listOf("public-read", "public-read-write")) {
-            assertFalse(AccessControl.allows(bucket(acl), null, AccessControl.Permission.READ), acl)
-            assertFalse(AccessControl.allows(bucket(acl), null, AccessControl.Permission.WRITE), acl)
+            assertFalse(AccessControl.allows(bucket(acl), null, AccessControl.Permission.READ_ACP), acl)
+            assertFalse(AccessControl.allows(bucket(acl), null, AccessControl.Permission.WRITE_ACP), acl)
         }
+
+        // `private` and `authenticated-read` are the two that must not move an inch. The second is
+        // the trap: its name reads like a synonym for "public" until you notice the word.
+        for (acl in listOf("private", "authenticated-read", "bucket-owner-read", "bucket-owner-full-control")) {
+            for (permission in AccessControl.Permission.entries) {
+                assertFalse(
+                    AccessControl.allows(bucket(acl), null, permission, bucketOwner = main),
+                    "$acl answered $permission to nobody",
+                )
+            }
+        }
+
+        // And a name this server does not enforce is not a way in either: `of` answers null and the
+        // resource reads as `private`.
+        assertFalse(AccessControl.allows(bucket("log-delivery-write"), null, AccessControl.Permission.READ))
     }
 
     @Test
@@ -113,7 +139,15 @@ class AccessControlTest {
         for (permission in AccessControl.Permission.entries) {
             assertTrue(AccessControl.allows(legacy, alt, permission), permission.name)
         }
-        assertTrue(AccessControl.allows(legacy, null, AccessControl.Permission.READ), "including unsigned")
+
+        // But **not** to nobody, and this is where two sane rules would have made a hole between
+        // them (M28). "No owner means no model" was written when an unsigned request could not get
+        // past the signature at all; switching layer two on would otherwise have opened every
+        // bucket made before M27 to the world, retroactively and silently. Unrestricted means
+        // unrestricted among keys.
+        for (permission in AccessControl.Permission.entries) {
+            assertFalse(AccessControl.allows(legacy, null, permission), "unsigned, ${'$'}{permission.name}")
+        }
     }
 
     @Test

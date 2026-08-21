@@ -98,8 +98,24 @@ object AccessControl {
         permission: Permission,
         bucketOwner: String? = null,
     ): Boolean {
-        if (resource.unrestricted) return true
-        if (requester == null) return false
+        // Unrestricted means unrestricted **among keys**, and the qualifier is the whole of it
+        // (M28). "A bucket with no recorded owner has no model" was written when an unsigned
+        // request could not get past the signature at all; without this line, switching layer two
+        // on would have opened every bucket made before M27 to the world — retroactively, silently,
+        // and by combining two rules that are each correct alone.
+        if (resource.unrestricted) return requester != null
+        if (requester == null) {
+            // Layer two, and the whole of it is these two lines (M28). Nobody claimed to be
+            // anybody, so ownership cannot help and neither can `authenticated-read` — its name
+            // means "every key", and a request with no key is not one of them however public the
+            // deployment feels. What is left is exactly what the two `public-*` names say about
+            // the data, and never anything about the ACL itself.
+            return when (resource.canned) {
+                Canned.PUBLIC_READ -> permission == Permission.READ
+                Canned.PUBLIC_READ_WRITE -> permission == Permission.READ || permission == Permission.WRITE
+                else -> false
+            }
+        }
         if (requester == resource.owner) return true
         return when (resource.canned) {
             Canned.PRIVATE -> false

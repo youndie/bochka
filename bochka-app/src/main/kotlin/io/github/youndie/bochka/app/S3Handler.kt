@@ -77,6 +77,20 @@ class S3Handler(
      * `x-amz-expiration` обещал тот же срок, по которому потом удалит обход.
      */
     private val lifecycleDay: Duration = Lifecycle.DAY,
+    /**
+     * Whether a request carrying no credentials is allowed to reach the access model at all (M28).
+     *
+     * Off, and the default is the point rather than caution. Until this milestone "no signature
+     * means 403" was one branch anybody could read; with it on, whether a stranger may read an
+     * object becomes a computation, and a mistake in a computation of that kind is a hole rather
+     * than a difference of opinion with S3. A deployment that has no public objects should never
+     * run that computation at all.
+     *
+     * It can only ever take away, which is the same rule the key scope follows: with it on, an
+     * unsigned request still has to be allowed by the object's or the bucket's ACL, and those are
+     * `private` unless somebody said otherwise. With it off, no ACL matters — the answer is `403`.
+     */
+    private val anonymous: Boolean = false,
 ) : HttpHandler {
     private val lifecycles = Lifecycles(store)
 
@@ -102,6 +116,14 @@ class S3Handler(
                     scopeRefusal(head, route, verification.accessKeyId)?.let { return it }
                     aclRefusal(head, route, verification.accessKeyId)?.let { return it }
                     statedAclRefusal(head)?.let { return it }
+                }
+
+                is SignatureVerifier.Result.Anonymous -> {
+                    // Nobody claimed to be anybody. With the switch off that is the end of it, and
+                    // the answer is the one this server has always given.
+                    if (!anonymous) {
+                        return error(head, S3Error.ACCESS_DENIED, detail = "no credentials on the request")
+                    }
                 }
             }
         }

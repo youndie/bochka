@@ -100,7 +100,7 @@ for _ in $(seq 1 60); do
   sleep 0.5
 done
 
-if docker ps --filter "name=$NAME" --filter status=running -q | grep -q .; then
+if docker ps --filter "name=$NAME" --filter status=running -q | grep . >/dev/null; then
   pass "the container is running"
 else
   fail "the container is not running"
@@ -156,11 +156,33 @@ fi
 # the collector: 455, 494 and 512 MiB at the same -Xmx512M under Parallel, Serial and G1. A wrapper
 # that swaps the collector moves a number in the README without touching it, so the log says which
 # one is running. Checked in the image because that is where somebody would swap it.
-if docker logs "$NAME" 2>&1 | grep -q '^collector: Serial at'; then
-  pass "the log names the collector the numbers were measured under"
-else
-  fail "the startup log does not name the collector: $(docker logs "$NAME" 2>&1 | grep -i collector | head -1)"
-fi
+#
+# This check went red on CI while its own message printed the very line it called missing, and the
+# reason was neither the log nor the server: `set -o pipefail` with `grep -q`. `grep -q` exits at
+# the first match, the writer on the left of the pipe gets `SIGPIPE`, and the pipeline's status
+# becomes 141 — a **false negative that depends on how much the writer had left to say**. Measured:
+# `yes | grep -q y` exits 141 under pipefail, `printf 'a\n' | grep -q a` exits 0, which is why this
+# passed for months. Every `| grep -q` in ci/ was the same trap and is now a plain `grep` with its
+# output thrown away: it reads to the end, so nobody is left writing into a closed pipe.
+#
+# Read once into a variable besides, so the test and the message cannot disagree about the evidence.
+collector=""
+for _ in $(seq 1 25); do
+  collector=$(docker logs "$NAME" 2>&1 | grep -i '^collector:' | head -1)
+  [ -n "$collector" ] && break
+  sleep 0.2
+done
+case "$collector" in
+  "collector: Serial at"*)
+    pass "the log names the collector the numbers were measured under"
+    ;;
+  "")
+    fail "the startup log never named a collector at all, in five seconds of waiting"
+    ;;
+  *)
+    fail "the startup log names another collector, and two published numbers move with it: $collector"
+    ;;
+esac
 
 # M-157. And it is a note rather than a refusal: a person may raise the heap, they may not be left
 # to discover the pause. `-Xmx3G` is outside the measured envelope, and the process must still come
@@ -195,7 +217,7 @@ fi
 # diagnosis which has to re-run the thing is diagnosis by guesswork.
 found=no
 for _ in $(seq 1 40); do
-  if docker logs "$NAME" 2>&1 | grep -q "smokekey"; then found=yes; break; fi
+  if docker logs "$NAME" 2>&1 | grep "smokekey" >/dev/null; then found=yes; break; fi
   sleep 0.5
 done
 if [ "$found" = yes ]; then
@@ -210,7 +232,7 @@ fi
 # The failure this prevents: a misspelt BOCHKA_DATA_DIR means the objects are in a temporary
 # directory and the server says nothing at all about it.
 typo=$(docker run --rm -e BOCHKA_DATADIR=/tmp/x "$IMAGE" 2>&1)
-if echo "$typo" | grep -q "unknown setting" && echo "$typo" | grep -q "data.dir"; then
+if echo "$typo" | grep "unknown setting" >/dev/null && echo "$typo" | grep "data.dir" >/dev/null; then
   pass "a misspelt setting stops the process and names the one it meant"
 else
   fail "a misspelt setting was ignored"

@@ -285,13 +285,13 @@ if [ -f "$work/results.xml" ]; then
   echo "$classification"
   # A failure nobody has classified is the other kind of run worth keeping: either the rules have
   # gone stale or something new broke, and both are answered from the log rather than from here.
-  if echo "$classification" | grep -q "unclassified"; then keep=yes; fi
+  if echo "$classification" | grep "unclassified" >/dev/null; then keep=yes; fi
   # M-218. Against a deployment the lifecycle family is measurable only if that deployment's day
   # was shortened to the same number this run uses, and there is one way to do that — the chart's
   # `lifecycleDaySeconds`. Without it those cases fail on the clock and land in `unclassified`,
   # where the wording is "nobody has looked at this one". Somebody has; say so here rather than
   # leaving it to whoever compares two scores and wonders where thirteen cases went.
-  if [ -n "$ENDPOINT" ] && echo "$classification" | grep -q "test_lifecycle"; then
+  if [ -n "$ENDPOINT" ] && echo "$classification" | grep "test_lifecycle" >/dev/null; then
     echo
     echo "the lifecycle cases above fail on the clock, not on the server: this run shortens a day"
     echo "to ${LC_DAY}s and the deployment at $HOST:$TARGET_PORT almost certainly leaves it at 86400."

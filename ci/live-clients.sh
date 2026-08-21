@@ -113,7 +113,7 @@ assert hashlib.sha256(back).hexdigest() == hashlib.sha256(body).hexdigest(), "ro
 assert any(o["Key"] == "boto3.bin" for o in s3.list_objects_v2(Bucket="live-clients").get("Contents", []))
 print("ok")
 PY
-  if docker_run python:3.12-slim sh -c "pip install -q boto3 >/dev/null 2>&1 && python /work/boto.py" 2>/dev/null | grep -q ok; then
+  if docker_run python:3.12-slim sh -c "pip install -q boto3 >/dev/null 2>&1 && python /work/boto.py" 2>/dev/null | grep ok >/dev/null; then
     pass "boto3 round trip and listing"
   else
     fail "boto3 round trip and listing"
@@ -191,7 +191,7 @@ if have_image amazon/aws-cli:latest; then
 
   # Abandoned uploads have to be visible, or they are unreclaimable by anything but a restart.
   aws_cli s3api create-multipart-upload --bucket "$BUCKET" --key abandoned.bin >/dev/null 2>&1
-  if aws_cli s3api list-multipart-uploads --bucket "$BUCKET" 2>/dev/null | grep -q abandoned.bin; then
+  if aws_cli s3api list-multipart-uploads --bucket "$BUCKET" 2>/dev/null | grep abandoned.bin >/dev/null; then
     pass "an upload in flight is listed"
   else
     fail "an upload in flight is listed"
@@ -335,7 +335,7 @@ grep -E 'bochka handled (PUT|POST)' "$log" | grep -o 'framing=[A-Z0-9-]*' | sort
 # Four framings, and the milestone is about all four. Missing one is a failure even when every
 # round trip passed, because it means a client quietly stopped exercising it.
 for framing in SIGNED-PAYLOAD UNSIGNED-PAYLOAD STREAMING-AWS4-HMAC-SHA256-PAYLOAD STREAMING-UNSIGNED-PAYLOAD-TRAILER; do
-  if grep -E 'bochka handled (PUT|POST)' "$log" | grep -q "framing=$framing\b"; then
+  if grep -E 'bochka handled (PUT|POST)' "$log" | grep "framing=$framing\b" >/dev/null; then
     pass "framing $framing was exercised"
   else
     fail "framing $framing was never sent by any client"

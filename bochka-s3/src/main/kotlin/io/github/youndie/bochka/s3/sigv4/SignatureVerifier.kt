@@ -68,6 +68,22 @@ class SignatureVerifier(
             val canonicalRequest: String? = null,
             val stringToSign: String? = null,
         ) : Result
+
+        /**
+         * No credentials of any kind — neither an `Authorization` header nor a presigned query.
+         *
+         * A case of its own rather than a [Failure] with a recognisable message, and that is the
+         * whole safety of layer two (M28): what may become anonymous is the **absence** of
+         * credentials, never credentials that turned out to be wrong. A signature that does not
+         * verify is somebody's key or somebody's clock, and letting it fall through to a public
+         * ACL would turn a typo into unauthenticated access. As a type, the difference cannot be
+         * lost in a string, and every caller is made to decide by the compiler.
+         *
+         * It is not a permission. What it says is that nobody claimed to be anybody; who may do
+         * what with that is the access model's answer, and while the server's switch is off the
+         * answer is nobody.
+         */
+        data object Anonymous : Result
     }
 
     fun verify(request: CanonicalRequest.Request): Result {
@@ -84,7 +100,7 @@ class SignatureVerifier(
         // has no public objects, so the answer is "not yours" rather than "your request is wrong".
         val header =
             request.header("authorization")
-                ?: return Result.Failure(S3Error.ACCESS_DENIED, "no credentials on the request")
+                ?: return Result.Anonymous
 
         val authorization =
             try {

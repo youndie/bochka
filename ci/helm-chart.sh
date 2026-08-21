@@ -131,19 +131,19 @@ expect_not_in "$work/minimal.yaml" 'terminationGracePeriodSeconds' "no invented 
 expect_not_in "$work/minimal.yaml" 'preStop' "no preStop hook pretending to drain connections"
 
 # BOCHKA_LOG is compared to the literal "1", so the boolean has to be converted rather than printed.
-if grep -A1 'name: BOCHKA_LOG' "$work/full.yaml" | grep -q 'value: "1"'; then
+if grep -A1 'name: BOCHKA_LOG' "$work/full.yaml" | grep 'value: "1"' >/dev/null; then
   pass 'log: true renders as "1" and not as "true"'
 else
   fail 'log: true did not render as "1"'
 fi
-if grep -A1 'name: BOCHKA_LOG' "$work/minimal.yaml" | grep -q 'value: "0"'; then
+if grep -A1 'name: BOCHKA_LOG' "$work/minimal.yaml" | grep 'value: "0"' >/dev/null; then
   pass 'log: false renders as "0"'
 else
   fail 'log: false did not render as "0"'
 fi
 
 # housekeepingMinutes: 0 is "disabled", and `default` in a template would have turned it back to 60.
-if grep -A1 'name: BOCHKA_HOUSEKEEPING_MINUTES' "$work/full.yaml" | grep -q 'value: "0"'; then
+if grep -A1 'name: BOCHKA_HOUSEKEEPING_MINUTES' "$work/full.yaml" | grep 'value: "0"' >/dev/null; then
   pass "housekeepingMinutes: 0 survives as 0 rather than falling back to the default"
 else
   fail "housekeepingMinutes: 0 did not survive"
@@ -474,7 +474,7 @@ else
     # kubelet's business and the environment's iteration order. Pinned to BOCHKA_SERVICE_HOST, this
     # check went red against a server that had refused to start exactly as predicted, and printed the
     # refusal underneath its own verdict: `unknown setting 'BOCHKA_PORT_9000_TCP_PORT'`.
-    if printf '%s' "$linkmsg" | grep -q "unknown setting 'BOCHKA_"; then
+    if printf '%s' "$linkmsg" | grep "unknown setting 'BOCHKA_" >/dev/null; then
       pass "with service links left on, the same image refuses to start — which is what the chart turns off"
     else
       fail "the service-link hazard did not reproduce, so 'enableServiceLinks: false' is now unproven"
