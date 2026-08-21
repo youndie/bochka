@@ -17,6 +17,16 @@ readonly IMAGE=python:3.11-slim
 # `S3TESTS_LC_DAY` overrides it — not `BOCHKA_*`, because the server refuses a name in its own
 # namespace that it does not know, and would print its usage instead of starting.
 readonly LC_DAY=${S3TESTS_LC_DAY:-5}
+# The per-case ceiling, and it is named here rather than written into the pytest line because it
+# has to agree with [LC_DAY] and with the check that reads the results afterwards. Two settings
+# obliged to agree are the first way to make them disagree — the same reasoning that derives the
+# sweep period from the day rather than putting it beside it (M23).
+#
+# The arithmetic is fixed by the suite: the longest case sleeps ten lifecycle intervals, so
+# `LC_DAY` × 10 has to stay under this. At five that is fifty seconds against sixty — a margin of
+# twenty percent, and on a loaded machine there is none, which is what M-206 exists to say out
+# loud instead of publishing the score anyway.
+readonly CASE_TIMEOUT=${S3TESTS_CASE_TIMEOUT:-60}
 # Layer two of the access model, and off here because it is off in the shipped server (M28). The
 # number this harness prints is the number of the configuration people get, so turning it on
 # quietly would publish a score for a server nobody runs. `S3TESTS_ANONYMOUS=1` measures the other
@@ -69,6 +79,9 @@ scored=no
 # Whether anything about this run is worth keeping the evidence for. Set to `yes` when the run
 # errors, when a failure is unclassified, or when no score came out at all.
 keep=no
+# Set when a case ran out of clock (M-206). Read by the exit trap rather than acted on where it is
+# discovered, so that the refusal to call the run a measurement cannot be skipped.
+timedout=no
 
 # Where the evidence goes when it is kept. Inside `build/` because that is already ignored, and
 # under a fixed name because the point is that the next command can find it without being told.
@@ -118,6 +131,14 @@ cleanup() {
     echo "this run ended without producing a score, which is a failure rather than a zero" >&2
     [ "$status" -eq 0 ] && status=1
     keep=yes
+  fi
+  # And the other way a run can produce a number that is not one (M-206). It lives here beside its
+  # sibling, in the trap, for the reason the sibling is here: a check placed in the body only fires
+  # when control reaches it, and this script has already once ended without printing either a score
+  # or a complaint. A guard that can be stepped over is not a guard.
+  if [ "${timedout:-no}" = yes ]; then
+    echo "this run measured the machine as much as the server: see the timed-out cases above" >&2
+    [ "$status" -eq 0 ] && status=1
   fi
   # Before the removal, and deliberately: a copy made after `rm -rf` copies nothing, and would do
   # it silently.
@@ -207,6 +228,15 @@ with open("/work/s3tests.conf", "w") as out:
     cfg.write(out)
 PYCONF
 
+# The guard that decides whether this run counts, asked first whether it still works (M-206). What
+# can silently break it is not our code but the wording `pytest-timeout` puts into a failure
+# message, and a guard that has quietly stopped recognising its subject looks exactly like a run
+# with no timeouts in it.
+if ! python3 "$root/ci/s3_tests_health.py" --self-test; then
+  echo "refusing to score a run whose timeout guard does not answer" >&2
+  exit 3
+fi
+
 echo "running ceph/s3-tests (this pulls the suite and takes a few minutes)"
 # `BOCHKA_S3TESTS_K` narrows the run to a `-k` expression and turns tracebacks on, which is how a
 # handful of failures get looked at without waiting three minutes for the other seven hundred.
@@ -245,7 +275,7 @@ docker run --rm --network host -v "$work:/work" \
   python /work/make-conf.py '"$HOST"' '"$TARGET_PORT"' '"$IS_SECURE"' '"$LC_DAY"'
   S3TEST_CONF=/work/s3tests.conf timeout 5400 python -m pytest s3tests/functional/test_s3.py \
     -p no:cacheprovider -q --no-header -rN --continue-on-collection-errors \
-    --timeout=60 --timeout-method=signal --junit-xml=/work/results.xml \
+    --timeout='"$CASE_TIMEOUT"' --timeout-method=signal --junit-xml=/work/results.xml \
     ${SELECT:+-k} ${SELECT:+"$SELECT"} --tb=${TRACEBACK} \
     > /work/pytest.out 2>&1 || true
   tail -${TAIL} /work/pytest.out
@@ -289,6 +319,25 @@ scored=yes
 # means a fixture was refused something. That is the run whose log is worth keeping.
 if [ "$errors" -gt 0 ]; then keep=yes; fi
 echo "the count of tests that ran is part of the number: a rising score and a shrinking suite look the same"
+
+# What the machine was doing while it measured, and how close the slowest case came to the clock
+# (M-206). Printed beside the score rather than in the log, because the number and the conditions
+# it was taken under are one fact: a loaded host once turned 426 into 228 with 176 unclassified
+# failures, and the score alone said "regression" for an hour.
+if [ -r /proc/loadavg ]; then
+  echo "the machine's load while measuring: $(cut -d' ' -f1-3 /proc/loadavg) (1, 5, 15 minutes)"
+elif command -v uptime >/dev/null 2>&1; then
+  echo "the machine while measuring: $(uptime)"
+fi
+if [ -f "$work/results.xml" ]; then
+  # The one failure this script refuses to score. Everything else it classifies and publishes; a
+  # run that ran out of clock is not a measurement of the server at all, and `timedout=yes` is read
+  # by the exit trap, where a guard cannot be stepped over by an early `exit`.
+  if ! python3 "$root/ci/s3_tests_health.py" "$work/results.xml" "$CASE_TIMEOUT"; then
+    timedout=yes
+    keep=yes
+  fi
+fi
 
 # Why the rest fail, grouped. A bare percentage says how far there is to go and nothing about what
 # the distance is made of — and the difference between "does not have versioning" and "has a defect"
