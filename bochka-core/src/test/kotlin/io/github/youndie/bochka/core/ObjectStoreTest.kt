@@ -7,6 +7,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -238,6 +239,59 @@ class ObjectStoreTest {
                 assertNull(stored.metadata.contentType)
                 assertNotNull(s.get("b", ObjectKey.of("empty")))
                 assertContentEquals(ByteArray(0), Files.readAllBytes(s.pathOf(stored)))
+            }
+        }
+
+    @Test
+    fun `a write into a bucket deleted while it was uploading is refused`() =
+        runTest {
+            // M-220, and it was found on a deployment rather than here.
+            //
+            // The bucket is checked before the body is read — that is the point of §1.2.2 — and
+            // then the body takes as long as the client takes. Nothing looks again. `DeleteBucket`
+            // succeeds meanwhile because the bucket **is** empty at that instant: the bytes are
+            // staged and belong to nobody yet. Then the commit puts a version into a bucket that
+            // no longer exists and the client is told `200` for bytes it will never read back,
+            // which is the one answer a durability product may not give.
+            store().use { s ->
+                s.createBucket("photos")
+                val staged =
+                    s.stage { out ->
+                        out.write("содержимое".toByteArray(), 0, "содержимое".toByteArray().size)
+                    }
+
+                assertTrue(s.deleteBucket("photos"), "empty at this instant, so S3 lets the bucket go")
+
+                assertFailsWith<ObjectStore.BucketGone> {
+                    s.commit("photos", ObjectKey.of("a.txt"), Metadata.EMPTY, staged)
+                }
+                assertNull(s.get("photos", ObjectKey.of("a.txt")))
+
+                // And the second half of the damage, which is quieter: a version left in a deleted
+                // bucket makes that name un-deletable once somebody takes it again. The bucket
+                // reads as non-empty, and the object making it so is one no listing shows.
+                s.createBucket("photos")
+                assertTrue(s.deleteBucket("photos"), "nothing was left behind under the old name")
+            }
+        }
+
+    @Test
+    fun `a multipart completion into a bucket that was deleted is refused`() =
+        runTest {
+            // The same hole through the other door, and worth its own test because the two
+            // commits are different functions: fixing one and leaving the other is the shape of
+            // mistake this repository has made before with `screen` and `handle`.
+            store().use { s ->
+                s.createBucket("photos")
+                val upload = s.createUpload("photos", ObjectKey.of("big.bin"), Metadata.EMPTY)
+                val part = s.putPart(upload.id, 1) { out -> out.write("part one".toByteArray(), 0, 8) }
+
+                assertTrue(s.deleteBucket("photos"), "an upload nobody finished does not make a bucket non-empty")
+
+                assertFailsWith<ObjectStore.BucketGone> {
+                    s.completeUpload(upload.id, listOf(1 to part.eTag))
+                }
+                assertNull(s.get("photos", ObjectKey.of("big.bin")))
             }
         }
 }

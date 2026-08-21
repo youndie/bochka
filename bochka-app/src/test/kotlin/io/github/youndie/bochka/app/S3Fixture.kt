@@ -136,6 +136,15 @@ class S3Fixture(
          * object from somebody else's.
          */
         asOther: Boolean = false,
+        /**
+         * Runs once, after the first half of [body] has gone onto the wire and before the rest.
+         *
+         * The only way to write a test about the window between "the head was read" and "the
+         * commit happens" (M-220): the server has accepted the request, is reading the body, and
+         * something else changes the world underneath it. Implies [chunked], because a body that
+         * arrives in pieces is the whole point.
+         */
+        duringBody: (() -> Unit)? = null,
     ): Answer {
         val timestamp = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").format(ZonedDateTime.now(ZoneOffset.UTC))
         val hash = payloadHash ?: Sigv4.sha256Hex(body)
@@ -171,7 +180,9 @@ class S3Fixture(
                 .header("Host", host)
                 .method(
                     method,
-                    if (chunked) {
+                    if (duringBody != null) {
+                        HttpRequest.BodyPublishers.ofInputStream { HalfwayStream(body, duringBody) }
+                    } else if (chunked) {
                         HttpRequest.BodyPublishers.ofInputStream { java.io.ByteArrayInputStream(body) }
                     } else {
                         HttpRequest.BodyPublishers.ofByteArray(body)
@@ -187,6 +198,42 @@ class S3Fixture(
 
         val response = client.send(builder.build(), BodyHandlers.ofByteArray())
         return Answer(response.statusCode(), response.headers(), response.body())
+    }
+
+    /**
+     * [body] in two halves with [between] run in the middle, and never a byte at a time.
+     *
+     * `read` returning one byte would also work and would make the test depend on how the client
+     * chunks a stream; two halves make the moment the callback runs a property of this class.
+     */
+    private class HalfwayStream(
+        private val body: ByteArray,
+        private val between: () -> Unit,
+    ) : java.io.InputStream() {
+        private var position = 0
+        private var fired = false
+
+        override fun read(): Int {
+            val one = ByteArray(1)
+            return if (read(one, 0, 1) == -1) -1 else one[0].toInt() and 0xff
+        }
+
+        override fun read(
+            into: ByteArray,
+            offset: Int,
+            length: Int,
+        ): Int {
+            if (position >= body.size) return -1
+            if (position >= body.size / 2 && !fired) {
+                fired = true
+                between()
+            }
+            val stop = if (position < body.size / 2) body.size / 2 else body.size
+            val moved = minOf(length, stop - position)
+            System.arraycopy(body, position, into, offset, moved)
+            position += moved
+            return moved
+        }
     }
 
     /**

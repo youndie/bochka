@@ -4,6 +4,7 @@ import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * The bucket operations (M-41), over a socket.
@@ -131,6 +132,38 @@ class BucketOperationsTest {
             // And the same object, addressed path-style against the same server.
             hosted.host = "127.0.0.1:${hosted.port}"
             assertEquals("hello", hosted.get("photos", "a.txt").text)
+        }
+    }
+
+    @Test
+    fun `a bucket deleted while a body is arriving makes the write NoSuchBucket`() {
+        // M-220. The bucket is checked before the body is read, and the body then takes as long as
+        // the client takes; found on a deployment, where deleting the bucket eight seconds into an
+        // eighty-second upload left the client with `200` for an object no listing showed.
+        //
+        // `DeleteBucket` in the middle succeeds and is right to: at that instant the bucket is
+        // empty, because the bytes are staged and belong to nobody yet.
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+            var deleted = -1
+
+            val answer =
+                s3.send(
+                    "PUT",
+                    "/photos/a.txt",
+                    body = ByteArray(64) { 'x'.code.toByte() },
+                    payloadHash = "UNSIGNED-PAYLOAD",
+                    duringBody = { deleted = s3.send("DELETE", "/photos").status },
+                )
+
+            assertEquals(204, deleted, "the bucket was empty when it was deleted")
+            assertEquals(404, answer.status, answer.text)
+            assertTrue("NoSuchBucket" in answer.text, answer.text)
+
+            // And nothing is left under the name: a version in a deleted bucket makes it
+            // un-deletable for whoever takes the name next, and invisible to everyone.
+            assertEquals(200, s3.createBucket("photos").status)
+            assertEquals(204, s3.send("DELETE", "/photos").status, "nothing was left behind")
         }
     }
 }

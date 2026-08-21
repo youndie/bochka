@@ -817,7 +817,14 @@ class ObjectStore(
 
     fun bucketNames(): List<String> = buckets.keys.sorted()
 
-    fun deleteBucket(name: String): Boolean {
+    fun deleteBucket(name: String): Boolean =
+        // Under [writing] because "is it empty" and "it is gone" have to be one step against a
+        // commit that is deciding the same thing (M-220). Uncontended and rare either way.
+        writing.withLock {
+            deleteEmptyBucket(name)
+        }
+
+    private fun deleteEmptyBucket(name: String): Boolean {
         if (firstKeyOf(name) != null) return false
         if (buckets.remove(name) == null) return false
         subresources.remove(name)
@@ -997,6 +1004,12 @@ class ObjectStore(
         acl: String? = null,
     ): Stored =
         writing.withLock {
+            // The bucket was there when the head was read; the body has been arriving ever since,
+            // and a minute is a long time (M-220). Under the same lock `deleteBucket` takes, so
+            // the two orders are the only two there are: either the delete goes first and this
+            // refuses, or this goes first and the delete finds a key and refuses.
+            if (!buckets.containsKey(bucket)) throw BucketGone(bucket)
+
             val state = versioning(bucket)
             val outcome = precondition.holdsFor(get(bucket, key))
             if (outcome != Outcome.HELD) {
@@ -2315,6 +2328,22 @@ class ObjectStore(
     /** `data/ab/cd/<uuid>` — two levels so that no directory ever holds a million entries. */
     private fun pathOf(fileId: String): Path =
         data.resolve(fileId.substring(0, 2)).resolve(fileId.substring(2, 4)).resolve(fileId)
+
+    /**
+     * Refused because the bucket stopped existing between the head of the request and the commit.
+     *
+     * The bucket is checked before the body is read — that is what makes a refusal cost one round
+     * trip instead of five gigabytes (§1.2.2) — and the body then takes as long as the client
+     * takes. `DeleteBucket` in that window succeeds, because the bucket really is empty: the bytes
+     * are staged and belong to nobody. Committing anyway puts a version into a bucket that is gone
+     * and answers `200` for an object no listing shows and no `GET` finds (M-220).
+     *
+     * Thrown from [commit], which is the one place both the ordinary write and the multipart
+     * completion pass through.
+     */
+    class BucketGone(
+        val bucket: String,
+    ) : RuntimeException("the bucket $bucket was deleted while this was being written")
 
     /** Refused because the index is full — at startup, or at the write that would overflow it. */
     class CeilingExceeded(

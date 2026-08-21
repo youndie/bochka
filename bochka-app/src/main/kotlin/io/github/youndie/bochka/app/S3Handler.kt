@@ -808,6 +808,8 @@ class S3Handler(
             error(head, S3Error.INVALID_ARGUMENT, detail = e.message, key = route.key, bucket = route.bucket)
         } catch (e: ObjectStore.CeilingExceeded) {
             error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = route.key, bucket = route.bucket)
+        } catch (e: ObjectStore.BucketGone) {
+            error(head, S3Error.NO_SUCH_BUCKET, detail = e.message, key = route.key, bucket = route.bucket)
         }
     }
 
@@ -1310,6 +1312,8 @@ class S3Handler(
             formSuccess(form, bucket, key, stored.eTag, accessKeyId)
         } catch (e: ObjectStore.CeilingExceeded) {
             error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = key, bucket = bucket)
+        } catch (e: ObjectStore.BucketGone) {
+            error(head, S3Error.NO_SUCH_BUCKET, detail = e.message, key = key, bucket = bucket)
         } finally {
             staged?.let(store::discard)
         }
@@ -1466,6 +1470,11 @@ class S3Handler(
             error(head, e.error, detail = e.message)
         } catch (e: ObjectStore.CeilingExceeded) {
             error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = route.key, bucket = route.bucket)
+        } catch (e: ObjectStore.BucketGone) {
+            // The bucket went while the body was arriving. `NoSuchBucket` is what the client would
+            // have been told had it asked a second earlier, and it is what the suite expects
+            // (`test_atomic_write_bucket_gone`).
+            error(head, S3Error.NO_SUCH_BUCKET, detail = e.message, key = route.key, bucket = route.bucket)
         } catch (e: ObjectStore.Locked) {
             error(head, S3Error.ACCESS_DENIED, detail = e.message, key = route.key, bucket = route.bucket)
         } catch (e: ObjectStore.PreconditionFailed) {
