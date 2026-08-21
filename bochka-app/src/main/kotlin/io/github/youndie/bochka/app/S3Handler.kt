@@ -2730,7 +2730,13 @@ class S3Handler(
                     return error(head, e.error, detail = e.message, bucket = route.bucket)
                 }
                 store.putBucketSubresource(route.bucket, "policy", document)
-                HttpResponse(200, "OK")
+                // 204, not 200, and this came from the suite rather than from the model: the
+                // service description gives `PutBucketPolicy` no `responseCode`, which reads as
+                // 200, while every case that checks the status asserts 204 — including
+                // `_set_log_bucket_policy_tenant:15380`, which stands in front of all 31 runnable
+                // bucket-logging cases. The first version here answered 200 because 200 is what I
+                // wrote, and the test agreed with the code rather than with a source.
+                HttpResponse(204, "No Content")
             }
         }
 

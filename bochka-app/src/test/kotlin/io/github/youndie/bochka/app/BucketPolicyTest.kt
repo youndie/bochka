@@ -50,7 +50,8 @@ class BucketPolicyTest {
         s3.createBucket("photos")
         val document = policyFor("photos")
 
-        assertEquals(200, s3.send("PUT", "/photos", query = "policy", body = document.toByteArray()).status)
+        // 204 is what the suite asserts (`_set_log_bucket_policy_tenant:15380`), not what the model says.
+        assertEquals(204, s3.send("PUT", "/photos", query = "policy", body = document.toByteArray()).status)
 
         val answer = s3.send("GET", "/photos", query = "policy")
         assertEquals(200, answer.status, answer.text)
@@ -192,7 +193,7 @@ class BucketPolicyTest {
             """{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": "*", """ +
                 """"Action": "s3:ListBucket", "Resource": "arn:aws:s3:::photos", """ +
                 """"Condition": {"StringLike": {"s3:prefix": "public/*"}}}]}"""
-        assertEquals(200, s3.send("PUT", "/photos", query = "policy", body = underPublic.toByteArray()).status)
+        assertEquals(204, s3.send("PUT", "/photos", query = "policy", body = underPublic.toByteArray()).status)
 
         // Neither key exists. The one the policy would have let this caller list is missing;
         // the other one it may not even ask about.

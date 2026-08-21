@@ -71,7 +71,7 @@ class CopySourceAccessTest {
         val grant =
             """{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": "*", """ +
                 """"Action": "s3:GetObject", "Resource": "arn:aws:s3:::vault/public/*"}]}"""
-        assertEquals(200, s3.send("PUT", "/vault", query = "policy", body = grant.toByteArray()).status)
+        assertEquals(204, s3.send("PUT", "/vault", query = "policy", body = grant.toByteArray()).status)
         s3.send("PUT", "/mine", asOther = true)
 
         assertEquals(

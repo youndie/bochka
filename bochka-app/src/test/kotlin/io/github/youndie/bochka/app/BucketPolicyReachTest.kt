@@ -94,7 +94,7 @@ class BucketPolicyReachTest {
     fun `every route is refused while the policy denies everything`() {
         s3.createBucket("vault")
         s3.put("vault", "a.txt", "body")
-        assertEquals(200, s3.send("PUT", "/vault", query = "policy", body = denyEverything.toByteArray()).status)
+        assertEquals(204, s3.send("PUT", "/vault", query = "policy", body = denyEverything.toByteArray()).status)
 
         for ((request, route) in requests) {
             val (method, path, query) = request
@@ -115,7 +115,7 @@ class BucketPolicyReachTest {
         // Denied to everyone by the text, and reachable anyway — otherwise one bad statement locks
         // the bucket for good.
         assertEquals(200, s3.send("GET", "/vault", query = "policy").status)
-        assertEquals(200, s3.send("PUT", "/vault", query = "policy", body = denyEverything.toByteArray()).status)
+        assertEquals(204, s3.send("PUT", "/vault", query = "policy", body = denyEverything.toByteArray()).status)
         assertEquals(204, s3.send("DELETE", "/vault", query = "policy").status)
     }
 
