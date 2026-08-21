@@ -132,9 +132,9 @@ out-of-scope	website	static website hosting is out of the v1 scope
 # причина была неверна для них с самого начала: они шлют **`OPTIONS`** на presign-ссылку и ждут
 # `400`, а bochka отвечает `403` — вопрос про preflight, а не про подпись (M-226). CORS-пара
 # отдельно: заголовков `Access-Control-*` в ответе нет вовсе.
-deferred	x_amz_expires	кейс шлёт OPTIONS на presign-ссылку и ждёт 400; здесь 403 — это про preflight, а не про анонимность (M-226)
-deferred	raw_put_authenticated_expired	то же: OPTIONS перед PUT ждёт 400 (M-226)
-deferred	cors_origin	ответ на межпроисхожденческий запрос не несёт Access-Control-Allow-Origin (M-226)
+# Три строки M-226 сняты вместе с самой задачей: `OPTIONS` без `Access-Control-Request-Method`
+# отвечает `400`, а обычный ответ несёт `Access-Control-*`. Подтверждающий прогон — M-204; если
+# кейсы всё-таки упадут, они придут как `unclassified`, а не под причиной, которая уже неверна.
 out-of-scope	notification	bucket notifications are out of the v1 scope
 out-of-scope	replication	replication needs more than one node, which is the whole niche this is not
 out-of-scope	logging	server access logging is out of the v1 scope

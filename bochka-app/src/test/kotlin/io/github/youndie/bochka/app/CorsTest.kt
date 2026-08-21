@@ -227,4 +227,177 @@ class CorsTest {
             assertEquals(403, ask("x-other").status)
         }
     }
+
+    // --- the half that was missing: an ordinary response to a cross-origin request (M-226) ------
+
+    /**
+     * The rules a browser actually needs, and the ones this server had none of.
+     *
+     * Preflight was answered from the first day of CORS here (M14) and the **real** request was
+     * not: no `Access-Control-*` on the response at all. From the outside that looks like CORS
+     * working — the `OPTIONS` says yes — and then the browser refuses to hand the body to the page,
+     * because the answer it finally gets never says who may read it. No test in this repository
+     * could see it, for the reason that makes it worth a milestone of its own: the tests are not
+     * browsers.
+     *
+     * The oracle is `test_cors_origin_response:6916` and `test_cors_origin_wildcard`, both of
+     * which are unmarked — this is S3's behaviour rather than RGW's.
+     */
+    private val forOrigins =
+        (
+            "<CORSConfiguration>" +
+                "<CORSRule><AllowedMethod>GET</AllowedMethod><AllowedOrigin>*suffix</AllowedOrigin></CORSRule>" +
+                "<CORSRule><AllowedMethod>PUT</AllowedMethod><AllowedOrigin>*.put</AllowedOrigin></CORSRule>" +
+                "</CORSConfiguration>"
+        ).toByteArray()
+
+    @Test
+    fun `a request without an Origin gets no cors headers`() {
+        s3.createBucket("photos")
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        val answer = s3.send("GET", "/photos", query = "list-type=2")
+
+        assertEquals(200, answer.status)
+        assertNull(answer.header("Access-Control-Allow-Origin"))
+    }
+
+    @Test
+    fun `an origin a rule matches is told so on the answer itself`() {
+        s3.createBucket("photos")
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        val answer = s3.send("GET", "/photos", query = "list-type=2", headers = listOf("Origin" to "foo.suffix"))
+
+        assertEquals(200, answer.status)
+        assertEquals("foo.suffix", answer.header("Access-Control-Allow-Origin"))
+        assertEquals("GET", answer.header("Access-Control-Allow-Methods"))
+    }
+
+    @Test
+    fun `an origin no rule matches is answered without cors headers, not refused`() {
+        s3.createBucket("photos")
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        val answer = s3.send("GET", "/photos", query = "list-type=2", headers = listOf("Origin" to "foo.bar"))
+
+        assertEquals(200, answer.status, "a request the rules do not cover is still an ordinary request")
+        assertNull(answer.header("Access-Control-Allow-Origin"))
+    }
+
+    @Test
+    fun `the headers ride on a failure too`() {
+        // `test_cors_origin_response` checks a 404 and a 403 for exactly this: a browser has to be
+        // able to read the error, and a page that cannot see the 404 sees a network failure.
+        s3.createBucket("photos")
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        val answer = s3.send("GET", "/photos/missing", headers = listOf("Origin" to "foo.suffix"))
+
+        assertEquals(404, answer.status)
+        assertEquals("foo.suffix", answer.header("Access-Control-Allow-Origin"))
+    }
+
+    @Test
+    fun `a stated request method decides the match before the real one does`() {
+        // A PUT carrying `Access-Control-Request-Method: GET` matches the GET rule — the same
+        // matching function preflight uses, which is what the suite pins.
+        s3.createBucket("photos")
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        val statedGet =
+            s3.send(
+                "PUT",
+                "/photos/bar",
+                headers = listOf("Origin" to "foo.suffix", "Access-Control-Request-Method" to "GET"),
+            )
+        assertEquals("foo.suffix", statedGet.header("Access-Control-Allow-Origin"))
+        assertEquals("GET", statedGet.header("Access-Control-Allow-Methods"))
+
+        val statedPut =
+            s3.send(
+                "PUT",
+                "/photos/bar",
+                headers = listOf("Origin" to "foo.suffix", "Access-Control-Request-Method" to "PUT"),
+            )
+        assertNull(statedPut.header("Access-Control-Allow-Origin"), "no rule allows PUT from *suffix")
+    }
+
+    @Test
+    fun `and the real method when nothing states one`() {
+        s3.createBucket("photos")
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        val answer = s3.send("PUT", "/photos/bar", headers = listOf("Origin" to "foo.put"), body = "body".toByteArray())
+
+        assertEquals("foo.put", answer.header("Access-Control-Allow-Origin"))
+        assertEquals("PUT", answer.header("Access-Control-Allow-Methods"))
+    }
+
+    @Test
+    fun `a rule that allows every origin answers with the star, not with the origin`() {
+        // `test_cors_origin_wildcard`: the answer is `*`, which is what lets a browser cache it
+        // for any origin. Echoing the caller back would be a different, narrower promise.
+        s3.createBucket("photos")
+        val anyOrigin =
+            (
+                "<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod>" +
+                    "<AllowedOrigin>*</AllowedOrigin></CORSRule></CORSConfiguration>"
+            ).toByteArray()
+        s3.send("PUT", "/photos", query = "cors", body = anyOrigin)
+
+        val answer = s3.send("GET", "/photos", query = "list-type=2", headers = listOf("Origin" to "example.origin"))
+
+        assertEquals("*", answer.header("Access-Control-Allow-Origin"))
+    }
+
+    // --- OPTIONS that is not a preflight (M-226) -----------------------------------------------
+
+    /**
+     * An `OPTIONS` with no `Access-Control-Request-Method` is not a preflight at all — it is a
+     * malformed one, and `400` is what says so.
+     *
+     * `403` reads as "you may not ask", which sends the caller to look at credentials that were
+     * never the problem. Seven cases of the suite spent a milestone classified under anonymous
+     * access for exactly this reason: they send `OPTIONS` at a presigned link and wait for `400`
+     * (`test_cors_origin_response:6916` pins the plain form).
+     */
+    @Test
+    fun `an OPTIONS without a stated method is a bad request, not a refusal`() {
+        s3.createBucket("photos")
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        val withOrigin = s3.send("OPTIONS", "/photos", headers = listOf("Origin" to "foo.suffix"))
+
+        assertEquals(400, withOrigin.status, withOrigin.text)
+        assertNull(withOrigin.header("Access-Control-Allow-Origin"))
+    }
+
+    @Test
+    fun `and an OPTIONS with no Origin either`() {
+        s3.createBucket("photos")
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        assertEquals(400, s3.send("OPTIONS", "/photos").status)
+        // Even a bucket that was never told about CORS: the request is wrong before the
+        // configuration is consulted.
+        s3.createBucket("plain")
+        assertEquals(400, s3.send("OPTIONS", "/plain").status)
+    }
+
+    @Test
+    fun `an origin no rule covers is still refused, and with 403`() {
+        // The other half of the pair: this **is** a preflight, and the answer to it is "no".
+        s3.createBucket("photos")
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        val answer =
+            s3.send(
+                "OPTIONS",
+                "/photos",
+                headers = listOf("Origin" to "nobody.knows", "Access-Control-Request-Method" to "GET"),
+            )
+
+        assertEquals(403, answer.status, answer.text)
+    }
 }

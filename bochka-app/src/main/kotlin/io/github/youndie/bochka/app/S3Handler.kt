@@ -168,7 +168,19 @@ class S3Handler(
             }
         }
 
-    override fun screen(head: HttpRequestParser.Head): HttpResponse? {
+    override fun screen(head: HttpRequestParser.Head): HttpResponse? = withCors(head, screened(head))
+
+    override suspend fun handle(
+        head: HttpRequestParser.Head,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse = withCors(head, handled(head, body))!!
+
+    override fun failed(
+        head: HttpRequestParser.Head,
+        cause: Throwable,
+    ): HttpResponse = withCors(head, failedWith(head, cause))!!
+
+    private fun screened(head: HttpRequestParser.Head): HttpResponse? {
         val route = route(head)
         if (route is S3Router.Route.NotImplemented) {
             return error(head, S3Error.NOT_IMPLEMENTED, detail = "not implemented: ${route.what}")
@@ -354,7 +366,7 @@ class S3Handler(
         return null
     }
 
-    override suspend fun handle(
+    private suspend fun handled(
         head: HttpRequestParser.Head,
         body: HttpHandler.RequestBody,
     ): HttpResponse {
@@ -1000,7 +1012,7 @@ class S3Handler(
      * failure that might not repeat. The detail travels in the body deliberately: this is a store
      * somebody runs themselves, and the person reading the response is the person who can fix it.
      */
-    override fun failed(
+    private fun failedWith(
         head: HttpRequestParser.Head,
         cause: Throwable,
     ): HttpResponse = error(head, S3Error.INTERNAL_ERROR, detail = "${cause::class.simpleName}: ${cause.message}")
@@ -2998,8 +3010,30 @@ class S3Handler(
         head: HttpRequestParser.Head,
         route: S3Router.Route.Preflight,
     ): HttpResponse {
-        val origin = head.header("origin") ?: return error(head, S3Error.ACCESS_DENIED, bucket = route.bucket)
-        val method = head.header("access-control-request-method") ?: "GET"
+        // Both headers are what **make** this a preflight, and their absence is a malformed
+        // request rather than a forbidden one (M-226). `403` reads as "you may not ask", which
+        // sends the caller to look at credentials that were never the problem — and seven cases of
+        // the suite sat misclassified under anonymous access for exactly that misreading.
+        //
+        // The method mattered more than the origin did. It used to default to `GET`, so a bare
+        // `OPTIONS` carrying an `Origin` was answered **200, GET allowed**: the server agreeing to
+        // something nobody had asked about.
+        val origin =
+            head.header("origin")
+                ?: return error(
+                    head,
+                    S3Error.INVALID_REQUEST,
+                    detail = "an OPTIONS without an Origin is not a preflight",
+                    bucket = route.bucket,
+                )
+        val method =
+            head.header("access-control-request-method")
+                ?: return error(
+                    head,
+                    S3Error.INVALID_REQUEST,
+                    detail = "an OPTIONS without Access-Control-Request-Method is not a preflight",
+                    bucket = route.bucket,
+                )
         // Список, а не строка: браузер перечисляет через запятую всё, что собирается послать,
         // и разрешено должно быть каждое.
         val asked =
@@ -3275,6 +3309,67 @@ class S3Handler(
     /** The caller saying out loud that it means to step over a `GOVERNANCE` lock. */
     private fun bypassGovernance(head: HttpRequestParser.Head): Boolean =
         head.header("x-amz-bypass-governance-retention")?.equals("true", ignoreCase = true) == true
+
+    /**
+     * The `Access-Control-*` headers an ordinary answer owes a browser (M-226).
+     *
+     * **Preflight was only ever half of CORS here.** `OPTIONS` has been answered since M14, and the
+     * request that follows it carried no `Access-Control-*` at all — so a browser was told "yes,
+     * you may ask" and then refused the body of the answer, because nothing in it said who may
+     * read it. Nothing in this repository could see that: the tests are not browsers, and every
+     * other client ignores these headers entirely.
+     *
+     * Applied at all three exits — [screen], [handle] and [failed] — because a browser needs to
+     * read failures too: `test_cors_origin_response:6916` checks a `404` and two `403`s. One exit
+     * wrapped and the others not is the shape this codebase has already paid for once (M-155).
+     *
+     * **The whole cost for a client that is not a browser is one header lookup.** `Origin` is sent
+     * by browsers and by nothing else, so `aws-cli`, `boto3`, `rclone` and `mc` leave here on the
+     * first line, before anything is routed or read.
+     *
+     * The match is the same one preflight uses, including its odd part: an
+     * `Access-Control-Request-Method` on an ordinary request decides which rule applies, ahead of
+     * the method the request actually is. That is what the suite pins, and it falls out of asking
+     * one matching function rather than two.
+     */
+    private fun withCors(
+        head: HttpRequestParser.Head,
+        response: HttpResponse?,
+    ): HttpResponse? {
+        if (response == null) return null
+        val origin = head.header("origin") ?: return response
+        // Preflight has already answered with its own, richer set — `Max-Age` and the allowed
+        // headers among them — and a second opinion here would only contradict it.
+        if (response.headers.any { it.first.equals("Access-Control-Allow-Origin", ignoreCase = true) }) return response
+
+        val bucket = bucketOf(route(head)) ?: return response
+        val document = store.bucketSubresource(bucket, "cors") ?: return response
+        val method = head.header("access-control-request-method") ?: head.method
+        val rule =
+            try {
+                S3Requests.parseCors(document).matching(origin, method)
+            } catch (e: XmlReader.MalformedXmlException) {
+                // A configuration that will not parse cannot say who may read this, and saying
+                // nothing is the answer a browser understands: it refuses, which is what an
+                // unreadable CORS document should produce.
+                return response
+            } ?: return response
+
+        // `*` is answered as `*` rather than echoed back (`test_cors_origin_wildcard`): the two are
+        // different promises, and a browser may cache the first for any origin at all.
+        val allowed = if (rule.allowedOrigins.any { it == "*" }) "*" else origin
+        return response.copy(
+            headers =
+                response.headers +
+                    buildList {
+                        add("Access-Control-Allow-Origin" to allowed)
+                        add("Access-Control-Allow-Methods" to rule.allowedMethods.joinToString(", "))
+                        if (rule.exposeHeaders.isNotEmpty()) {
+                            add("Access-Control-Expose-Headers" to rule.exposeHeaders.joinToString(", "))
+                        }
+                    },
+        )
+    }
 
     private fun route(head: HttpRequestParser.Head): S3Router.Route =
         router.route(
