@@ -1295,7 +1295,14 @@ class S3Handler(
                     val cipher = sse.cipherAt(encryption.iv, 0)
                     val encrypted = ByteArray(form.fileLength)
                     cipher.update(raw, form.fileOffset, form.fileLength, encrypted, 0)
-                    store.stage { out -> out.write(encrypted, 0, encrypted.size) }
+                    // The third path that encrypts, and it needs the same ETag as the other two
+                    // (M-190а): taken over the plaintext with the client's key, so the same bytes
+                    // sent again answer the same way whatever the IV was.
+                    val mac = sse.eTagMac()
+                    mac.update(raw, form.fileOffset, form.fileLength)
+                    store
+                        .stage { out -> out.write(encrypted, 0, encrypted.size) }
+                        .copy(eTag = hexETag(mac.doFinal()))
                 }
             val stored =
                 store.commit(
@@ -1599,29 +1606,33 @@ class S3Handler(
         // two would store the plaintext while the index says the object is encrypted — the shape
         // of failure this repository refuses everywhere else: accepted and not carried out.
         val cipher = if (sse != null && encryption != null) sse.cipherAt(encryption.iv, 0) else null
-        return store.stage { out ->
-            val sink =
-                AwsChunkedDecoder(
-                    decodedLength = declared,
-                    signing = verification.chunkSigning,
-                    expectedTrailers = announced,
-                ) { bytes, offset, length ->
-                    checksums.update(bytes, offset, length)
-                    if (cipher == null) {
-                        out.write(bytes, offset, length)
-                    } else {
-                        val encrypted = ByteArray(length)
-                        cipher.update(bytes, offset, length, encrypted, 0)
-                        out.write(encrypted, 0, length)
+        val eTagMac = if (cipher != null) sse!!.eTagMac() else null
+        val staged =
+            store.stage { out ->
+                val sink =
+                    AwsChunkedDecoder(
+                        decodedLength = declared,
+                        signing = verification.chunkSigning,
+                        expectedTrailers = announced,
+                    ) { bytes, offset, length ->
+                        checksums.update(bytes, offset, length)
+                        eTagMac?.update(bytes, offset, length)
+                        if (cipher == null) {
+                            out.write(bytes, offset, length)
+                        } else {
+                            val encrypted = ByteArray(length)
+                            cipher.update(bytes, offset, length, encrypted, 0)
+                            out.write(encrypted, 0, length)
+                        }
                     }
-                }
-            body.forEach { bytes, offset, length -> sink.feed(bytes, offset, length) }
-            sink.finish()
-            // After the last byte, and only here: this is where the client's own checksum arrives
-            // when it travels in the trailer (M-219). The decoder has already verified it; what it
-            // does not do is tell anybody what it was.
-            checksums.statedInTrailer(sink.trailers)
-        }
+                body.forEach { bytes, offset, length -> sink.feed(bytes, offset, length) }
+                sink.finish()
+                // After the last byte, and only here: this is where the client's own checksum arrives
+                // when it travels in the trailer (M-219). The decoder has already verified it; what it
+                // does not do is tell anybody what it was.
+                checksums.statedInTrailer(sink.trailers)
+            }
+        return eTagMac?.let { staged.copy(eTag = hexETag(it.doFinal())) } ?: staged
     }
 
     private suspend fun stageWhole(
@@ -1635,20 +1646,34 @@ class S3Handler(
         // checksum describes the object, and the signature describes what the client put on the
         // wire. Taken after the cipher, both would be true statements about the wrong bytes.
         val cipher = if (sse != null && encryption != null) sse.cipherAt(encryption.iv, 0) else null
-        return store.stage { out ->
-            body.forEach { bytes, offset, length ->
-                checksums.update(bytes, offset, length)
-                signedHash?.update(bytes, offset, length)
-                if (cipher == null) {
-                    out.write(bytes, offset, length)
-                } else {
-                    val encrypted = ByteArray(length)
-                    cipher.update(bytes, offset, length, encrypted, 0)
-                    out.write(encrypted, 0, length)
+        // And the ETag of an encrypted object, for a third reason again: the store computes it from
+        // what it stores, which is the ciphertext, and a fresh IV per upload makes that a different
+        // answer every time for the same bytes (M-190а).
+        val eTagMac = if (cipher != null) sse!!.eTagMac() else null
+        val staged =
+            store.stage { out ->
+                body.forEach { bytes, offset, length ->
+                    checksums.update(bytes, offset, length)
+                    signedHash?.update(bytes, offset, length)
+                    eTagMac?.update(bytes, offset, length)
+                    if (cipher == null) {
+                        out.write(bytes, offset, length)
+                    } else {
+                        val encrypted = ByteArray(length)
+                        cipher.update(bytes, offset, length, encrypted, 0)
+                        out.write(encrypted, 0, length)
+                    }
                 }
             }
-        }
+        return eTagMac?.let { staged.copy(eTag = hexETag(it.doFinal())) } ?: staged
     }
+
+    /** The quote an `ETag` wears on the wire, named so [hexETag] stays readable. */
+    private val quote = "\""
+
+    /** An `ETag` as it travels: thirty-two hex characters in quotes. */
+    private fun hexETag(bytes: ByteArray) =
+        bytes.joinToString(separator = "", prefix = quote, postfix = quote) { "%02x".format(it) }
 
     /**
      * `x-amz-version-id`, when there is a version worth naming.
@@ -1728,6 +1753,14 @@ class S3Handler(
             } catch (refused: SseC.Refused) {
                 return error(head, refused.error, detail = refused.detail, key = key, bucket = bucket)
             }
+        // A part number this object does not have is answered **before** the key is demanded, and
+        // that order is S3's rather than ours: `test_multipart_sse_c_get_part` asks for part five of
+        // a four-part encrypted object **without** the key and expects `InvalidPart`. Demanding the
+        // key first is not wrong so much as unhelpful — it tells the client to fix the one thing
+        // that was not the mistake.
+        if (partNumber != null && stored.parts.isNotEmpty() && sliceOfPart(stored, partNumber) == null) {
+            return error(head, S3Error.INVALID_PART, key = key, bucket = bucket)
+        }
         sseRefusal(head, bucket, key, stored, presented)?.let { return it }
         val headers =
             overridden(

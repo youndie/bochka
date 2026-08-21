@@ -4,6 +4,7 @@ import io.github.youndie.bochka.s3.sigv4.S3Error
 import java.security.MessageDigest
 import java.util.Base64
 import javax.crypto.Cipher
+import javax.crypto.Mac
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
 
@@ -67,6 +68,32 @@ data class SseC(
         if (skew > 0) cipher.update(ByteArray(skew))
         return cipher
     }
+
+    /**
+     * The MAC an encrypted object's `ETag` is computed with, over the **plaintext** (M-190а).
+     *
+     * Three requirements meet here and only this shape satisfies all three.
+     *
+     * It has to be **deterministic**: `ceph/s3-tests` uploads a part, uploads the same bytes again
+     * and completes with the ETag of the first send, and the case is not marked as failing on AWS.
+     * An ETag taken over the ciphertext cannot be — every send gets a fresh IV, which it must, since
+     * reusing one under the same key with different bytes is the one thing CTR mode never survives.
+     *
+     * It has to be **opaque without the key**. A listing carries ETags and asks for no key at all,
+     * so an ETag equal to the plaintext's MD5 would let anybody who can list a bucket confirm a
+     * guess about what is in it. That is the property the whole feature is bought for.
+     *
+     * And it has to cost one pass over bytes that are already in hand, because the encrypted read
+     * path is 2.04× the plain one already (M-190) and the write path has no second chance at them.
+     *
+     * `HmacMD5` rather than something longer because an `ETag` is sixteen bytes by convention and
+     * clients parse it as thirty-two hex characters. Nothing here relies on MD5's collision
+     * resistance: what is needed is a function of the content that is unpredictable without the key.
+     */
+    fun eTagMac(): Mac =
+        Mac.getInstance("HmacMD5").apply {
+            init(SecretKeySpec(keyBytes, "HmacMD5"))
+        }
 
     override fun equals(other: Any?): Boolean =
         this === other ||
