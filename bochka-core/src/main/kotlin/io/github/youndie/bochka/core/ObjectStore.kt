@@ -1,8 +1,10 @@
 package io.github.youndie.bochka.core
 
 import java.io.Closeable
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
+import java.nio.channels.OverlappingFileLockException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
@@ -237,6 +239,21 @@ class ObjectStore(
     // which is why only starting the server for real found it.
     private val data = root.resolve("data").also { Files.createDirectories(it) }
     private val logPath = root.resolve("index.log")
+
+    /**
+     * The claim on this directory, taken **before** the journal is opened (M-224).
+     *
+     * Declared here and not lower because Kotlin initialises properties in the order they are
+     * written: the lock has to be held before anything reads or appends to the log, or the window
+     * it exists to close is open for the length of a recovery.
+     *
+     * An advisory lock through the operating system rather than a file with a pid in it, and that
+     * choice is the whole requirement. The kernel drops it when the file descriptor closes, which
+     * happens whether the process exited, was killed with `SIGKILL`, or died with the machine — so
+     * a crash never leaves a store that cannot be opened. A pid file cannot promise that: pids are
+     * reused, and "is 4711 still alive" is a different question from "is 4711 still this store".
+     */
+    private val claim = claimDirectory(root)
 
     // Reassigned by [compact], which is why it is not a `val`: the log the store appends to after
     // a compaction is a different file, and the old one is gone by then.
@@ -2310,7 +2327,12 @@ class ObjectStore(
         return removed
     }
 
-    override fun close() = log.close()
+    override fun close() {
+        log.close()
+        // After the log, and it matters in that order: releasing the claim first would let another
+        // process in while this one still has bytes to flush.
+        claim.close()
+    }
 
     private fun write(record: IndexRecord) {
         writing.withLock {
@@ -2319,6 +2341,84 @@ class ObjectStore(
             recordsSinceCompaction.incrementAndGet()
         }
     }
+
+    /**
+     * Takes the advisory lock on [root], or refuses with what is holding it.
+     *
+     * The lock file stays where it is on release rather than being deleted: removing it races with
+     * whoever is opening the same directory at that moment, and an empty file costs nothing. What
+     * carries the claim is the lock, not the file.
+     */
+    private fun claimDirectory(root: Path): Closeable {
+        val path = root.resolve(".lock")
+        val channel = FileChannel.open(path, StandardOpenOption.CREATE, StandardOpenOption.WRITE)
+        val lock =
+            try {
+                channel.tryLock()
+            } catch (e: OverlappingFileLockException) {
+                channel.close()
+                // The same JVM, not another process: `tryLock` answers `null` for a stranger and
+                // throws for itself. Worth its own sentence because it is the likelier of the two
+                // here — `bochka-embedded` puts a store in somebody's test, and a store that was
+                // not closed is exactly what a second one in the same test meets.
+                throw DirectoryInUse(
+                    "$root is already open in this JVM. Another ObjectStore on the same directory " +
+                        "has not been closed — an embedded one, most likely",
+                )
+            } catch (e: IOException) {
+                channel.close()
+                // `tryLock` throws rather than returning null when the filesystem cannot lock at
+                // all — some network mounts, and anything mounted `nolock`. Refusing is the honest
+                // answer: the alternative is a store that believes it is alone and is not, which is
+                // the exact state this whole mechanism exists to prevent.
+                throw DirectoryInUse(
+                    "$root cannot be locked (${e.message}), so this process cannot tell whether " +
+                        "another one is already using it; two would destroy the index between them",
+                )
+            }
+        if (lock == null) {
+            // Who holds it, when the holder managed to say so. The name is written into the file
+            // rather than derived from anything, because on a shared volume the other process is
+            // on another machine and a bare pid there means nothing at all.
+            val holder =
+                try {
+                    Files.readString(path).trim().takeIf { it.isNotEmpty() }
+                } catch (_: IOException) {
+                    null
+                }
+            channel.close()
+            throw DirectoryInUse(
+                "$root is already open ${holder?.let { "by $it" } ?: "in another process"}. Two of " +
+                    "them share one journal and overwrite each other's records: what survives is " +
+                    "what recovery can still checksum, which was nothing at all when this was " +
+                    "measured (M-183)",
+            )
+        }
+
+        // Best effort, and deliberately after the lock rather than before it: this is a courtesy to
+        // whoever is refused, not part of the claim. A failure to write it costs a worse message.
+        runCatching {
+            channel.truncate(0)
+            channel.write(java.nio.ByteBuffer.wrap(holderName().toByteArray()))
+            channel.force(true)
+        }
+        // Closing the channel releases the lock — that is the documented behaviour, and relying on
+        // it is what keeps `close` idempotent. Releasing the lock explicitly first looks tidier and
+        // is not: `Closeable.close` may be called twice (the app's own test fixture does), and the
+        // second `release` on a closed channel is a `ClosedChannelException` out of `close`.
+        return Closeable { channel.close() }
+    }
+
+    /** `pid@host`, which is as much as this process can honestly say about itself. */
+    private fun holderName(): String =
+        "pid ${ProcessHandle.current().pid()} on " +
+            (
+                runCatching {
+                    java.net.InetAddress
+                        .getLocalHost()
+                        .hostName
+                }.getOrNull() ?: "this host"
+            )
 
     private fun firstKeyOf(bucket: String): ObjectKey? {
         val entry = objects.ceilingEntry(headOf(bucket, ObjectKey(ByteArray(0)))) ?: return null
@@ -2344,6 +2444,22 @@ class ObjectStore(
     class BucketGone(
         val bucket: String,
     ) : RuntimeException("the bucket $bucket was deleted while this was being written")
+
+    /**
+     * Refused because another process already has this data directory open (M-224).
+     *
+     * Nothing about the store's format tolerates two writers: both append to the same journal from
+     * their own idea of where it ends, so the second record lands on top of the first and recovery
+     * stops at the first checksum it cannot verify. Measured, not assumed — two servers on one
+     * directory acknowledged a hundred and fifty writes each and left a store recovering zero
+     * records (M-183, docs/measurements.md).
+     *
+     * A refusal at startup rather than a warning, because everything after this point is a write
+     * somebody will be told succeeded.
+     */
+    class DirectoryInUse(
+        override val message: String,
+    ) : RuntimeException(message)
 
     /** Refused because the index is full — at startup, or at the write that would overflow it. */
     class CeilingExceeded(

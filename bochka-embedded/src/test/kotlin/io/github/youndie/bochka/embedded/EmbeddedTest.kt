@@ -64,11 +64,15 @@ class EmbeddedTest {
             assertEquals(1, bochka.objectCount)
             // Сброс не должен оставлять файлы: тест, гоняющий тысячу раундов, иначе заполнит диск
             // тем, на что никто не смотрит.
+            //
+            // `.lock` исключён вместе с журналом и по той же причине: это не хранилище, а заявка
+            // на каталог (M-224), и она обязана пережить сброс — стор в этот момент открыт, и
+            // удалить её значило бы впустить второй процесс в середину чужой жизни.
             val files =
                 bochka.dataDirectory
                     .toFile()
                     .walkTopDown()
-                    .filter { it.isFile && it.name != "index.log" }
+                    .filter { it.isFile && it.name != "index.log" && it.name != ".lock" }
                     .count()
             assertTrue(files <= 1, "после сброса остались файлы: $files")
         }

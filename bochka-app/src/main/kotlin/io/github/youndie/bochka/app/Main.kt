@@ -54,11 +54,19 @@ object Main {
                 KeyScope.parse(configuration.list(Configuration.Key.KEY_SCOPES)),
             )
 
+        // A directory somebody else is using is a refusal like a misspelt setting, not a crash: the
+        // one moment this message is read is a second server started by mistake, and a stack trace
+        // there says "bochka is broken" rather than "you already have one" (M-224).
         val store =
-            ObjectStore(
-                root = dataDir,
-                maxObjects = configuration.int(Configuration.Key.MAX_OBJECTS) ?: ObjectStore.ceilingForHeap(),
-            )
+            try {
+                ObjectStore(
+                    root = dataDir,
+                    maxObjects = configuration.int(Configuration.Key.MAX_OBJECTS) ?: ObjectStore.ceilingForHeap(),
+                )
+            } catch (e: ObjectStore.DirectoryInUse) {
+                System.err.println("bochka will not start: ${e.message}")
+                kotlin.system.exitProcess(2)
+            }
         val lifecycleDay = Duration.ofSeconds(configuration.long(Configuration.Key.LIFECYCLE_DAY_SECONDS) ?: 86400)
         if (!lifecycleDay.isPositive) {
             System.err.println("bochka will not start: lifecycle.day.seconds must be positive, not $lifecycleDay")
