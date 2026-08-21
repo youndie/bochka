@@ -100,9 +100,27 @@ for path in files:
             first = (bad.get("message") or "").split(chr(10))[0]
             names.append((name, first[:120]))
 
+# One of s3kn's expectations is about MinIO rather than about S3, and it is named here for the
+# same reason ceph/s3-tests failures are classified in ci/s3-tests-scope.txt: a failure nobody has
+# explained and a failure somebody decided about look identical in a count. M-182 decided this one.
+EXPLAINED = {
+    "is answered with 411 when a body arrives without a stated length":
+        "s3kn asserts MinIO's answer (its e2e runs against MinIO, docker-compose.yml). "
+        "ceph/s3-tests:1597 sends the same shape -- botocore drops Content-Length entirely when "
+        "Transfer-Encoding is added -- and expects 200, unmarked for AWS. bochka answers 200 (M-182).",
+}
+
 print()
 print("s3kn: %d of %d passed" % (total - failed, total))
+explained = [n for n, _ in names if n in EXPLAINED]
+if explained:
+    print("  %d of the failures are decided rather than open:" % len(explained))
+    for name in sorted(explained):
+        print("    %s" % name)
+        print("      %s" % EXPLAINED[name])
 for name, why in sorted(names):
+    if name in EXPLAINED:
+        continue
     print("  failed: %s" % name)
     print("          %s" % why)
 print()
