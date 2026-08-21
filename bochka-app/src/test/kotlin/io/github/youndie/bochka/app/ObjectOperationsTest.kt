@@ -1,5 +1,9 @@
 package io.github.youndie.bochka.app
 
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.Base64
+import java.util.zip.CRC32
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContains
@@ -340,4 +344,61 @@ class ObjectOperationsTest {
 
         assertEquals(listOf("foo/bar"), answer.headers("Content-Type"))
     }
+
+    @Test
+    fun `a checksum that arrives in the trailer is kept, not only checked`() {
+        // M-219, and the reason it lived: `aws-cli` frames a body this way **only over TLS**, and
+        // every harness in this repository speaks plain http — `ci/s3-tests.sh` included. The
+        // decoder verifies the trailer (`AwsChunkedDecoderTest`), and until this test nothing
+        // asked what happened to the value afterwards. It was dropped: `collectedTrailers` was
+        // read by nobody, so the object came back with no checksum at all.
+        //
+        // The body is the captured one from `docs/spec/aws-chunked/unsigned-trailer-crc32/`,
+        // produced by botocore rather than by us, and the expected value is computed here with
+        // the JDK's own CRC32 — neither side of the assertion comes from the code under test.
+        val dir =
+            Path
+                .of(System.getProperty("bochka.specDir") ?: error("bochka.specDir is not set"))
+                .resolve("aws-chunked/unsigned-trailer-crc32")
+        val framed = Files.readAllBytes(dir.resolve("body"))
+        val obj = Files.readAllBytes(dir.resolve("object"))
+        val expected =
+            Base64.getEncoder().encodeToString(
+                CRC32()
+                    .apply { update(obj) }
+                    .value
+                    .toInt()
+                    .toBigEndian(),
+            )
+
+        val b = bucket()
+        val put =
+            s3.send(
+                "PUT",
+                "/$b/framed.bin",
+                headers =
+                    listOf(
+                        "x-amz-decoded-content-length" to obj.size.toString(),
+                        "x-amz-trailer" to "x-amz-checksum-crc32",
+                        "Content-Encoding" to "aws-chunked",
+                    ),
+                body = framed,
+                payloadHash = "STREAMING-UNSIGNED-PAYLOAD-TRAILER",
+            )
+
+        assertEquals(200, put.status, put.text)
+        assertEquals(expected, put.header("x-amz-checksum-crc32"), "the answer to the upload carries it")
+
+        val asked = s3.get(b, "framed.bin", headers = listOf("x-amz-checksum-mode" to "ENABLED"))
+        assertEquals(expected, asked.header("x-amz-checksum-crc32"), "and it is still there afterwards")
+        assertContentEquals(obj, s3.get(b, "framed.bin").body)
+    }
+
+    private fun Int.toBigEndian() =
+        byteArrayOf(
+            (this ushr 24).toByte(),
+            (this ushr 16).toByte(),
+            (this ushr 8).toByte(),
+            this.toByte(),
+        )
 }

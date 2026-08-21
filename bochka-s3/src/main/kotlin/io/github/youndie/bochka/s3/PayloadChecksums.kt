@@ -31,8 +31,8 @@ import java.util.zip.Checksum
  */
 class PayloadChecksums private constructor(
     private val md5Expected: String?,
-    private val algorithm: Algorithm?,
-    private val stated: String?,
+    private var algorithm: Algorithm?,
+    private var stated: String?,
     /**
      * Why the head itself cannot be honoured, when it cannot.
      *
@@ -102,6 +102,34 @@ class PayloadChecksums private constructor(
             }
         }
         return null
+    }
+
+    /**
+     * The client stated its checksum in the body's **trailer** rather than in the head (M-219).
+     *
+     * That is not an exotic case: since 2025 the AWS SDKs put the checksum there by default, which
+     * is why the unsigned-trailer framing exists at all — and `aws-cli` uses it **only over TLS**,
+     * so no harness in this repository that speaks plain http ever reaches this line. The value
+     * arrives after the last byte of the object, which is why it cannot be one of the things the
+     * head decides.
+     *
+     * Verification is already done and is not repeated here: [AwsChunkedDecoder] computes all four
+     * algorithms as the body goes past and answers `BadDigest` itself. What was missing was the
+     * value — it stayed in the decoder, and the object came back with no checksum at all, from
+     * `PUT`, from `GET` with `x-amz-checksum-mode: ENABLED` and from `GetObjectAttributes`.
+     *
+     * A checksum stated in the head wins, and there is nothing to choose between: the head's is
+     * the one this class hashed the body against, so keeping it keeps the value that was checked
+     * here rather than one that was checked elsewhere.
+     */
+    fun statedInTrailer(trailers: Map<String, String>) {
+        if (algorithm != null) return
+        for ((name, value) in trailers) {
+            val known = Algorithm.entries.firstOrNull { it.header.equals(name, ignoreCase = true) } ?: continue
+            algorithm = known
+            stated = value
+            return
+        }
     }
 
     /** What goes into the index, so a later `GET` can answer with it without rereading the object. */

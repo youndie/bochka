@@ -168,10 +168,6 @@ out-of-scope	obj_enc_conflict	contradictory server-side-encryption headers; encr
 # rule above, so a second one for it would be dead on arrival, which is the trap this file's
 # header describes.
 out-of-scope	object_delete_key_bucket_gone	an anonymous caller is refused before the missing bucket is looked for, so 403 arrives where the case wants 404
-# Fires only in a run against a TLS endpoint (`BOCHKA_S3TESTS_ENDPOINT` + `BOCHKA_S3TESTS_TLS=1`),
-# because that is the only place aws-cli puts the checksum in a trailer. Over plain http the case
-# passes, which is exactly why the defect lived so long.
-defect	multipart_checksum_object_attributes	a checksum that arrived in the trailer is verified and then dropped, so nothing reports it (M-219)
 out-of-scope	object_gone	the case reads under an anonymous client and expects 404 before the 403
 out-of-scope	ifnonmatch	conditional writes, as above
 out-of-scope	upload_part_copy	UploadPartCopy, as above

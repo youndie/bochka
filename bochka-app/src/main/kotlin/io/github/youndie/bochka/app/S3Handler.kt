@@ -1394,7 +1394,10 @@ class S3Handler(
         val payloadHash = verification.payloadHash
         val streaming = payloadHash in SignatureVerifier.ALL_STREAMING
         val checksums = PayloadChecksums.of { head.header(it) }
-        val metadata = ObjectHeaders.read(head.headers).copy(checksum = checksums.stored())
+        val fromHead = ObjectHeaders.read(head.headers)
+        // Assigned after staging when the checksum came in the trailer, which is after the object
+        // (M-219). Everything else about the metadata is decided by the head and decided once.
+        var metadata = fromHead.copy(checksum = checksums.stored())
         // Refused here, before the body is read, like everything else decided from the head: a key
         // whose MD5 does not describe it is a mistake the client made now, and storing the object
         // to discover it at the first read turns a typo into an object nobody can open.
@@ -1438,6 +1441,7 @@ class S3Handler(
             checksums.verify()?.let { rejection ->
                 return error(head, rejection.error, detail = rejection.detail, key = route.key, bucket = route.bucket)
             }
+            metadata = metadata.copy(checksum = checksums.stored())
 
             var stored =
                 store.commit(
@@ -1613,6 +1617,10 @@ class S3Handler(
                 }
             body.forEach { bytes, offset, length -> sink.feed(bytes, offset, length) }
             sink.finish()
+            // After the last byte, and only here: this is where the client's own checksum arrives
+            // when it travels in the trailer (M-219). The decoder has already verified it; what it
+            // does not do is tell anybody what it was.
+            checksums.statedInTrailer(sink.trailers)
         }
     }
 
