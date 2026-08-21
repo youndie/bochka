@@ -235,6 +235,20 @@ enum class S3Error(
         400,
     ),
 
+    /**
+     * A bucket policy this server will not store (M-201а).
+     *
+     * Separate from [MALFORMED_POLICY_DOCUMENT], which belongs to the POST form: the codes differ
+     * on the wire, and `test_bucket_policy_allow_notprincipal:14216` accepts this one or
+     * `InvalidArgument` and nothing else. The message names what was wrong, because the whole
+     * point of refusing a policy is that the author finds out now rather than through a leak.
+     */
+    MALFORMED_POLICY(
+        "MalformedPolicy",
+        "The policy is not well-formed or names something this server does not enforce",
+        400,
+    ),
+
     /** Политика формы, которую нельзя разобрать: не base64, не JSON, неизвестное условие. */
     MALFORMED_POLICY_DOCUMENT(
         "MalformedPolicyDocument",

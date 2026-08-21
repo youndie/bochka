@@ -183,12 +183,14 @@ class S3RouterTest {
         // the same as a feature the server does not have.
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "versioning"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "versioning"))
-        // И третий переезд, M20: `?policy`, `?lifecycle` и `?acl` отвечают на `GET` — «настройки
-        // нет» это вопрос с определённым ответом, — но **только** на `GET`. Принимающая сторона
-        // остаётся отказом, и обе половины проверяются здесь рядом, чтобы одну нельзя было
-        // подвинуть, не заметив другую.
+        // Третий переезд был M20: `?policy`, `?lifecycle` и `?acl` начали отвечать на `GET` —
+        // «настройки нет» это вопрос с определённым ответом, — но **только** на `GET`.
+        // Шестой — M-201а, и это конец той половинчатости: сервер начал политику **исполнять**,
+        // поэтому принимающая сторона перестала быть отказом. Направление то же, что у всех
+        // предыдущих переездов, и обратного здесь не бывает.
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "policy"))
-        assertIs<S3Router.Route.NotImplemented>(pathStyle.route("PUT", "h", "/photos", "policy"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "policy"))
+        assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("DELETE", "h", "/photos", "policy"))
         // И пятый переезд, M27: `?acl` ушёл из отвечающих на `GET` к настройкам на обоих методах,
         // и у объекта появился свой маршрут. Направление то же самое: сервер начал **делать** то,
         // что этот подресурс описывает — владелец и canned ACL решают, кому что можно, — а до тех

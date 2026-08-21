@@ -8,6 +8,7 @@ import io.github.youndie.bochka.http.HttpRequestParser
 import io.github.youndie.bochka.http.HttpResponse
 import io.github.youndie.bochka.s3.AccessControl
 import io.github.youndie.bochka.s3.BucketNameRules
+import io.github.youndie.bochka.s3.BucketPolicy
 import io.github.youndie.bochka.s3.ByteRanges
 import io.github.youndie.bochka.s3.Lifecycle
 import io.github.youndie.bochka.s3.Lifecycles
@@ -1774,6 +1775,14 @@ class S3Handler(
     /** The quote an `ETag` wears on the wire, named so [hexETag] stays readable. */
     private val quote = "\""
 
+    /**
+     * Decoded policies, one per bucket, valid while the stored bytes are the same instance.
+     *
+     * See [policyDecision]: the alternative is a JSON parse on every request to a bucket that has
+     * a policy, beside an access decision measured in nanoseconds.
+     */
+    private val decodedPolicies = java.util.concurrent.ConcurrentHashMap<String, Pair<ByteArray, BucketPolicy.Policy>>()
+
     /** An `ETag` as it travels: thirty-two hex characters in quotes. */
     private fun hexETag(bytes: ByteArray) =
         bytes.joinToString(separator = "", prefix = quote, postfix = quote) { "%02x".format(it) }
@@ -2618,11 +2627,8 @@ class S3Handler(
         if (route.name == "object-lock") return bucketObjectLock(head, route, body)
         if (route.name == Lifecycles.NAME) return bucketLifecycle(head, route, body)
 
-        // The truthful answers to questions this server has a defined answer for (M20). All three
-        // are `GET`-only by routing: the accepting side stays refused, because a policy accepted
-        // and not applied is found out through a leak rather than through an error.
         when (route.name) {
-            "policy" -> return error(head, S3Error.NO_SUCH_BUCKET_POLICY, bucket = route.bucket)
+            "policy" -> return bucketPolicy(head, route, body)
             "acl" -> return bucketAcl(head, route, body)
         }
 
@@ -2662,6 +2668,59 @@ class S3Handler(
             }
         }
     }
+
+    /**
+     * `?policy` on a bucket: store one, read it back, remove it (M-201а).
+     *
+     * **The one sub-resource stored exactly as it arrived.** Everywhere else the document is
+     * parsed and redrawn, which settles what to do with somebody else's formatting; here redrawing
+     * is the defect. `test_set_get_del_bucket_policy` compares the string it sent with the string
+     * it got back, so an equivalent document with different spacing fails a test about storage
+     * while the policy itself is identical. The parse still happens — it decides whether the bytes
+     * may be stored at all — but what is kept for answering is the client's own text.
+     *
+     * Refusing is the point of the parse. A policy accepted and not enforced reads stricter than
+     * it is, and its author finds out through a leak rather than through an error (M-133), so an
+     * action, a principal or a condition this server cannot decide is `MalformedPolicy` naming the
+     * text that caused it.
+     *
+     * `DELETE` answers **204** whether or not a policy was there (`s3-service-2.json:277`), which
+     * is the same shape as deleting an object that does not exist: the request asks for a state,
+     * not for a change.
+     */
+    private suspend fun bucketPolicy(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.BucketSubresource,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse =
+        when (route.method) {
+            "GET" -> {
+                val stored =
+                    store.bucketSubresource(route.bucket, "policy")
+                        ?: return error(head, S3Error.NO_SUCH_BUCKET_POLICY, bucket = route.bucket)
+                HttpResponse(200, "OK", headers = listOf("Content-Type" to "application/json"), body = stored)
+            }
+
+            "DELETE" -> {
+                store.putBucketSubresource(route.bucket, "policy", null)
+                HttpResponse(204, "No Content")
+            }
+
+            else -> {
+                // Read first, refuse after: answering while the client is still sending leaves both
+                // sides waiting, and the suite reports that as a timeout rather than as a refusal.
+                val collected = ByteArrayOutputStream()
+                body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+                val document = collected.toByteArray()
+                try {
+                    BucketPolicy.decode(String(document))
+                } catch (e: BucketPolicy.Refused) {
+                    return error(head, e.error, detail = e.message, bucket = route.bucket)
+                }
+                store.putBucketSubresource(route.bucket, "policy", document)
+                HttpResponse(200, "OK")
+            }
+        }
 
     /**
      * `?acl` on a bucket: read the truth, or set a canned name (M-193, M-194).
@@ -3258,10 +3317,29 @@ class S3Handler(
             bucketOf(route)
                 ?: return if (accessKeyId == null) refuseNobody(head, route, null) else null
         val bucket = AccessControl.Resource(store.bucketOwner(bucketName), store.bucketAcl(bucketName))
+
+        // Layer three (M-201б), and the two halves of it sit on either side of the ACL because
+        // they are not the same kind of answer. A `Deny` is stronger than everything, including a
+        // bucket that has no access model at all, so it is asked first. An `Allow` is weaker than
+        // a refusal already made — the key's own scope has had its say further up — so it is read
+        // after, where it can turn an ACL's "no" into a "yes" and nothing else.
+        val policy = policyDecision(route, bucketName, accessKeyId)
+        if (policy == BucketPolicy.Decision.DENY && !ownerKeepsThePolicyHandle(route, accessKeyId, bucket)) {
+            return error(
+                head,
+                S3Error.ACCESS_DENIED,
+                detail = "a bucket policy denies it",
+                key = keyOf(route),
+                bucket = bucketName,
+            )
+        }
+
         // The second: a bucket older than the model has no model. Among keys — see AccessControl.
         if (bucket.unrestricted) {
             return if (accessKeyId == null) refuseNobody(head, route, bucketName) else null
         }
+
+        if (policy == BucketPolicy.Decision.ALLOW) return null
 
         val allowed =
             when (route) {
@@ -3351,6 +3429,253 @@ class S3Handler(
             key = keyOf(route),
             bucket = bucketName,
         )
+    }
+
+    /**
+     * The one door a policy cannot lock: the owner's own `?policy`.
+     *
+     * S3 says it plainly (`s3-service-2.json:1257`, and again for the `GET` and `DELETE`): the
+     * bucket owner can call `GetBucketPolicy`, `PutBucketPolicy` and `DeleteBucketPolicy` even
+     * when the policy explicitly denies them. Without it the first typo in a `Deny` statement
+     * bricks the bucket for ever — there would be no request left that could remove the document.
+     */
+    private fun ownerKeepsThePolicyHandle(
+        route: S3Router.Route,
+        accessKeyId: String?,
+        bucket: AccessControl.Resource,
+    ): Boolean =
+        route is S3Router.Route.BucketSubresource &&
+            route.name == "policy" &&
+            accessKeyId != null &&
+            accessKeyId == bucket.owner
+
+    /**
+     * The action a route asks for, in the names a bucket policy uses (M-201б).
+     *
+     * `null` means "no policy can speak about this": the health handle, a preflight, a route the
+     * server does not implement, and `ListBuckets` — which names no bucket, so there is no bucket
+     * whose policy could be consulted. Everything else has a name, and
+     * `BucketPolicyReachTest` walks the router's own sealed hierarchy to prove it, the way
+     * `AnonymousReachTest` does for the anonymous decision.
+     *
+     * A `versionId` changes the action rather than the resource: S3 spells reading a named version
+     * `s3:GetObjectVersion`, and a policy that grants `s3:GetObject` alone does not hand out the
+     * history.
+     */
+    private fun policyActionOf(route: S3Router.Route): String? =
+        when (route) {
+            is S3Router.Route.ListObjects, is S3Router.Route.ListObjectsV2, is S3Router.Route.HeadBucket -> {
+                "s3:ListBucket"
+            }
+
+            is S3Router.Route.ListObjectVersions -> {
+                "s3:ListBucketVersions"
+            }
+
+            is S3Router.Route.ListMultipartUploads -> {
+                "s3:ListBucketMultipartUploads"
+            }
+
+            is S3Router.Route.GetBucketLocation -> {
+                "s3:GetBucketLocation"
+            }
+
+            is S3Router.Route.CreateBucket -> {
+                "s3:CreateBucket"
+            }
+
+            is S3Router.Route.DeleteBucket -> {
+                "s3:DeleteBucket"
+            }
+
+            is S3Router.Route.BucketSubresource -> {
+                val write = route.method != "GET"
+                when (route.name) {
+                    "tagging" -> {
+                        if (write) "s3:PutBucketTagging" else "s3:GetBucketTagging"
+                    }
+
+                    "cors" -> {
+                        if (write) "s3:PutBucketCORS" else "s3:GetBucketCORS"
+                    }
+
+                    "versioning" -> {
+                        if (write) "s3:PutBucketVersioning" else "s3:GetBucketVersioning"
+                    }
+
+                    "object-lock" -> {
+                        if (write) "s3:PutBucketObjectLockConfiguration" else "s3:GetBucketObjectLockConfiguration"
+                    }
+
+                    "lifecycle" -> {
+                        if (write) "s3:PutLifecycleConfiguration" else "s3:GetLifecycleConfiguration"
+                    }
+
+                    "acl" -> {
+                        if (write) "s3:PutBucketAcl" else "s3:GetBucketAcl"
+                    }
+
+                    "policy" -> {
+                        when (route.method) {
+                            "GET" -> "s3:GetBucketPolicy"
+                            "DELETE" -> "s3:DeleteBucketPolicy"
+                            else -> "s3:PutBucketPolicy"
+                        }
+                    }
+
+                    else -> {
+                        null
+                    }
+                }
+            }
+
+            is S3Router.Route.GetObject -> {
+                if (route.versionId == null) "s3:GetObject" else "s3:GetObjectVersion"
+            }
+
+            is S3Router.Route.HeadObject -> {
+                if (route.versionId == null) "s3:GetObject" else "s3:GetObjectVersion"
+            }
+
+            is S3Router.Route.GetObjectAttributes -> {
+                if (route.versionId == null) "s3:GetObjectAttributes" else "s3:GetObjectVersionAttributes"
+            }
+
+            is S3Router.Route.DeleteObject -> {
+                if (route.versionId ==
+                    null
+                ) {
+                    "s3:DeleteObject"
+                } else {
+                    "s3:DeleteObjectVersion"
+                }
+            }
+
+            is S3Router.Route.DeleteObjects -> {
+                "s3:DeleteObject"
+            }
+
+            is S3Router.Route.PutObject, is S3Router.Route.PostObject -> {
+                "s3:PutObject"
+            }
+
+            is S3Router.Route.CopyObject, is S3Router.Route.UploadPartCopy -> {
+                "s3:PutObject"
+            }
+
+            is S3Router.Route.CreateMultipartUpload, is S3Router.Route.UploadPart -> {
+                "s3:PutObject"
+            }
+
+            is S3Router.Route.CompleteMultipartUpload -> {
+                "s3:PutObject"
+            }
+
+            is S3Router.Route.AbortMultipartUpload -> {
+                "s3:AbortMultipartUpload"
+            }
+
+            is S3Router.Route.ListParts -> {
+                "s3:ListMultipartUploadParts"
+            }
+
+            // No `versionId` on this route: `?tagging` on an object always means the current
+            // version here, which is why the version-flavoured tagging actions never appear.
+            is S3Router.Route.ObjectTagging -> {
+                when (route.method) {
+                    "GET" -> "s3:GetObjectTagging"
+                    "DELETE" -> "s3:DeleteObjectTagging"
+                    else -> "s3:PutObjectTagging"
+                }
+            }
+
+            is S3Router.Route.ObjectAcl -> {
+                if (route.method == "GET") {
+                    if (route.versionId == null) "s3:GetObjectAcl" else "s3:GetObjectVersionAcl"
+                } else {
+                    if (route.versionId == null) "s3:PutObjectAcl" else "s3:PutObjectVersionAcl"
+                }
+            }
+
+            is S3Router.Route.ObjectLockSubresource -> {
+                when {
+                    route.name == "retention" && route.method == "GET" -> "s3:GetObjectRetention"
+                    route.name == "retention" -> "s3:PutObjectRetention"
+                    route.method == "GET" -> "s3:GetObjectLegalHold"
+                    else -> "s3:PutObjectLegalHold"
+                }
+            }
+
+            // No bucket, so no bucket policy: `ListBuckets` is filtered by owner instead (M27),
+            // and the rest are not requests about stored things at all.
+            is S3Router.Route.ListBuckets -> {
+                null
+            }
+
+            is S3Router.Route.Preflight -> {
+                null
+            }
+
+            is S3Router.Route.Health -> {
+                null
+            }
+
+            is S3Router.Route.NotImplemented -> {
+                null
+            }
+        }
+
+    /**
+     * The ARN a route names: the bucket, or one of its objects.
+     *
+     * The key goes in raw. An S3 resource ARN is not URL-encoded — a policy author writes
+     * `arn:aws:s3:::photos/holiday photo.jpg`, spaces and all — and encoding it here would make
+     * every pattern miss on exactly the keys that need one.
+     */
+    private fun policyResourceOf(
+        route: S3Router.Route,
+        bucket: String,
+    ): String {
+        val key = keyOf(route) ?: return BucketPolicy.ARN_PREFIX + bucket
+        return BucketPolicy.ARN_PREFIX + bucket + "/" + key
+    }
+
+    /**
+     * What the bucket's policy says, or [BucketPolicy.Decision.NEUTRAL] when there is none.
+     *
+     * The document is decoded once per version of itself rather than once per request. `store`
+     * hands back the same array until somebody replaces it, so identity is the whole validity
+     * check — and without this a bucket with a policy would pay a JSON parse on every read, next
+     * to an ACL decision measured at 12–14 ns (M-209).
+     *
+     * A stored document that will not decode is treated as **no policy at all** rather than as a
+     * refusal. It cannot happen through `PutBucketPolicy`, which decodes before it stores; it can
+     * happen to a journal written by a newer version of this server, and a bucket that answers
+     * `500` to every request because of a document it cannot read would be worse than one that
+     * falls back to its ACL.
+     */
+    private fun policyDecision(
+        route: S3Router.Route,
+        bucket: String,
+        accessKeyId: String?,
+    ): BucketPolicy.Decision {
+        val stored = store.bucketSubresource(bucket, "policy") ?: return BucketPolicy.Decision.NEUTRAL
+        val action = policyActionOf(route) ?: return BucketPolicy.Decision.NEUTRAL
+        val cached = decodedPolicies[bucket]
+        val policy =
+            if (cached != null && cached.first === stored) {
+                cached.second
+            } else {
+                val decoded =
+                    try {
+                        BucketPolicy.decode(String(stored))
+                    } catch (e: BucketPolicy.Refused) {
+                        return BucketPolicy.Decision.NEUTRAL
+                    }
+                decodedPolicies[bucket] = stored to decoded
+                decoded
+            }
+        return BucketPolicy.evaluate(policy, accessKeyId, action, policyResourceOf(route, bucket))
     }
 
     /**
