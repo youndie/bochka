@@ -53,8 +53,18 @@ spec:
   {{- /*
   RollingUpdate is the StatefulSet default, and it is written out because here the word means the
   opposite of what it means on a Deployment: ordered replacement, the old pod gone before the new
-  one is created. That is exactly what the missing file lock requires. `OnDelete` would give the
-  same guarantee at the price of deleting the pod by hand on every upgrade, and buy nothing.
+  one is created. `OnDelete` would give the same guarantee at the price of deleting the pod by hand
+  on every upgrade, and buy nothing.
+
+  That used to say "exactly what the missing file lock requires", and the lock is not missing any
+  more (M-224): a second process on the same directory now refuses to start rather than destroying
+  the index. Ordered replacement is still what this wants — two pods would take turns crash-looping
+  over the lock until the old one goes — but the price of being wrong is a pod that will not start
+  instead of a store that cannot be read.
+
+  What ordered replacement costs is worth knowing before it happens: the controller will not
+  replace a pod that is not Ready, **including the one an update would fix**, so a bad image wedges
+  the release until somebody deletes the pod. Measured, and written down in this chart's README.
 
   `podManagementPolicy` is left at its default for the same reason it cannot matter: it governs the
   order of *several* pods, and there is one.
