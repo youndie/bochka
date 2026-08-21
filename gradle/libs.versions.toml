@@ -20,7 +20,7 @@ benchmark = "0.4.17"
 coroutines = "1.11.0"
 # Расширение JUnit 5 — единственное место, где этот проект зависит от тестового фреймворка
 # в **основном** коде: модуль `bochka-junit` для того и существует, а прочие о нём не знают.
-junit = "5.11.4"
+junit = "5.14.4"
 # Reads compiled classes in a test. The only dependency here that exists to check a property of the
 # code rather than to be part of it.
 asm = "9.10.1"
