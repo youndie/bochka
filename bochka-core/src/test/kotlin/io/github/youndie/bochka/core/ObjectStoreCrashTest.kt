@@ -30,8 +30,27 @@ import kotlin.test.assertTrue
  * last record was, and that is what an unacknowledged upload means.
  */
 class ObjectStoreCrashTest {
+    /**
+     * Where the store under test lives, and why that is a knob (M-183).
+     *
+     * Every crash test in this repository has run on ext4 and APFS, and the schema of the Helm
+     * chart refuses `ReadWriteMany` on the strength of that: the write order this store is built
+     * on — object file, `fsync`, rename into place, and only then the index record (Р12) — leans
+     * on a barrier and on an atomic rename, and both behave differently on NFS and CephFS than on
+     * a local filesystem. The refusal is honest but it rests on "nobody has checked", which is not
+     * the same as "no".
+     *
+     * So the directory is a property rather than always the temp dir, and checking is then one
+     * mount and one flag away. Empty means what it always meant.
+     */
     private fun <T> withDir(body: (Path) -> T): T {
-        val dir = Files.createTempDirectory("bochka-crash")
+        val root = System.getProperty("bochka.crashDir")?.takeIf { it.isNotBlank() }?.let(Path::of)
+        val dir =
+            if (root == null) {
+                Files.createTempDirectory("bochka-crash")
+            } else {
+                Files.createTempDirectory(root, "bochka-crash")
+            }
         return try {
             body(dir)
         } finally {

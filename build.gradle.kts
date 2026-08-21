@@ -143,6 +143,11 @@ subprojects {
             // client refuses to set it unless told to here.
             systemProperty("jdk.httpclient.allowRestrictedHeaders", "host")
 
+            // Where the crash test puts the store, when it is being asked a question about a
+            // filesystem rather than about the code (M-183). Passed through rather than defaulted
+            // here: an empty value means the temp directory, which is every ordinary run.
+            System.getProperty("bochka.crashDir")?.let { systemProperty("bochka.crashDir", it) }
+
             testLogging {
                 events("failed")
                 exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
