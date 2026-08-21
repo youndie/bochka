@@ -133,8 +133,20 @@ out-of-scope	website	static website hosting is out of the v1 scope
 # `400`, а bochka отвечает `403` — вопрос про preflight, а не про подпись (M-226). CORS-пара
 # отдельно: заголовков `Access-Control-*` в ответе нет вовсе.
 # Три строки M-226 сняты вместе с самой задачей: `OPTIONS` без `Access-Control-Request-Method`
-# отвечает `400`, а обычный ответ несёт `Access-Control-*`. Подтверждающий прогон — M-204; если
-# кейсы всё-таки упадут, они придут как `unclassified`, а не под причиной, которая уже неверна.
+# отвечает `400`, а обычный ответ несёт `Access-Control-*`. Пять кейсов из них так и прошли.
+#
+# **А три вернулись как `unclassified` — и это ровно то, ради чего строки снимали, а не
+# переписывали.** Причина оказалась не та, что стояла в старом правиле, и не та, что я
+# предполагал: `_cors_request_and_check` шлёт **голым `requests`**, без подписи, по бакету
+# `public-read`, сделанному для этого нарочно. Значит первый же `assert` упирается в слой два,
+# выключенный в поставке, и `403` приходит задолго до того, как кто-то посмотрит на
+# `Access-Control-*`. Отсутствие заголовка было **второй** причиной, а не первой.
+#
+# Проверено тестом, а не рассуждением (`CorsTest`): с `BOCHKA_ANONYMOUS=1` неподписанный
+# кросс-доменный запрос получает и `200`, и заголовки; как поставляется — `403` до CORS.
+off-by-default	cors_origin_response	кейс шлёт неподписанные запросы по public-read бакету: слой два в поставке выключен (BOCHKA_ANONYMOUS)
+off-by-default	cors_origin_wildcard	то же самое, с правилом на любой источник (BOCHKA_ANONYMOUS)
+off-by-default	cors_header_option	то же самое, про заголовки запроса (BOCHKA_ANONYMOUS)
 out-of-scope	notification	bucket notifications are out of the v1 scope
 out-of-scope	replication	replication needs more than one node, which is the whole niche this is not
 out-of-scope	logging	server access logging is out of the v1 scope

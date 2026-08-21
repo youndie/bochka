@@ -400,4 +400,50 @@ class CorsTest {
 
         assertEquals(403, answer.status, answer.text)
     }
+
+    /**
+     * The shape the suite actually sends, and the reason its three CORS cases do not pass as
+     * shipped (found by removing their classification rule and watching what came back).
+     *
+     * `_cors_request_and_check` calls bare `requests.get` — **no signature at all** — against a
+     * bucket made `public-read` for exactly that purpose. Every assertion in those cases therefore
+     * runs through layer two, which is off in the shipped configuration (M28), and the first one
+     * fails on `403` long before any `Access-Control-*` is looked at. The old rule blamed the
+     * missing header, and the header was only the second reason.
+     *
+     * So this is the same request with the switch on, and it is the proof that the mechanism is
+     * whole: the cases are `off-by-default`, not broken.
+     */
+    @Test
+    fun `an unsigned browser request to a public bucket gets its cors headers`() {
+        S3Fixture(anonymous = true).use { open ->
+            open.createBucket("photos", headers = listOf("x-amz-acl" to "public-read"))
+            open.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+            val plain = open.unsigned("GET", "/photos", query = "list-type=2")
+            assertEquals(200, plain.status, "the premise: an unsigned reader is served at all")
+            assertNull(plain.header("Access-Control-Allow-Origin"), "no Origin, no headers")
+
+            val cross =
+                open.unsigned(
+                    "GET",
+                    "/photos",
+                    query = "list-type=2",
+                    headers = listOf("Origin" to "foo.suffix"),
+                )
+            assertEquals(200, cross.status, cross.text)
+            assertEquals("foo.suffix", cross.header("Access-Control-Allow-Origin"))
+            assertEquals("GET", cross.header("Access-Control-Allow-Methods"))
+        }
+    }
+
+    @Test
+    fun `and the same request as shipped is refused before cors is reached`() {
+        s3.createBucket("photos", headers = listOf("x-amz-acl" to "public-read"))
+        s3.send("PUT", "/photos", query = "cors", body = forOrigins)
+
+        val cross = s3.unsigned("GET", "/photos", query = "list-type=2", headers = listOf("Origin" to "foo.suffix"))
+
+        assertEquals(403, cross.status, "layer two is off, and that is the first answer the case meets")
+    }
 }
