@@ -78,7 +78,7 @@ out-of-scope	acl_grant	гранты по имени пользователя и�
 out-of-scope	header_acl_grants	то же самое заголовками `x-amz-grant-*`
 out-of-scope	acl_revoke	снятие всех грантов — это язык грантов, которого здесь нет
 out-of-scope	tags_acl_public	кейс раздаёт права группе грантом; группы — часть ACL, которой здесь нет
-out-of-scope	acl_bucket_policy_status	`PolicyStatus` считает публичность по политике бакета; политики — M29
+deferred	bucket_policy_status	`GetBucketPolicyStatus` выводит публичность из политики; политики есть с M29, операции нет (M-228)
 out-of-scope	ignore_public_acls	блок публичного доступа — отдельная возможность, не ACL
 out-of-scope	cors_presigned_get_object_tenant_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_get_object_v2	the case presigns with SigV2, which this server does not verify
@@ -87,11 +87,21 @@ out-of-scope	cors_presigned_put_object_v2	the case presigns with SigV2, which th
 out-of-scope	cors_presigned	кейс ходит по presign-ссылке с чужого origin без подписи; анонимный доступ — M28
 out-of-scope	object_acl	что осталось у объекта после M27 — гранты по имени: `READ_ACP`, `WRITE_ACP` и `FULL_CONTROL` конкретному ключу
 out-of-scope	acl	что осталось от ACL после M27 — гранты: canned-имена и владелец есть и исполняются (§3.6 контракта)
-out-of-scope	policy	bucket policies: the access keys here are static (open question 4)
+# M29 сделала политики, и одна широкая строка «политик нет» стала бы враньём — тем самым, которое
+# этот файл уже ловил дважды. Ниже узкие строки, каждая про один механизм, и ни одна не про
+# политику как таковую: она работает.
+out-of-scope	policy_different_tenant	кейс адресует бакет как tenant:bucket; тенантов здесь нет, имя отвергается как невалидное
+out-of-scope	policy_tenanted_bucket	то же самое: имя бакета с тенантом
+out-of-scope	policy_put_obj_grant	кейсу нужны гранты по имени (x-amz-grant-full-control) и передача владения; гранты отвергаются по имени (§3.6)
+out-of-scope	policy_put_obj_kms	шифрование ключом сервера: сервер начинает хранить ключи (ресёрч покрытия)
+out-of-scope	policy_put_obj_s3_kms	то же самое
+out-of-scope	policy_put_obj_s3_noenc	кейс ждёт заголовок x-amz-server-side-encryption в ответе; SSE-S3 здесь нет
+out-of-scope	policy_set_condition_operator_end_with_IfExists	кейс помечен fails_on_rgw и ждёт 403 у владельца, которому ACL разрешает: несработавшее условие Allow ничего не запрещает
+out-of-scope	policy_put_obj_request_obj_tag	помечен fails_on_rgw: кейс вешает x-amz-tagging на client, а шлёт alt_client, так что условие проверяется против запроса без тега
 out-of-scope	_iam	IAM is a different service; this store authenticates with static keys
 out-of-scope	_sts	STS is a different service; this store authenticates with static keys
-out-of-scope	public_access_block	public access blocks belong with policies, which are out of scope
-out-of-scope	block_public	public access blocks belong with policies, which are out of scope
+deferred	public_access_block	`PublicAccessBlock` — отдельный API поверх политик; политики есть с M29 (M-227)
+deferred	block_public	`PublicAccessBlock` — отдельный API поверх политик; политики есть с M29 (M-227)
 # Слой 2 сделан (M28), поэтому строка «разрешения ещё нет» стала неправдой. Что осталось под этим
 # именем — три кейса, и ни один не про разрешение: `list_buckets_anonymous` ждёт пустой список
 # вместо отказа и **помечен `fails_on_aws`** (это поведение RGW, S3 отвергает — и bochka тоже);
@@ -160,7 +170,7 @@ out-of-scope	owner_preferred	`BucketOwnerPreferred` меняет владель�
 out-of-scope	object_writer	`ObjectWriter` — это `ObjectOwnership`, которого здесь нет
 out-of-scope	bucket_head_extended	x-rgw-object-count is a ceph extension, not S3
 out-of-scope	unordered	allow-unordered is a ceph extension, not S3
-out-of-scope	public_block	public access blocks belong with policies
+deferred	public_block	`PublicAccessBlock` — отдельный API поверх политик; политики есть с M29 (M-227)
 out-of-scope	obj_public	публичный объект читают без подписи, а неподписанный запрос — это M28
 out-of-scope	multi_object_delete_key_limit	the case deletes more than a thousand keys in one request, which the protocol does not allow; bochka now answers MalformedXML instead of closing the connection, and the case expects it to succeed
 out-of-scope	get_location	the case compares the region against the suite's own api_name setting

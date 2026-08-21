@@ -182,6 +182,32 @@ class BucketPolicyTest {
     }
 
     /**
+     * `404` and `403` answer different questions, and permission to **list** picks between them
+     * (M-201г, `test_head_object_404_with_policy_prefix:20384`).
+     */
+    @Test
+    fun `whether a missing key is a 404 or a 403 is decided by the right to list`() {
+        s3.createBucket("photos")
+        val underPublic =
+            """{"Version": "2012-10-17", "Statement": [{"Effect": "Allow", "Principal": "*", """ +
+                """"Action": "s3:ListBucket", "Resource": "arn:aws:s3:::photos", """ +
+                """"Condition": {"StringLike": {"s3:prefix": "public/*"}}}]}"""
+        assertEquals(200, s3.send("PUT", "/photos", query = "policy", body = underPublic.toByteArray()).status)
+
+        // Neither key exists. The one the policy would have let this caller list is missing;
+        // the other one it may not even ask about.
+        assertEquals(404, s3.send("HEAD", "/photos/public/nothing", asOther = true).status)
+        assertEquals(403, s3.send("HEAD", "/photos/private/nothing", asOther = true).status)
+    }
+
+    @Test
+    fun `the owner still hears that a key is missing`() {
+        s3.createBucket("photos")
+
+        assertEquals(404, s3.send("HEAD", "/photos/nothing").status)
+    }
+
+    /**
      * The rule this milestone is most likely to break: a policy accepted and not enforced reads
      * stricter than it is, and the client finds out by leak rather than by error (M-133).
      */

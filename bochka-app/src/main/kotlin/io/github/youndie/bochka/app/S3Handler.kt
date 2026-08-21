@@ -3394,20 +3394,20 @@ class S3Handler(
                 }
 
                 is S3Router.Route.GetObject -> {
-                    objectRead(bucketName, route.key, route.versionId, accessKeyId, bucket)
+                    objectRead(head, route, bucketName, route.key, route.versionId, accessKeyId, bucket)
                 }
 
                 is S3Router.Route.HeadObject -> {
-                    objectRead(bucketName, route.key, route.versionId, accessKeyId, bucket)
+                    objectRead(head, route, bucketName, route.key, route.versionId, accessKeyId, bucket)
                 }
 
                 is S3Router.Route.GetObjectAttributes -> {
-                    objectRead(bucketName, route.key, route.versionId, accessKeyId, bucket)
+                    objectRead(head, route, bucketName, route.key, route.versionId, accessKeyId, bucket)
                 }
 
                 is S3Router.Route.ObjectTagging -> {
                     if (route.method == "GET") {
-                        objectRead(bucketName, route.key, null, accessKeyId, bucket)
+                        objectRead(head, route, bucketName, route.key, null, accessKeyId, bucket)
                     } else {
                         AccessControl.allowsObjectWrite(bucket, accessKeyId)
                     }
@@ -3687,6 +3687,7 @@ class S3Handler(
         accessKeyId: String?,
         action: String,
         resource: String,
+        keys: ((String) -> String?)? = null,
     ): BucketPolicy.Decision {
         val stored = store.bucketSubresource(bucket, "policy") ?: return BucketPolicy.Decision.NEUTRAL
         val cached = decodedPolicies[bucket]
@@ -3708,7 +3709,7 @@ class S3Handler(
             accessKeyId,
             action,
             resource,
-            policyKeys(head, route, bucket),
+            keys ?: policyKeys(head, route, bucket),
         )
     }
 
@@ -3891,7 +3892,7 @@ class S3Handler(
             )
         }
         if (bucketResource.unrestricted || decision == BucketPolicy.Decision.ALLOW) return null
-        if (objectRead(sourceBucket, sourceKey, sourceVersionId, accessKeyId, bucketResource)) return null
+        if (objectRead(head, route, sourceBucket, sourceKey, sourceVersionId, accessKeyId, bucketResource)) return null
         return error(
             head,
             S3Error.ACCESS_DENIED,
@@ -3902,14 +3903,55 @@ class S3Handler(
     }
 
     private fun objectRead(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
         bucket: String,
         key: ObjectKey,
         versionId: String?,
         accessKeyId: String?,
         bucketResource: AccessControl.Resource,
     ): Boolean {
-        val obj = objectResource(bucket, key, versionId) ?: return true
+        val obj =
+            objectResource(bucket, key, versionId)
+                ?: return mayLearnTheKeyIsMissing(head, route, bucket, key, accessKeyId, bucketResource)
         return AccessControl.allowsObjectRead(obj, accessKeyId, bucketResource.owner)
+    }
+
+    /**
+     * Whether this caller may be told that a key is **not there** (M-201г).
+     *
+     * `404` and `403` answer different questions, and which one a missing key deserves is decided
+     * by permission to **list**, not by permission to read: whoever may enumerate the bucket could
+     * have discovered the key's absence anyway, and whoever may not would be learning something
+     * from the difference. `test_head_object_404_with_policy_prefix:20384` pins exactly that — the
+     * same bucket answers `404` for a key under the prefix its policy names and `403` for one
+     * outside it.
+     *
+     * So the question asked here is `s3:ListBucket` on the bucket, with `s3:prefix` set to the key
+     * itself. That substitution is the part that reads oddly and is what S3 does: for a request
+     * about one key, the key **is** the prefix being listed.
+     */
+    private fun mayLearnTheKeyIsMissing(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
+        bucket: String,
+        key: ObjectKey,
+        accessKeyId: String?,
+        bucketResource: AccessControl.Resource,
+    ): Boolean {
+        val decision =
+            policyDecisionFor(
+                head,
+                route,
+                bucket,
+                accessKeyId,
+                action = "s3:ListBucket",
+                resource = BucketPolicy.ARN_PREFIX + bucket,
+                keys = { name -> if (name == "s3:prefix") key.toString() else policyKeys(head, route, bucket)(name) },
+            )
+        if (decision == BucketPolicy.Decision.DENY) return false
+        if (decision == BucketPolicy.Decision.ALLOW) return true
+        return AccessControl.allows(bucketResource, accessKeyId, AccessControl.Permission.READ, bucketResource.owner)
     }
 
     private fun bucketOf(route: S3Router.Route): String? =
