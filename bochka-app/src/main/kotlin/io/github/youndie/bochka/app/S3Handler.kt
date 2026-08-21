@@ -476,7 +476,7 @@ class S3Handler(
             }
 
             is S3Router.Route.UploadPartCopy -> {
-                uploadPartCopy(head, route)
+                uploadPartCopy(head, route, callerOf(head).accessKeyId)
             }
 
             is S3Router.Route.ListParts -> {
@@ -526,6 +526,11 @@ class S3Handler(
                 ?.let { store.get(route.sourceBucket, route.sourceKey, it) }
                 ?: store.get(route.sourceBucket, route.sourceKey)
                 ?: return error(head, S3Error.NO_SUCH_KEY, key = route.sourceKey, bucket = route.sourceBucket)
+
+        // Reading the source is a permission of its own, and nothing upstream asked for it: the
+        // screen sees a write to the destination, because the source travels in a header.
+        copySourceRefusal(head, route, route.sourceBucket, route.sourceKey, route.sourceVersionId, accessKeyId)
+            ?.let { return it }
 
         // The conditions on a copy are about the **source**, and they have their own header names
         // for that reason: `If-Match` on this request would be a condition on the target, which is
@@ -712,6 +717,7 @@ class S3Handler(
     private fun uploadPartCopy(
         head: HttpRequestParser.Head,
         route: S3Router.Route.UploadPartCopy,
+        accessKeyId: String?,
     ): HttpResponse {
         if (!store.hasBucket(route.sourceBucket)) {
             return error(head, S3Error.NO_SUCH_BUCKET, bucket = route.sourceBucket)
@@ -723,6 +729,12 @@ class S3Handler(
                 ?.let { store.get(route.sourceBucket, route.sourceKey, it) }
                 ?: store.get(route.sourceBucket, route.sourceKey)
                 ?: return error(head, S3Error.NO_SUCH_KEY, key = route.sourceKey, bucket = route.sourceBucket)
+
+        // Same permission as a whole-object copy, and for the same reason: a part is still a read
+        // of somebody's object. Split across two routes, this is the half that a test written for
+        // the other half does not cover.
+        copySourceRefusal(head, route, route.sourceBucket, route.sourceKey, route.sourceVersionId, accessKeyId)
+            ?.let { return it }
 
         val requested = head.header("x-amz-copy-source-range")
         val slice =
@@ -3323,7 +3335,7 @@ class S3Handler(
         // bucket that has no access model at all, so it is asked first. An `Allow` is weaker than
         // a refusal already made — the key's own scope has had its say further up — so it is read
         // after, where it can turn an ACL's "no" into a "yes" and nothing else.
-        val policy = policyDecision(route, bucketName, accessKeyId)
+        val policy = policyDecision(head, route, bucketName, accessKeyId)
         if (policy == BucketPolicy.Decision.DENY && !ownerKeepsThePolicyHandle(route, accessKeyId, bucket)) {
             return error(
                 head,
@@ -3655,12 +3667,28 @@ class S3Handler(
      * falls back to its ACL.
      */
     private fun policyDecision(
+        head: HttpRequestParser.Head,
         route: S3Router.Route,
         bucket: String,
         accessKeyId: String?,
     ): BucketPolicy.Decision {
-        val stored = store.bucketSubresource(bucket, "policy") ?: return BucketPolicy.Decision.NEUTRAL
         val action = policyActionOf(route) ?: return BucketPolicy.Decision.NEUTRAL
+        return policyDecisionFor(head, route, bucket, accessKeyId, action, policyResourceOf(route, bucket))
+    }
+
+    /**
+     * [policyDecision] with the action and the resource spelled out, which a copy's source needs:
+     * the route says "write the destination", and the question here is about reading the source.
+     */
+    private fun policyDecisionFor(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
+        bucket: String,
+        accessKeyId: String?,
+        action: String,
+        resource: String,
+    ): BucketPolicy.Decision {
+        val stored = store.bucketSubresource(bucket, "policy") ?: return BucketPolicy.Decision.NEUTRAL
         val cached = decodedPolicies[bucket]
         val policy =
             if (cached != null && cached.first === stored) {
@@ -3675,7 +3703,102 @@ class S3Handler(
                 decodedPolicies[bucket] = stored to decoded
                 decoded
             }
-        return BucketPolicy.evaluate(policy, accessKeyId, action, policyResourceOf(route, bucket))
+        return BucketPolicy.evaluate(
+            policy,
+            accessKeyId,
+            action,
+            resource,
+            policyKeys(head, route, bucket),
+        )
+    }
+
+    /**
+     * The value of a condition key for this request, or `null` when the request does not carry one
+     * (M-201в).
+     *
+     * `null` is not "no": an absent key fails a positive test and passes a negated one, and
+     * `BucketPolicy.holds` is where that rule lives. What matters here is only that a key nobody
+     * sent stays absent rather than becoming an empty string, which would satisfy
+     * `StringEquals: ""` and, worse, fail `StringNotEquals: ""`.
+     *
+     * Tags are read **lazily** and only for the key the policy asks about: reading them costs a
+     * lookup in the index, and most statements never mention a tag. Everything else is already in
+     * the head.
+     */
+    private fun policyKeys(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
+        bucket: String,
+    ): (String) -> String? {
+        // Raw bytes, then decoded here: a prefix is a piece of a key and a key need not be valid
+        // UTF-8 (Р3). A condition compares text, so the comparison happens on the decoded form —
+        // and a prefix that does not decode simply will not equal anything a policy spells.
+        val params = rawQueryParams(head.query).mapValues { String(it.value) }
+        return fun(name: String): String? =
+            when {
+                name.startsWith("s3:ExistingObjectTag/") -> {
+                    val key = keyOf(route) ?: return null
+                    val stored = store.currentVersion(bucket, key) ?: return null
+                    stored.metadata.tags[name.removePrefix("s3:ExistingObjectTag/")]
+                }
+
+                name.startsWith("s3:RequestObjectTag/") -> {
+                    taggingHeader(head)[name.removePrefix("s3:RequestObjectTag/")]
+                }
+
+                name == "s3:prefix" -> {
+                    params["prefix"]
+                }
+
+                name == "s3:delimiter" -> {
+                    params["delimiter"]
+                }
+
+                name == "s3:max-keys" -> {
+                    params["max-keys"]
+                }
+
+                name == "s3:VersionId" -> {
+                    params["versionId"]
+                }
+
+                // The rest are headers under their own names, minus the `s3:` the policy language
+                // puts in front of them.
+                name.startsWith("s3:x-amz-") -> {
+                    head.header(name.removePrefix("s3:"))
+                }
+
+                name == "aws:Referer" -> {
+                    head.header("referer")
+                }
+
+                name == "aws:UserAgent" -> {
+                    head.header("user-agent")
+                }
+
+                else -> {
+                    null
+                }
+            }
+    }
+
+    /**
+     * `x-amz-tagging` as a map: the header is a query string, `a=1&b=2`, percent-encoded.
+     *
+     * Read here rather than reused from the upload path because this runs **before** the request
+     * is handled — the access decision happens on the head alone (research §1.2.2), and by the
+     * time the upload parses its own tags the answer is already needed.
+     */
+    private fun taggingHeader(head: HttpRequestParser.Head): Map<String, String> {
+        val raw = head.header("x-amz-tagging") ?: return emptyMap()
+        return raw
+            .split("&")
+            .filter { it.isNotEmpty() }
+            .associate { pair ->
+                val name = pair.substringBefore('=')
+                val value = pair.substringAfter('=', "")
+                String(UriCodec.decode(name, plusIsSpace = true)) to String(UriCodec.decode(value, plusIsSpace = true))
+            }
     }
 
     /**
@@ -3732,6 +3855,51 @@ class S3Handler(
             key = keyOf(route),
             bucket = bucket,
         )
+
+    /**
+     * Whether this caller may **read the source** of a copy, and the refusal if not (found in M29).
+     *
+     * A copy is two requests wearing one. The screen ahead of the handler sees the route it
+     * arrived on — a write to the destination — and screens that; the read of the source it cannot
+     * see, because the source travels in a header rather than in the path. Until this existed
+     * nothing asked at all: a key able to write into a bucket it owns could copy **any** object in
+     * the store into it, and got that object's `ETag` back in the answer.
+     *
+     * Asked in the handler rather than in the screen on purpose: the source has to be resolved
+     * before it can be judged — which version, whose object — and resolving it upstream as well
+     * would double the index lookup on every copy.
+     */
+    private fun copySourceRefusal(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
+        sourceBucket: String,
+        sourceKey: ObjectKey,
+        sourceVersionId: String?,
+        accessKeyId: String?,
+    ): HttpResponse? {
+        val bucketResource = AccessControl.Resource(store.bucketOwner(sourceBucket), store.bucketAcl(sourceBucket))
+        val action = if (sourceVersionId == null) "s3:GetObject" else "s3:GetObjectVersion"
+        val resource = BucketPolicy.ARN_PREFIX + sourceBucket + "/" + sourceKey
+        val decision = policyDecisionFor(head, route, sourceBucket, accessKeyId, action, resource)
+        if (decision == BucketPolicy.Decision.DENY) {
+            return error(
+                head,
+                S3Error.ACCESS_DENIED,
+                detail = "a bucket policy denies reading the source of this copy",
+                key = sourceKey,
+                bucket = sourceBucket,
+            )
+        }
+        if (bucketResource.unrestricted || decision == BucketPolicy.Decision.ALLOW) return null
+        if (objectRead(sourceBucket, sourceKey, sourceVersionId, accessKeyId, bucketResource)) return null
+        return error(
+            head,
+            S3Error.ACCESS_DENIED,
+            detail = "the acl of the source of this copy does not allow reading it",
+            key = sourceKey,
+            bucket = sourceBucket,
+        )
+    }
 
     private fun objectRead(
         bucket: String,

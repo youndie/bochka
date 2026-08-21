@@ -74,6 +74,15 @@ keep=no
 # under a fixed name because the point is that the next command can find it without being told.
 readonly EVIDENCE="$root/build/s3-tests"
 
+# Cleared before the run, not after it, and this is a fix rather than tidiness. Evidence is kept
+# only when something asks for it — errors, an unclassified failure, S3TESTS_KEEP_LOG — so a run
+# that classifies cleanly leaves whatever the **previous** run put here, with nothing to say it is
+# old. That directory then reads as the current answer: three hours of a stale `results.xml` were
+# once diagnosed as a regression on the wire, because the messages in it came from a build that
+# predated the feature being measured. An absent directory says "nothing was kept"; a stale one
+# lies.
+rm -rf "$EVIDENCE"
+
 # The server's own log, the raw pytest output and the junit XML live in a temp directory that this
 # trap removes — which is right for a green run and exactly wrong for a red one. A whole afternoon
 # went into guessing which request a fixture had been refused, because the answer was in a log that

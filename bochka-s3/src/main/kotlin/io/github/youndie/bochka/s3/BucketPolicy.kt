@@ -32,6 +32,23 @@ object BucketPolicy {
 
     enum class Effect { ALLOW, DENY }
 
+    /**
+     * One test inside a `Condition` block: an operator, a key of the request, and the values.
+     *
+     * The three flags are what the operator's name says about it, unpacked once at decode time so
+     * that the decision does not re-read strings. `StringNotEquals` is [negated];
+     * `StringLikeIfExists` is [glob] and [ifExists]; `Null` is none of them and is handled apart,
+     * because it asks about the key's presence rather than about its value.
+     */
+    data class Condition(
+        val operator: String,
+        val key: String,
+        val values: List<String>,
+        val glob: Boolean,
+        val negated: Boolean,
+        val ifExists: Boolean,
+    )
+
     data class Statement(
         val sid: String?,
         val effect: Effect,
@@ -41,6 +58,8 @@ object BucketPolicy {
         val actions: List<String>,
         /** ARN patterns, always beginning `arn:aws:s3:::`. */
         val resources: List<String>,
+        /** Every test in the statement's `Condition` block; all of them must hold. */
+        val conditions: List<Condition> = emptyList(),
     )
 
     data class Policy(
@@ -113,6 +132,46 @@ object BucketPolicy {
             "s3:PutObjectVersionTagging",
         )
 
+    /**
+     * Condition keys this server can answer, and the reason a policy naming another is refused.
+     *
+     * A condition on a key nobody fills would be **true of everything** — an `Allow` that grants
+     * more than its author wrote, or a `Deny` that stops nothing. Refusing by name is the only
+     * answer that cannot silently mean either.
+     *
+     * `s3:ExistingObjectTag/<name>` and `s3:RequestObjectTag/<name>` carry the tag's name after
+     * the slash, so they are matched by prefix rather than by equality.
+     */
+    val KNOWN_CONDITION_KEYS =
+        setOf(
+            "s3:prefix",
+            "s3:delimiter",
+            "s3:max-keys",
+            "s3:x-amz-acl",
+            "s3:x-amz-copy-source",
+            "s3:x-amz-metadata-directive",
+            "s3:x-amz-server-side-encryption",
+            "s3:x-amz-server-side-encryption-aws-kms-key-id",
+            "s3:x-amz-storage-class",
+            "s3:VersionId",
+            "aws:Referer",
+            "aws:UserAgent",
+        )
+
+    /*
+     * Three keys AWS defines are deliberately **not** above, and each for the same reason:
+     * this server cannot answer them, so a condition naming one would be true of every request.
+     *
+     * `aws:SourceIp` — the peer address does not reach the access decision, and behind the
+     * terminator this design requires (research §1.7) it would be the proxy's address anyway.
+     * `aws:SecureTransport` — TLS is terminated outside this process, which cannot tell an
+     * `https` client from an `http` one; `X-Forwarded-Proto` is a header anybody may send.
+     * `aws:username` — there are no users here, only access keys (§3.6).
+     */
+
+    /** Prefixed keys: everything after the slash names a tag rather than a key of its own. */
+    val KNOWN_CONDITION_KEY_PREFIXES = setOf("s3:ExistingObjectTag/", "s3:RequestObjectTag/")
+
     /** The prefix every S3 resource ARN carries; there is no account or region in an S3 ARN. */
     const val ARN_PREFIX = "arn:aws:s3:::"
 
@@ -166,9 +225,6 @@ object BucketPolicy {
                 refuse("$unsupported is not enforced here, and a policy is not stored half-understood")
             }
         }
-        if ("Condition" in statement.members) {
-            refuse("Condition is not enforced yet (M-201в), and an ignored condition would read stricter than it is")
-        }
 
         val effect =
             when ((statement.members["Effect"] as? JsonValue.Str)?.value) {
@@ -181,8 +237,13 @@ object BucketPolicy {
         val principals = principalsOf(statement.members["Principal"] ?: refuse("a statement carries no Principal"))
         val actions = textsOf(statement.members["Action"] ?: refuse("a statement carries no Action"), "Action")
         for (action in actions) {
+            // A pattern is taken as written, and `"Action": "*"` — no service prefix at all — is
+            // one of them: it is what `test_multipart_upload_on_a_bucket_with_policy:14469` sends
+            // and a form AWS documents. Refusing it as "not an s3: action" was this reader being
+            // stricter than the language, which is its own kind of wrong answer.
+            if ('*' in action) continue
             if (!action.startsWith("s3:")) refuse("'$action' is not an s3: action")
-            if ('*' !in action && action !in KNOWN_ACTIONS) refuse("'$action' is not an action this server enforces")
+            if (action !in KNOWN_ACTIONS) refuse("'$action' is not an action this server enforces")
         }
         val resources = textsOf(statement.members["Resource"] ?: refuse("a statement carries no Resource"), "Resource")
         for (resource in resources) {
@@ -194,7 +255,53 @@ object BucketPolicy {
             principals = principals,
             actions = actions,
             resources = resources,
+            conditions = statement.members["Condition"]?.let { conditionsOf(it) } ?: emptyList(),
         )
+    }
+
+    /**
+     * `{"StringEquals": {"s3:prefix": "public/"}}` — an operator, then a key, then one value or
+     * several.
+     *
+     * Every operator and every key is checked against what this server can actually decide, and an
+     * unknown one is a refusal naming it (M-201в). The alternative — ignoring the test — turns a
+     * narrow permission into a broad one without saying so.
+     */
+    private fun conditionsOf(block: JsonValue): List<Condition> {
+        if (block !is JsonValue.Obj) refuse("Condition is not an object")
+        val conditions = ArrayList<Condition>()
+        for ((operator, tests) in block.members) {
+            val bare = operator.removeSuffix("IfExists")
+            val ifExists = bare != operator
+            val glob =
+                when (bare) {
+                    "StringEquals", "StringNotEquals", "Null" -> false
+                    "StringLike", "StringNotLike" -> true
+                    else -> refuse("'$operator' is not a condition operator this server evaluates")
+                }
+            if (bare == "Null" && ifExists) refuse("'Null' has no IfExists form")
+            if (tests !is JsonValue.Obj) refuse("the tests under '$operator' are not an object")
+            for ((key, value) in tests.members) {
+                if (key !in KNOWN_CONDITION_KEYS && KNOWN_CONDITION_KEY_PREFIXES.none { key.startsWith(it) }) {
+                    refuse("'$key' is not a condition key this server can answer")
+                }
+                val values =
+                    when (value) {
+                        is JsonValue.Bool -> listOf(value.value.toString())
+                        else -> textsOf(value, "Condition")
+                    }
+                conditions +=
+                    Condition(
+                        operator = bare,
+                        key = key,
+                        values = values,
+                        glob = glob,
+                        negated = bare.startsWith("StringNot"),
+                        ifExists = ifExists,
+                    )
+            }
+        }
+        return conditions
     }
 
     /**
@@ -292,18 +399,54 @@ object BucketPolicy {
         principal: String?,
         action: String,
         resource: String,
+        /**
+         * The value of a condition key for this request, or `null` when the request does not carry
+         * one. Asked lazily: a tag lookup costs a read, and most statements never mention tags.
+         */
+        keys: (String) -> String? = { null },
     ): Decision {
         var allowed = false
         for (statement in policy.statements) {
             if (!statement.principals.any { it == "*" || (principal != null && it == principal) }) continue
             if (!statement.actions.any { matches(it, action) }) continue
             if (!statement.resources.any { matches(it, resource) }) continue
+            if (!statement.conditions.all { holds(it, keys) }) continue
             // Not returned early: a later Deny outranks an earlier Allow, and reading the whole
             // document is the only way to know there is not one.
             if (statement.effect == Effect.DENY) return Decision.DENY
             allowed = true
         }
         return if (allowed) Decision.ALLOW else Decision.NEUTRAL
+    }
+
+    /**
+     * Whether one test holds for this request.
+     *
+     * Three rules here are easy to get backwards, and each is the difference between a permission
+     * and a hole:
+     *
+     * * **an absent key fails a positive test and passes a negated one.** `StringEquals` on a
+     *   header nobody sent is false; `StringNotEquals` on it is true, because nothing there
+     *   equals the forbidden value;
+     * * **`…IfExists` passes when the key is absent**, which is what the suffix means and the only
+     *   reason to write it;
+     * * **`Null` asks about presence, not value.** `"true"` means "this key must be absent",
+     *   `"false"` means "it must be there" — the sense reads backwards to most people, including
+     *   whoever writes the next condition here.
+     */
+    private fun holds(
+        condition: Condition,
+        keys: (String) -> String?,
+    ): Boolean {
+        val value = keys(condition.key)
+        if (condition.operator == "Null") {
+            val wantsAbsent = condition.values.any { it.equals("true", ignoreCase = true) }
+            return (value == null) == wantsAbsent
+        }
+        if (value == null) return condition.ifExists || condition.negated
+        val hit =
+            condition.values.any { if (condition.glob) matches(it, value) else it == value }
+        return hit != condition.negated
     }
 
     /**

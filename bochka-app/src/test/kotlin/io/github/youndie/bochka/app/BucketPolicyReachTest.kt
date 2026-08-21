@@ -68,9 +68,16 @@ class BucketPolicyReachTest {
      * `ListBuckets` names no bucket, so there is no policy to consult — the owner filter answers it
      * instead (M27). `Health` and `Preflight` are answered before the access model and carry no
      * credentials by design. `NotImplemented` is refused earlier still. `PostObject` reaches the
-     * same `s3:PutObject` as `PutObject` but arrives with its signature inside the form, and
-     * `CopyObject` and `UploadPartCopy` need a source object to route at all — all three are
-     * covered by the sibling that shares their action.
+     * same `s3:PutObject` as `PutObject` but arrives with its signature inside the form.
+     *
+     * **`CopyObject` and `UploadPartCopy` are here for a reason that turned out to be wrong once
+     * already.** The first version of this list said all three were "covered by the sibling that
+     * shares their action" — true of what they write, and false of what they **read**: nothing
+     * asked whether the caller could read the source, and a stranger could copy any object in the
+     * store into a bucket of their own. `CopySourceAccessTest` is where that question is asked
+     * now; these two stay out of the loop below only because routing them needs a source object,
+     * not because a sibling answers for them. An exemption in a completeness guard is exactly
+     * where a gap hides.
      */
     private val outsideThePolicy =
         setOf(

@@ -102,13 +102,139 @@ class BucketPolicyTest {
     }
 
     @Test
-    fun `a condition is refused while nothing enforces it`() {
+    fun `an operator this server cannot evaluate is refused by name`() {
         val thrown =
             assertFailsWith<BucketPolicy.Refused> {
-                BucketPolicy.decode(document(extra = """, "Condition": {"StringEquals": {"s3:prefix": "public/"}}"""))
+                BucketPolicy.decode(
+                    document(extra = """, "Condition": {"IpAddress": {"aws:SourceIp": "10.0.0.0/8"}}"""),
+                )
             }
 
-        assertTrue(thrown.message.contains("Condition"), thrown.message)
+        assertTrue(thrown.message.contains("IpAddress"), thrown.message)
+    }
+
+    @Test
+    fun `a condition key nobody fills is refused by name`() {
+        // The refusal is the point: a test on a key this server never answers is true of every
+        // request, so an `Allow` carrying it grants more than its author wrote.
+        val thrown =
+            assertFailsWith<BucketPolicy.Refused> {
+                BucketPolicy.decode(
+                    document(extra = """, "Condition": {"StringEquals": {"s3:LocationConstraint": "eu"}}"""),
+                )
+            }
+
+        assertTrue(thrown.message.contains("s3:LocationConstraint"), thrown.message)
+    }
+
+    // --- conditions (M-201в) -----------------------------------------------------------------
+
+    private fun conditioned(block: String) = BucketPolicy.decode(document(extra = """, "Condition": $block"""))
+
+    private fun decide(
+        policy: BucketPolicy.Policy,
+        keys: Map<String, String>,
+    ) = BucketPolicy.evaluate(
+        policy,
+        principal = "alt",
+        action = "s3:ListBucket",
+        resource = "arn:aws:s3:::photos",
+        keys = { keys[it] },
+    )
+
+    @Test
+    fun `StringEquals holds only for the value it names`() {
+        val policy = conditioned("""{"StringEquals": {"s3:prefix": "public/"}}""")
+
+        assertEquals(BucketPolicy.Decision.ALLOW, decide(policy, mapOf("s3:prefix" to "public/")))
+        assertEquals(BucketPolicy.Decision.NEUTRAL, decide(policy, mapOf("s3:prefix" to "private/")))
+    }
+
+    @Test
+    fun `a key the request does not carry fails a positive test`() {
+        // `test_head_object_404_with_policy_prefix` turns on this: the grant is conditional, so a
+        // request that says nothing about the key is not covered by it.
+        val policy = conditioned("""{"StringLike": {"s3:prefix": "public/*"}}""")
+
+        assertEquals(BucketPolicy.Decision.NEUTRAL, decide(policy, emptyMap()))
+        assertEquals(BucketPolicy.Decision.ALLOW, decide(policy, mapOf("s3:prefix" to "public/holiday.jpg")))
+    }
+
+    @Test
+    fun `and passes a negated one`() {
+        // Nothing there equals the forbidden value, so the test holds — which is the AWS rule and
+        // the one most likely to be written backwards.
+        val policy = conditioned("""{"StringNotEquals": {"s3:x-amz-acl": "public-read"}}""")
+
+        assertEquals(BucketPolicy.Decision.ALLOW, decide(policy, emptyMap()))
+        assertEquals(BucketPolicy.Decision.NEUTRAL, decide(policy, mapOf("s3:x-amz-acl" to "public-read")))
+        assertEquals(BucketPolicy.Decision.ALLOW, decide(policy, mapOf("s3:x-amz-acl" to "private")))
+    }
+
+    @Test
+    fun `IfExists passes when the key is absent`() {
+        // `test_bucket_policy_set_condition_operator_end_with_IfExists:11898`.
+        val policy = conditioned("""{"StringLikeIfExists": {"aws:Referer": "http://www.example.com/*"}}""")
+
+        assertEquals(BucketPolicy.Decision.ALLOW, decide(policy, emptyMap()))
+        assertEquals(BucketPolicy.Decision.ALLOW, decide(policy, mapOf("aws:Referer" to "http://www.example.com/x")))
+        assertEquals(BucketPolicy.Decision.NEUTRAL, decide(policy, mapOf("aws:Referer" to "http://elsewhere/x")))
+    }
+
+    @Test
+    fun `Null asks about presence and reads backwards`() {
+        val mustBeAbsent = conditioned("""{"Null": {"s3:x-amz-server-side-encryption": "true"}}""")
+        val mustBePresent = conditioned("""{"Null": {"s3:x-amz-server-side-encryption": "false"}}""")
+
+        assertEquals(BucketPolicy.Decision.ALLOW, decide(mustBeAbsent, emptyMap()))
+        assertEquals(
+            BucketPolicy.Decision.NEUTRAL,
+            decide(
+                mustBeAbsent,
+                mapOf("s3:x-amz-server-side-encryption" to "AES256"),
+            ),
+        )
+        assertEquals(BucketPolicy.Decision.NEUTRAL, decide(mustBePresent, emptyMap()))
+        assertEquals(
+            BucketPolicy.Decision.ALLOW,
+            decide(
+                mustBePresent,
+                mapOf("s3:x-amz-server-side-encryption" to "AES256"),
+            ),
+        )
+    }
+
+    @Test
+    fun `a tag key carries the tag name after the slash`() {
+        // `test_bucket_policy_get_obj_existing_tag:12455`: three objects, one tag value each, and
+        // only the one tagged `public` may be read.
+        val policy = conditioned("""{"StringEquals": {"s3:ExistingObjectTag/security": "public"}}""")
+
+        assertEquals(BucketPolicy.Decision.ALLOW, decide(policy, mapOf("s3:ExistingObjectTag/security" to "public")))
+        assertEquals(BucketPolicy.Decision.NEUTRAL, decide(policy, mapOf("s3:ExistingObjectTag/security" to "private")))
+        assertEquals(BucketPolicy.Decision.NEUTRAL, decide(policy, mapOf("s3:ExistingObjectTag/other" to "public")))
+    }
+
+    @Test
+    fun `every test in a block has to hold`() {
+        val policy =
+            conditioned(
+                """{"StringEquals": {"s3:prefix": "public/", "s3:delimiter": "/"}}""",
+            )
+
+        assertEquals(
+            BucketPolicy.Decision.ALLOW,
+            decide(policy, mapOf("s3:prefix" to "public/", "s3:delimiter" to "/")),
+        )
+        assertEquals(BucketPolicy.Decision.NEUTRAL, decide(policy, mapOf("s3:prefix" to "public/")))
+    }
+
+    @Test
+    fun `a list of values means any of them`() {
+        val policy = conditioned("""{"StringEquals": {"s3:prefix": ["public/", "shared/"]}}""")
+
+        assertEquals(BucketPolicy.Decision.ALLOW, decide(policy, mapOf("s3:prefix" to "shared/")))
+        assertEquals(BucketPolicy.Decision.NEUTRAL, decide(policy, mapOf("s3:prefix" to "secret/")))
     }
 
     @Test
