@@ -1,0 +1,8 @@
+# A day that is not a day, with nobody saying why. The value deletes data early by exactly the
+# factor it shortens — `Days: 1` at five seconds is five seconds — and the only honest reason to
+# set it is scoring a suite that sleeps rather than waits (M-218).
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+lifecycleDaySeconds: 5

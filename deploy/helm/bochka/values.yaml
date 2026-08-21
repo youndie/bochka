@@ -115,6 +115,25 @@ log: false
 # rests on the sweep collecting the orphan.
 housekeepingMinutes: 60
 
+# How long a "day" lasts for lifecycle rules, in seconds. 86400 and there is exactly one reason to
+# put anything else here (M-218): `ceph/s3-tests` measures expiration by sleeping, so a run against
+# a **deployment** cannot exercise that family at all unless the deployment's day is shortened to
+# match the suite's `lc_debug_interval`. Without this field the chart had no way to say it, and
+# `extraEnv` refuses BOCHKA_* names — correctly, since that path lets a platform overwrite a
+# server setting from the side.
+#
+# What a shortened day does is delete data early, quietly and by exactly the factor you shortened
+# it: `Expiration: Days: 1` at `lifecycleDaySeconds: 5` removes objects five seconds after they
+# were written. That is why any value other than 86400 is refused unless the value below names why.
+#
+# The sweep period follows this rather than standing beside it — the server derives it as a tenth
+# of a day, clamped to [1s, 1h] (Main.kt:160). Two settings obliged to agree would be the first
+# way to make them disagree.
+lifecycleDaySeconds: 86400
+# Why this deployment's day is not a day. Any non-empty string; the template only checks that
+# somebody wrote one, the same way ingress.requirementsExpressedFor works.
+lifecycleDayShortenedFor: ""
+
 # The ceiling on the number of objects. 0 leaves it derived from the heap, which is what the
 # shipped image prints: **399215**.
 #

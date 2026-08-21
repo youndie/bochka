@@ -200,6 +200,16 @@ spec:
               value: {{ if .Values.log }}"1"{{ else }}"0"{{ end }}
             - name: BOCHKA_HOUSEKEEPING_MINUTES
               value: {{ .Values.housekeepingMinutes | toString | quote }}
+            {{- /*
+            M-218. Rendered always rather than only when it differs, so `kubectl describe pod` shows
+            what the process runs with — a shortened day is the one setting here that deletes data,
+            and finding it should not require knowing that the chart omits its default.
+            */}}
+            {{- if and (ne (int .Values.lifecycleDaySeconds) 86400) (not .Values.lifecycleDayShortenedFor) }}
+            {{- fail (printf "lifecycleDaySeconds is %d and lifecycleDayShortenedFor is empty. A day that is not a day expires objects by exactly that factor early and says nothing about it: a rule written as `Days: 1` deletes what it covers after %d seconds. There is one honest reason to set this — scoring ceph/s3-tests against a deployment, where the suite sleeps rather than waits — and it has to be written down. Put that reason in lifecycleDayShortenedFor." (int .Values.lifecycleDaySeconds) (int .Values.lifecycleDaySeconds)) }}
+            {{- end }}
+            - name: BOCHKA_LIFECYCLE_DAY_SECONDS
+              value: {{ .Values.lifecycleDaySeconds | toString | quote }}
             {{- if gt (int .Values.maxObjects) 0 }}
             - name: BOCHKA_MAX_OBJECTS
               value: {{ .Values.maxObjects | toString | quote }}

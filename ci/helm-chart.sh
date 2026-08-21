@@ -207,6 +207,7 @@ refuses bad-duplicate-id       "more than once"        "a repeated id, which the
 refuses bad-whitespace-secret  "whitespace"            "a secret the server would trim into something else"
 refuses bad-java-opts          "runtime profile"       "JAVA_OPTS, which replaces the heap the ceiling comes from"
 refuses bad-bochka-env         "namespace"             "a BOCHKA_* variable from the side"
+refuses bad-lifecycle-day      "lifecycleDayShortenedFor" "a shortened lifecycle day nobody explained, which deletes data early"
 refuses bad-ingress-no-tls     "without ingress.tls"   "an Ingress with no certificate"
 refuses bad-ingress-no-secretname "certificateFromController" "a TLS entry whose certificate nobody claims, which is what a default self-signed one looks like"
 refuses bad-ingress-wildcard   "virtualHostSuffixes"   "a wildcard host the router was never told about"

@@ -84,6 +84,8 @@
     },
     "log": { "type": "boolean" },
     "housekeepingMinutes": { "type": "integer", "minimum": 0 },
+    "lifecycleDaySeconds": { "type": "integer", "minimum": 1 },
+    "lifecycleDayShortenedFor": { "type": "string" },
     "maxObjects": { "type": "integer", "minimum": 0 },
     "extraEnv": {
       "type": "array",
