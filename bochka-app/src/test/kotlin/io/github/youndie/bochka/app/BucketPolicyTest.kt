@@ -24,6 +24,10 @@ import kotlin.test.assertTrue
 class BucketPolicyTest {
     private val s3 = S3Fixture()
 
+    /** The key `test_encryption_sse_c_*` uses, and its MD5, verbatim from the suite. */
+    private val customerKey = "pO3upElrwuEXSoFwCfnZPdSsmt/xWeFa0N9KgDijwVs="
+    private val customerKeyMd5 = "DWygnHRtgiJ77HCm+1rvHw=="
+
     @AfterTest
     fun cleanup() = s3.close()
 
@@ -206,6 +210,68 @@ class BucketPolicyTest {
         s3.createBucket("photos")
 
         assertEquals(404, s3.send("HEAD", "/photos/nothing").status)
+    }
+
+    /**
+     * A bucket that refuses anything not encrypted with the client's own key (M-189).
+     *
+     * `test_encryption_sse_c_enforced_with_bucket_policy:11146` — a `Deny` on `s3:PutObject` whose
+     * condition is `Null` on the SSE-C algorithm header, which reads "deny when the header is
+     * absent". The two halves of the milestone meet here: the condition key is one SSE-C already
+     * puts on the wire, and the policy is what M29 built.
+     */
+    @Test
+    fun `a policy can insist that every upload carries a customer key`() {
+        s3.createBucket("photos")
+        val insist =
+            """{"Version": "2012-10-17", "Statement": [{"Effect": "Deny", "Principal": "*", """ +
+                """"Action": "s3:PutObject", "Resource": "arn:aws:s3:::photos/*", """ +
+                """"Condition": {"Null": {"s3:x-amz-server-side-encryption-customer-algorithm": "true"}}}]}"""
+        assertEquals(204, s3.send("PUT", "/photos", query = "policy", body = insist.toByteArray()).status)
+
+        val plain = s3.put("photos", "plain.txt", "body")
+        assertEquals(403, plain.status, plain.text)
+
+        val encrypted =
+            s3.put(
+                "photos",
+                "secret.txt",
+                "body",
+                headers =
+                    listOf(
+                        "x-amz-server-side-encryption-customer-algorithm" to "AES256",
+                        "x-amz-server-side-encryption-customer-key" to customerKey,
+                        "x-amz-server-side-encryption-customer-key-md5" to customerKeyMd5,
+                    ),
+            )
+        assertEquals(200, encrypted.status, encrypted.text)
+    }
+
+    /**
+     * And the other direction: only `AES256`, refused by the **policy** rather than by the
+     * encryption code (`test_encryption_sse_c_deny_algo_with_bucket_policy:11176`). The order
+     * matters — the access decision is made on the head, before the upload validates anything.
+     */
+    @Test
+    fun `a policy refuses the wrong algorithm before the encryption does`() {
+        s3.createBucket("photos")
+        val onlyAes256 =
+            """{"Version": "2012-10-17", "Statement": [{"Effect": "Deny", "Principal": "*", """ +
+                """"Action": "s3:PutObject", "Resource": "arn:aws:s3:::photos/*", """ +
+                """"Condition": {"StringNotEquals": """ +
+                """{"s3:x-amz-server-side-encryption-customer-algorithm": "AES256"}}}]}"""
+        assertEquals(204, s3.send("PUT", "/photos", query = "policy", body = onlyAes256.toByteArray()).status)
+
+        val wrongAlgorithm =
+            s3.put(
+                "photos",
+                "secret.txt",
+                "body",
+                headers = listOf("x-amz-server-side-encryption-customer-algorithm" to "AES192"),
+            )
+
+        assertEquals(403, wrongAlgorithm.status, wrongAlgorithm.text)
+        assertContains(wrongAlgorithm.text, "AccessDenied")
     }
 
     /**

@@ -154,6 +154,10 @@ object BucketPolicy {
             "s3:x-amz-metadata-directive",
             "s3:x-amz-server-side-encryption",
             "s3:x-amz-server-side-encryption-aws-kms-key-id",
+            // The algorithm of an SSE-C upload, which the server reads anyway (M26). The customer
+            // **key** header is deliberately not a condition key beside it: a policy compares
+            // values, and a comparison against a secret is a way to ask questions about it.
+            "s3:x-amz-server-side-encryption-customer-algorithm",
             "s3:x-amz-storage-class",
             "s3:VersionId",
             "aws:Referer",
