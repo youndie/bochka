@@ -82,6 +82,12 @@ out-of-scope	acl_revoke	снятие всех грантов — это язык
 out-of-scope	tags_acl_public	кейс раздаёт права группе грантом; группы — часть ACL, которой здесь нет
 deferred	bucket_policy_status	`GetBucketPolicyStatus` выводит публичность из политики; политики есть с M29, операции нет (M-228)
 out-of-scope	ignore_public_acls	блок публичного доступа — отдельная возможность, не ACL
+# Закрывающий прогон M29 (M-204) сказал про эти два кейса то, чего не знал никто: они падали не
+# на заголовках `Access-Control-*`, а на **подписи**. Сьют создаёт бакет с `public-read` и ходит
+# по нему `requests.get` без подписи, поэтому в поставке их останавливает выключенный аноним —
+# с `BOCHKA_ANONYMOUS=1` оба проходят, и это измерено, а не предположено. Девятнадцать локальных
+# тестов CORS этого увидеть не могли: все они подписаны.
+off-by-default	cors_origin	кейс ходит по бакету с public-read без подписи; с BOCHKA_ANONYMOUS=1 проходит (измерено в M-204)
 out-of-scope	cors_presigned_get_object_tenant_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_get_object_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_put_object_tenant_v2	the case presigns with SigV2, which this server does not verify

@@ -446,4 +446,42 @@ class CorsTest {
 
         assertEquals(403, cross.status, "layer two is off, and that is the first answer the case meets")
     }
+
+    /**
+     * Отказанный preflight не получает `Access-Control-*` — их дописал декоратор (найдено M-204).
+     *
+     * `test_cors_header_option:7016` спрашивает `OPTIONS` с `Access-Control-Request-Headers`,
+     * которого правило не разрешает, и ждёт `403` **без** единого `Access-Control-*`. Заголовки
+     * обычного ответа (M-226) добавляются на всех трёх выходах, и на этот `403` они тоже поехали:
+     * сервер отказал и тут же сообщил, что запрос разрешён. Ни один локальный тест этого не
+     * увидел, потому что все они проверяли положительную сторону.
+     *
+     * Preflight отвечает за свои заголовки сам, в обе стороны — и когда разрешает, и когда нет.
+     */
+    @Test
+    fun `отказанный preflight не несёт cors-заголовков`() {
+        s3.createBucket("photos")
+        val exposeOnly =
+            (
+                "<CORSConfiguration><CORSRule><AllowedMethod>GET</AllowedMethod>" +
+                    "<AllowedOrigin>*</AllowedOrigin>" +
+                    "<ExposeHeader>x-amz-meta-header1</ExposeHeader></CORSRule></CORSConfiguration>"
+            ).toByteArray()
+        s3.send("PUT", "/photos", query = "cors", body = exposeOnly)
+
+        val answer =
+            s3.unsigned(
+                "OPTIONS",
+                "/photos/bar",
+                headers =
+                    listOf(
+                        "Origin" to "example.origin",
+                        "Access-Control-Request-Headers" to "x-amz-meta-header2",
+                        "Access-Control-Request-Method" to "GET",
+                    ),
+            )
+
+        assertEquals(403, answer.status, answer.text)
+        assertNull(answer.header("Access-Control-Allow-Origin"), "отказ, который сообщает, что можно")
+    }
 }

@@ -3338,11 +3338,17 @@ class S3Handler(
     ): HttpResponse? {
         if (response == null) return null
         val origin = head.header("origin") ?: return response
-        // Preflight has already answered with its own, richer set — `Max-Age` and the allowed
-        // headers among them — and a second opinion here would only contradict it.
-        if (response.headers.any { it.first.equals("Access-Control-Allow-Origin", ignoreCase = true) }) return response
 
-        val bucket = bucketOf(route(head)) ?: return response
+        val route = route(head)
+        // **Preflight answers for itself, in both directions**, and this used to test the wrong
+        // thing: it skipped a response that already carried `Access-Control-Allow-Origin`, which
+        // is true of an allowed preflight and false of a refused one — so a refusal was decorated,
+        // and a `403` went out saying the request was permitted after all
+        // (`test_cors_header_option:7016`, found by the closing run of M29). The condition is the
+        // route, not what the answer happens to hold: a preflight that says no has said no.
+        if (route is S3Router.Route.Preflight) return response
+
+        val bucket = bucketOf(route) ?: return response
         val document = store.bucketSubresource(bucket, "cors") ?: return response
         val method = head.header("access-control-request-method") ?: head.method
         val rule =
