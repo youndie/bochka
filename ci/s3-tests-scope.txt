@@ -116,6 +116,13 @@ deferred	post_object_set_invalid_success_code	форма без политики
 off-by-default	objects_anonymous	анонимный листинг бакета с public-read: слой 2 это умеет, поставка его не включает (BOCHKA_ANONYMOUS)
 off-by-default	anon_put_write_access	анонимная запись в бакет с public-read-write: то же самое (BOCHKA_ANONYMOUS)
 off-by-default	100_continue	кейс шлёт PUT без учётных данных сокетом и ждёт 100 после public-read-write (BOCHKA_ANONYMOUS)
+# Логирование бакета (M-202). Конфигурация сделана; доставки записей нет, и это решение, а не
+# долг: из 39 провалов семьи **33 помечены fails_on_aws**, 27 из них ещё и
+# fails_without_logging_rollover — они пинят журнал RGW с его ObjectRollTime, а не поведение S3.
+# Узкие строки идут первыми, общая — последней.
+out-of-scope	put_bucket_logging_errors	кейсу нужны PutBucketEncryption и PutBucketRequestPayment, которых здесь нет
+out-of-scope	test_put_bucket_logging	кейс шлёт TargetGrants и ждёт, что сервер их примет и не вернёт: принять неисполняемое — это ровно то, чего здесь не делают (§3.6)
+out-of-scope	bucket_logging	доставка записей журнала — это расширение ceph (fails_on_aws у 33 из 39, rollover у 27); конфигурация сделана в M-202
 out-of-scope	website	static website hosting is out of the v1 scope
 # CORS is implemented (M14), and the eleven cases under this name fail for three different reasons,
 # none of them "we do not have CORS". Splitting them is the point of this file.

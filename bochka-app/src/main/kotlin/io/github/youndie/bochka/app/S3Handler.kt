@@ -7,6 +7,7 @@ import io.github.youndie.bochka.http.HttpHandler
 import io.github.youndie.bochka.http.HttpRequestParser
 import io.github.youndie.bochka.http.HttpResponse
 import io.github.youndie.bochka.s3.AccessControl
+import io.github.youndie.bochka.s3.BucketLogging
 import io.github.youndie.bochka.s3.BucketNameRules
 import io.github.youndie.bochka.s3.BucketPolicy
 import io.github.youndie.bochka.s3.ByteRanges
@@ -2642,6 +2643,7 @@ class S3Handler(
         when (route.name) {
             "policy" -> return bucketPolicy(head, route, body)
             "acl" -> return bucketAcl(head, route, body)
+            BucketLogging.NAME -> return bucketLogging(head, route, body)
         }
 
         val absent = if (route.name == "tagging") S3Error.NO_SUCH_TAG_SET else S3Error.NO_SUCH_CORS_CONFIGURATION
@@ -2679,6 +2681,116 @@ class S3Handler(
                 HttpResponse(200, "OK")
             }
         }
+    }
+
+    /**
+     * `?logging` on a bucket: where its access log goes, if anywhere (M-202).
+     *
+     * There is no `DeleteBucketLogging` in S3, and none here: `PutBucketLogging` with an empty
+     * `BucketLoggingStatus` is how logging is switched off, which is why `DELETE` is not a method
+     * this sub-resource answers.
+     *
+     * **The configuration is stored; nothing is delivered yet.** That is the milestone's line and
+     * it was drawn by the suite's own markers: 33 of the 39 failing cases in this family are
+     * `fails_on_aws`, pinning RGW's journal and its roll timing rather than S3's behaviour. The
+     * six that are not are exactly this operation and who may call it.
+     *
+     * Three refusals, and each names a different thing. A target bucket that does not exist is
+     * **`NoSuchKey`** — not `NoSuchBucket`, which is what the missing **source** answers, and the
+     * asymmetry is the suite's (`test_put_bucket_logging_errors:16526`). A target that is itself
+     * logging somewhere is `InvalidArgument`: a chain of logs writes log records about writing log
+     * records. And a target whose policy does not let the logging service write there is
+     * `AccessDenied`, which is the first thing in this codebase to **use** a `{"Service": …}`
+     * principal rather than refuse one.
+     */
+    private suspend fun bucketLogging(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.BucketSubresource,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse {
+        if (route.method == "GET") {
+            val stored = store.bucketSubresource(route.bucket, BucketLogging.NAME)
+            return xml(stored ?: BucketLogging.encode(null))
+        }
+        if (route.method == "DELETE") {
+            return error(
+                head,
+                S3Error.NOT_IMPLEMENTED,
+                detail = "logging is switched off with an empty BucketLoggingStatus, not with DELETE",
+                bucket = route.bucket,
+            )
+        }
+
+        val collected = ByteArrayOutputStream()
+        body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+        val enabled =
+            try {
+                BucketLogging.decode(collected.toByteArray())
+            } catch (e: BucketLogging.Refused) {
+                return error(head, e.error, detail = e.message, bucket = route.bucket)
+            } catch (e: XmlReader.MalformedXmlException) {
+                return error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
+            }
+
+        if (enabled == null) {
+            store.putBucketSubresource(route.bucket, BucketLogging.NAME, null)
+            return HttpResponse(200, "OK")
+        }
+        if (!store.hasBucket(enabled.targetBucket)) {
+            return error(head, S3Error.NO_SUCH_KEY, detail = "no such target bucket", bucket = enabled.targetBucket)
+        }
+        if (store.bucketSubresource(enabled.targetBucket, BucketLogging.NAME) != null) {
+            return error(
+                head,
+                S3Error.INVALID_ARGUMENT,
+                detail = "the target bucket logs somewhere itself, and a chain of logs logs its own writing",
+                bucket = enabled.targetBucket,
+            )
+        }
+        loggingDeliveryRefusal(head, route, enabled)?.let { return it }
+
+        store.putBucketSubresource(route.bucket, BucketLogging.NAME, BucketLogging.encode(enabled))
+        return HttpResponse(200, "OK")
+    }
+
+    /**
+     * Whether the target bucket's policy lets this server write the log there (M-202).
+     *
+     * The question is asked as the **logging service** rather than as the caller, because that is
+     * who would be writing: `s3:PutObject` on `<target>/<prefix>`, with `aws:SourceArn` naming the
+     * bucket being logged and `aws:SourceAccount` its owner. A target bucket with no policy at all
+     * refuses, and that is the point of `test_put_bucket_logging_permissions:16692` — the
+     * configuration is not accepted until the place it names has agreed to receive.
+     */
+    private fun loggingDeliveryRefusal(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.BucketSubresource,
+        enabled: BucketLogging.Enabled,
+    ): HttpResponse? {
+        val owner = store.bucketOwner(route.bucket)
+        val decision =
+            policyDecisionFor(
+                head,
+                route,
+                enabled.targetBucket,
+                accessKeyId = BucketPolicy.LOGGING_SERVICE,
+                action = "s3:PutObject",
+                resource = BucketPolicy.ARN_PREFIX + enabled.targetBucket + "/" + enabled.targetPrefix,
+                keys = { name ->
+                    when (name) {
+                        "aws:SourceArn" -> BucketPolicy.ARN_PREFIX + route.bucket
+                        "aws:SourceAccount" -> owner
+                        else -> null
+                    }
+                },
+            )
+        if (decision == BucketPolicy.Decision.ALLOW) return null
+        return error(
+            head,
+            S3Error.ACCESS_DENIED,
+            detail = "the policy of ${enabled.targetBucket} does not let the logging service write there",
+            bucket = enabled.targetBucket,
+        )
     }
 
     /**
@@ -3531,6 +3643,10 @@ class S3Handler(
 
                     "acl" -> {
                         if (write) "s3:PutBucketAcl" else "s3:GetBucketAcl"
+                    }
+
+                    BucketLogging.NAME -> {
+                        if (write) "s3:PutBucketLogging" else "s3:GetBucketLogging"
                     }
 
                     "policy" -> {

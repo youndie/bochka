@@ -95,6 +95,7 @@ object BucketPolicy {
             "s3:GetBucketAcl",
             "s3:GetBucketCORS",
             "s3:GetBucketLocation",
+            "s3:GetBucketLogging",
             "s3:GetBucketObjectLockConfiguration",
             "s3:GetBucketPolicy",
             "s3:GetBucketPolicyStatus",
@@ -118,6 +119,7 @@ object BucketPolicy {
             "s3:ListMultipartUploadParts",
             "s3:PutBucketAcl",
             "s3:PutBucketCORS",
+            "s3:PutBucketLogging",
             "s3:PutBucketObjectLockConfiguration",
             "s3:PutBucketPolicy",
             "s3:PutBucketTagging",
@@ -156,6 +158,10 @@ object BucketPolicy {
             "s3:VersionId",
             "aws:Referer",
             "aws:UserAgent",
+            // Filled only when this server delivers an access log on a bucket's behalf (M-202):
+            // the source bucket's ARN, and the account that owns it.
+            "aws:SourceArn",
+            "aws:SourceAccount",
         )
 
     /*
@@ -174,6 +180,15 @@ object BucketPolicy {
 
     /** The prefix every S3 resource ARN carries; there is no account or region in an S3 ARN. */
     const val ARN_PREFIX = "arn:aws:s3:::"
+
+    /**
+     * How a `{"Service": …}` principal is spelled inside a statement, so that no access key can
+     * ever equal one: a key id is a word, and this is a word with a colon in front of it.
+     */
+    const val SERVICE_PREFIX = "service:"
+
+    /** The one service this server ever acts as: the delivery of a bucket's access log. */
+    const val LOGGING_SERVICE = SERVICE_PREFIX + "logging.s3.amazonaws.com"
 
     fun decode(text: String): Policy {
         if (text.toByteArray().size > MAX_BYTES) {
@@ -245,7 +260,12 @@ object BucketPolicy {
             if (!action.startsWith("s3:")) refuse("'$action' is not an s3: action")
             if (action !in KNOWN_ACTIONS) refuse("'$action' is not an action this server enforces")
         }
-        val resources = textsOf(statement.members["Resource"] ?: refuse("a statement carries no Resource"), "Resource")
+        // A statement with no `Resource` is accepted and **matches nothing**, which is the only
+        // reading that fits `test_bucket_policy_status`'s neighbour `test_bucket_logging_owner`:
+        // it puts exactly such a statement, requires 204 back, and then requires the permission it
+        // appears to grant to still be refused. Inert rather than refused, and inert in the safe
+        // direction — it grants less than it looks like, never more.
+        val resources = statement.members["Resource"]?.let { textsOf(it, "Resource") } ?: emptyList()
         for (resource in resources) {
             if (!resource.startsWith(ARN_PREFIX)) refuse("'$resource' is not an $ARN_PREFIX… resource")
         }
@@ -276,7 +296,13 @@ object BucketPolicy {
             val glob =
                 when (bare) {
                     "StringEquals", "StringNotEquals", "Null" -> false
-                    "StringLike", "StringNotLike" -> true
+
+                    // ArnLike is a glob over an ARN. Kept as the same operator rather than given a
+                    // path of its own: they differ in AWS only over ARN-shaped wildcards, and the
+                    // policies that use it here name a whole bucket ARN
+                    // (`_set_log_bucket_policy_tenant:15353`).
+                    "StringLike", "StringNotLike", "ArnLike" -> true
+
                     else -> refuse("'$operator' is not a condition operator this server evaluates")
                 }
             if (bare == "Null" && ifExists) refuse("'Null' has no IfExists form")
@@ -319,13 +345,22 @@ object BucketPolicy {
             }
 
             is JsonValue.Obj -> {
-                val aws =
-                    value.members["AWS"]
-                        ?: refuse("a Principal names ${value.members.keys}, and only AWS is understood here")
-                if (value.members.keys != setOf("AWS")) {
-                    refuse("a Principal names ${value.members.keys}, and only AWS is understood here")
+                when (value.members.keys) {
+                    setOf("AWS") -> {
+                        textsOf(value.members.getValue("AWS"), "Principal").map { principalOf(it) }.toSet()
+                    }
+
+                    // A service is not an access key, so it can never match a signed request. The
+                    // one thing that matches it is this server delivering an access log on a
+                    // bucket's behalf (M-202) — understood here because that enforces it.
+                    setOf("Service") -> {
+                        textsOf(value.members.getValue("Service"), "Principal").map { SERVICE_PREFIX + it }.toSet()
+                    }
+
+                    else -> {
+                        refuse("a Principal names ${value.members.keys}; only AWS and Service are understood here")
+                    }
                 }
-                textsOf(aws, "Principal").map { principalOf(it) }.toSet()
             }
 
             else -> {
@@ -407,7 +442,7 @@ object BucketPolicy {
     ): Decision {
         var allowed = false
         for (statement in policy.statements) {
-            if (!statement.principals.any { it == "*" || (principal != null && it == principal) }) continue
+            if (!statement.principals.any { matchesPrincipal(it, principal) }) continue
             if (!statement.actions.any { matches(it, action) }) continue
             if (!statement.resources.any { matches(it, resource) }) continue
             if (!statement.conditions.all { holds(it, keys) }) continue
@@ -418,6 +453,25 @@ object BucketPolicy {
         }
         return if (allowed) Decision.ALLOW else Decision.NEUTRAL
     }
+
+    /**
+     * Whether a statement's principal covers whoever is asking.
+     *
+     * `*` means **any caller**, and a service is not a caller: when this server delivers an access
+     * log it acts as `logging.s3.amazonaws.com`, and a policy that says "everybody may write here"
+     * has not said that the logging service may. `test_put_bucket_logging_permissions:16692` walks
+     * exactly that difference — it swaps the service principal for `{"AWS": "*"}` and requires the
+     * configuration to still be refused.
+     */
+    private fun matchesPrincipal(
+        stated: String,
+        principal: String?,
+    ): Boolean =
+        when {
+            principal != null && principal.startsWith(SERVICE_PREFIX) -> stated == principal
+            stated == "*" -> true
+            else -> principal != null && stated == principal
+        }
 
     /**
      * Whether one test holds for this request.
