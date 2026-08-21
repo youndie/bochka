@@ -18,11 +18,14 @@ version: 0.1.0
 # the rule out of sight and breaks in silence if a release ever stops writing the letter. This line
 # is read by eye, and by `helm list` in the APP VERSION column.
 #
-# **Три строки едут вместе с этой.** `probes.type` и `nodeSelector` в `values.yaml` держат самое
-# узкое умолчание, потому что образ `appVersion` — без ручки здоровья и без второй архитектуры;
-# выпуск, который двигает эту строку, обязан подвинуть и те две. `publish.yml` проверяет только
-# одно: что `appVersion` — это публикуемый тег, потому что чарт с прошлым `appVersion` ставит
-# прошлый сервер, называя себя этим.
+# **Two lines in values.yaml move with this one**, and since M-184 a harness says so rather than a
+# comment. `probes.type` and `nodeSelector` hold the narrowest default there is because the image
+# this line names has neither the health handle nor a second architecture — and `ci/helm-chart.sh`
+# now asks that image both questions and fails in either direction: a default too new for it is a
+# pod kubelet restarts for ever, and a default still narrow after the image has caught up is a
+# chart telling everybody to use less than it has. `publish.yml` checks the other half, that
+# `appVersion` is a tag that was actually published, because a chart carrying the previous
+# `appVersion` installs the previous server while calling itself this one.
 appVersion: "v0.2.0"
 
 # 1.29, and it is two requirements rather than one. `persistentVolumeClaimRetentionPolicy` is

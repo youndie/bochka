@@ -226,6 +226,87 @@ refuses bad-unknown-value      "replicaCount"          "a values key nobody read
 # being asserted is that the refusal is about the type, and that word is the whole of it.
 refuses bad-log-type           "boolean"                "a non-boolean log, which would be logging quietly off"
 
+# --- the chart against the image it names ---------------------------------------------------------
+#
+# M-184. Two defaults here are narrower than the server can do, and both are narrow because of the
+# **published** image rather than because of the code: `probes.type: exec` because the health handle
+# is newer than the tag `appVersion` points at, and the amd64 `nodeSelector` because the multi-arch
+# index is newer than it too. A chart whose default needs an image newer than the one it names is a
+# pod kubelet restarts for ever, and that failure looks like an operator's mistake.
+#
+# So this asks the registry and the image, and it fails **in both directions**: a default too new for
+# the image is the crash loop, and a default still narrow after the image has caught up is a chart
+# telling everybody to use less than it has. The second one is a tripwire that goes off exactly once,
+# at the release that fixes it, and says what to move.
+#
+# Three of the four branches have been watched red with BOCHKA_APPVERSION_IMAGE and a hand-edited
+# default. The fourth — "the published image became multi-arch" — has not, because no tag of this
+# image is, and there is nothing to point it at. It is also the least expensive of the four to get
+# wrong: it fires when the world improves, and missing it leaves a nodeSelector in place longer
+# than needed rather than a pod that cannot start.
+echo
+echo "the chart's defaults against the image its appVersion names"
+app_version=$(sed -n 's/^appVersion: *//p' "$chart/Chart.yaml" | tr -d '"' | tr -d "\r")
+# Overridable so that every branch below can be **seen** red: three of the four need an image that
+# does not exist yet — one that answers the health handle, or one published for two architectures —
+# and a check nobody has watched fail is not a check. It is also what a fork with its own registry
+# would set.
+published=${BOCHKA_APPVERSION_IMAGE:-ghcr.io/youndie/bochka:$app_version}
+
+if ! command -v docker >/dev/null || ! command -v curl >/dev/null; then
+  # Named rather than silent: a check nobody ran reads exactly like a check that passed, which is
+  # the failure this whole harness exists to refuse.
+  echo "  SKIP    docker or curl is missing, so the published image cannot be asked anything"
+else
+  probe_default=$(sed -n 's/^  type: //p' "$chart/values.yaml" | head -1)
+  arch_pinned=$(grep -c '^  kubernetes.io/arch: amd64' "$chart/values.yaml")
+
+  # Does the published image answer the health handle the `http` probe needs?
+  docker rm -f bochka-appversion >/dev/null 2>&1
+  if docker run -d --name bochka-appversion --network host \
+      -e BOCHKA_PORT=19099 -e BOCHKA_BIND_ADDRESS=0.0.0.0 -e BOCHKA_KEYS=probe:probe \
+      "$published" >/dev/null 2>&1; then
+    sleep 7
+    health=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:19099/-/healthy)
+    docker rm -f bochka-appversion >/dev/null 2>&1
+    if [ "$health" = 200 ]; then
+      if [ "$probe_default" = http ]; then
+        pass "probes.type: http, and $published answers /-/healthy"
+      else
+        fail "$published now answers /-/healthy with 200: probes.type can default to http (M-184)"
+      fi
+    else
+      if [ "$probe_default" = http ]; then
+        fail "probes.type: http, but $published answers $health to /-/healthy — kubelet would restart this pod for ever"
+      else
+        pass "probes.type: exec, because $published answers $health to /-/healthy"
+      fi
+    fi
+  else
+    fail "could not start $published to ask it about /-/healthy"
+  fi
+
+  # And is it still one architecture?
+  token=$(curl -s "https://ghcr.io/token?scope=repository:youndie/bochka:pull&service=ghcr.io" |
+    sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+  platforms=$(curl -s -H "Authorization: Bearer $token" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json' \
+    "https://ghcr.io/v2/youndie/bochka/manifests/${BOCHKA_APPVERSION_TAG:-$app_version}" | grep -c '"architecture"')
+  if [ "$platforms" -gt 1 ]; then
+    if [ "$arch_pinned" -eq 0 ]; then
+      pass "no arch nodeSelector, and $app_version publishes $platforms architectures"
+    else
+      fail "$app_version publishes $platforms architectures: the amd64 nodeSelector default can go (M-184)"
+    fi
+  else
+    if [ "$arch_pinned" -eq 0 ]; then
+      fail "no arch nodeSelector, but $app_version publishes one architecture — the pod would sit Pending elsewhere"
+    else
+      pass "nodeSelector pins amd64, because $app_version publishes one architecture"
+    fi
+  fi
+fi
+
 # --- cluster --------------------------------------------------------------------------------------
 
 run_kind=no
