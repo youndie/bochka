@@ -201,15 +201,21 @@ spec:
             - name: BOCHKA_HOUSEKEEPING_MINUTES
               value: {{ .Values.housekeepingMinutes | toString | quote }}
             {{- /*
-            M-218. Rendered always rather than only when it differs, so `kubectl describe pod` shows
-            what the process runs with — a shortened day is the one setting here that deletes data,
-            and finding it should not require knowing that the chart omits its default.
+            M-218, and rendered **only when it differs from the server's own default**, which is the
+            opposite of what the three above do. They are repeated because an empty value would mean
+            something different from an absent one; here an absent variable means exactly 86400, so
+            repeating it buys nothing — and costs the chart every image older than the setting.
+            Measured on v0.1.1: it answers `unknown setting 'BOCHKA_LIFECYCLE_DAY_SECONDS'` and
+            suggests `BOCHKA_BIND_ADDRESS`, so a rollback to an older image fails looking like a
+            typo in the values rather than like a version mismatch.
             */}}
             {{- if and (ne (int .Values.lifecycleDaySeconds) 86400) (not .Values.lifecycleDayShortenedFor) }}
             {{- fail (printf "lifecycleDaySeconds is %d and lifecycleDayShortenedFor is empty. A day that is not a day expires objects by exactly that factor early and says nothing about it: a rule written as `Days: 1` deletes what it covers after %d seconds. There is one honest reason to set this — scoring ceph/s3-tests against a deployment, where the suite sleeps rather than waits — and it has to be written down. Put that reason in lifecycleDayShortenedFor." (int .Values.lifecycleDaySeconds) (int .Values.lifecycleDaySeconds)) }}
             {{- end }}
+            {{- if ne (int .Values.lifecycleDaySeconds) 86400 }}
             - name: BOCHKA_LIFECYCLE_DAY_SECONDS
               value: {{ .Values.lifecycleDaySeconds | toString | quote }}
+            {{- end }}
             {{- if gt (int .Values.maxObjects) 0 }}
             - name: BOCHKA_MAX_OBJECTS
               value: {{ .Values.maxObjects | toString | quote }}

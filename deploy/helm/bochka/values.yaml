@@ -129,6 +129,11 @@ housekeepingMinutes: 60
 # The sweep period follows this rather than standing beside it — the server derives it as a tenth
 # of a day, clamped to [1s, 1h] (Main.kt:160). Two settings obliged to agree would be the first
 # way to make them disagree.
+#
+# At 86400 the variable is not rendered at all, and that is deliberate: an absent BOCHKA_LIFECYCLE_
+# DAY_SECONDS means exactly 86400 to the server, while rendering it makes this chart unable to run
+# any image that predates the setting. Measured on v0.1.1 — it refuses to start and suggests you
+# meant BOCHKA_BIND_ADDRESS, so the failure reads like a typo rather than a version mismatch.
 lifecycleDaySeconds: 86400
 # Why this deployment's day is not a day. Any non-empty string; the template only checks that
 # somebody wrote one, the same way ingress.requirementsExpressedFor works.
