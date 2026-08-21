@@ -66,6 +66,11 @@ object Main {
             } catch (e: ObjectStore.DirectoryInUse) {
                 System.err.println("bochka will not start: ${e.message}")
                 kotlin.system.exitProcess(2)
+            } catch (e: ObjectStore.JournalFromNewerVersion) {
+                // The rollback message (M-222). A stack trace here reads as "bochka is broken" to
+                // somebody who has just rolled back and wants to know whether they lost data.
+                System.err.println("bochka will not start: ${e.message}")
+                kotlin.system.exitProcess(2)
             }
         val lifecycleDay = Duration.ofSeconds(configuration.long(Configuration.Key.LIFECYCLE_DAY_SECONDS) ?: 86400)
         if (!lifecycleDay.isPositive) {

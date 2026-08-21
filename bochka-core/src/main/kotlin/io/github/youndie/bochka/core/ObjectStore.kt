@@ -351,146 +351,163 @@ class ObjectStore(
 
     init {
         recovery =
-            log.recover { payload ->
-                when (val record = IndexRecord.decode(payload)) {
-                    is IndexRecord.BucketCreated -> {
-                        buckets[record.bucket] =
-                            BucketState(Instant.ofEpochMilli(record.createdAtMillis), record.owner, record.acl)
-                    }
-
-                    is IndexRecord.BucketAcl -> {
-                        // Only for a bucket that is there: an ACL replayed onto a deleted bucket
-                        // would resurrect it as a nameless entry with a creation time of zero.
-                        buckets.computeIfPresent(record.bucket) { _, state -> state.copy(acl = record.acl) }
-                    }
-
-                    is IndexRecord.BucketSubresource -> {
-                        if (record.document == null) {
-                            subresources[record.bucket]?.remove(record.name)
-                        } else {
-                            subresources.computeIfAbsent(record.bucket) { ConcurrentHashMap() }[record.name] =
-                                record.document
+            try {
+                log.recover { payload ->
+                    when (val record = IndexRecord.decode(payload)) {
+                        is IndexRecord.BucketCreated -> {
+                            buckets[record.bucket] =
+                                BucketState(Instant.ofEpochMilli(record.createdAtMillis), record.owner, record.acl)
                         }
-                    }
 
-                    is IndexRecord.BucketObjectLock -> {
-                        objectLocks[record.bucket] =
-                            ObjectLock(record.defaultMode, record.days, record.years)
-                    }
+                        is IndexRecord.BucketAcl -> {
+                            // Only for a bucket that is there: an ACL replayed onto a deleted bucket
+                            // would resurrect it as a nameless entry with a creation time of zero.
+                            buckets.computeIfPresent(record.bucket) { _, state -> state.copy(acl = record.acl) }
+                        }
 
-                    is IndexRecord.BucketVersioning -> {
-                        versioningStates[record.bucket] = record.state
-                    }
-
-                    is IndexRecord.BucketDeleted -> {
-                        buckets.remove(record.bucket)
-                        // Настройки уходят вместе с бакетом: иначе бакет, созданный заново под тем
-                        // же именем, унаследовал бы чужие теги и CORS, и узнали бы об этом не сразу.
-                        subresources.remove(record.bucket)
-                        versioningStates.remove(record.bucket)
-                        objectLocks.remove(record.bucket)
-                    }
-
-                    is IndexRecord.Deleted -> {
-                        // Every version of the key, because that is what this record has always
-                        // meant: it was written when a key had exactly one entry, and it is still
-                        // written by a bucket that is not versioning.
-                        for (located in locatedVersions(record.bucket, record.key)) objects.remove(located)
-                    }
-
-                    is IndexRecord.DeletedVersion -> {
-                        objects.remove(Located(record.bucket, record.key, record.sequence))
-                    }
-
-                    is IndexRecord.Put -> {
-                        val stored =
-                            Stored(
-                                fileId = record.fileId,
-                                size = record.size,
-                                eTag = record.eTag,
-                                lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
-                                metadata = record.metadata,
-                                parts = record.parts,
-                                versionId = record.versionId,
-                                deleteMarker = record.deleteMarker,
-                                retention =
-                                    record.retentionMode?.let {
-                                        Retention(it, record.retentionUntilMillis)
-                                    },
-                                legalHold = record.legalHold,
-                                encryption =
-                                    record.encryptionAlgorithm?.let { algorithm ->
-                                        Encryption(
-                                            algorithm,
-                                            record.encryptionKeyMd5.orEmpty(),
-                                            record.encryptionIv ?: ByteArray(0),
-                                        )
-                                    },
-                                owner = record.owner,
-                                acl = record.acl,
-                            )
-                        // A record from before versions carries sequence 0 and the `null` version,
-                        // and every write of that key carried the same pair. Replayed as an insert
-                        // they would pile up as versions of a key that never had any; replaced,
-                        // they reproduce exactly the one entry the log was written to mean.
-                        if (record.versionId == NULL_VERSION) {
-                            for (located in locatedVersions(record.bucket, record.key)) {
-                                if (objects[located]?.versionId == NULL_VERSION) objects.remove(located)
+                        is IndexRecord.BucketSubresource -> {
+                            if (record.document == null) {
+                                subresources[record.bucket]?.remove(record.name)
+                            } else {
+                                subresources.computeIfAbsent(record.bucket) { ConcurrentHashMap() }[record.name] =
+                                    record.document
                             }
                         }
-                        objects[Located(record.bucket, record.key, record.sequence)] = stored
-                        // One past the highest sequence seen, so a restart does not hand out an id
-                        // that sorts underneath history.
-                        sequences.updateAndGet { maxOf(it, record.sequence + 1) }
-                    }
 
-                    is IndexRecord.UploadStarted -> {
-                        uploads[record.uploadId] =
-                            UploadState(
-                                Upload(
-                                    id = record.uploadId,
-                                    bucket = record.bucket,
-                                    key = record.key,
+                        is IndexRecord.BucketObjectLock -> {
+                            objectLocks[record.bucket] =
+                                ObjectLock(record.defaultMode, record.days, record.years)
+                        }
+
+                        is IndexRecord.BucketVersioning -> {
+                            versioningStates[record.bucket] = record.state
+                        }
+
+                        is IndexRecord.BucketDeleted -> {
+                            buckets.remove(record.bucket)
+                            // Настройки уходят вместе с бакетом: иначе бакет, созданный заново под тем
+                            // же именем, унаследовал бы чужие теги и CORS, и узнали бы об этом не сразу.
+                            subresources.remove(record.bucket)
+                            versioningStates.remove(record.bucket)
+                            objectLocks.remove(record.bucket)
+                        }
+
+                        is IndexRecord.Deleted -> {
+                            // Every version of the key, because that is what this record has always
+                            // meant: it was written when a key had exactly one entry, and it is still
+                            // written by a bucket that is not versioning.
+                            for (located in locatedVersions(record.bucket, record.key)) objects.remove(located)
+                        }
+
+                        is IndexRecord.DeletedVersion -> {
+                            objects.remove(Located(record.bucket, record.key, record.sequence))
+                        }
+
+                        is IndexRecord.Put -> {
+                            val stored =
+                                Stored(
+                                    fileId = record.fileId,
+                                    size = record.size,
+                                    eTag = record.eTag,
+                                    lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
                                     metadata = record.metadata,
-                                    startedAt = Instant.ofEpochMilli(record.startedAtMillis),
-                                    checksumAlgorithm = record.checksumAlgorithm,
-                                    checksumType = record.checksumType,
+                                    parts = record.parts,
+                                    versionId = record.versionId,
+                                    deleteMarker = record.deleteMarker,
                                     retention =
                                         record.retentionMode?.let {
                                             Retention(it, record.retentionUntilMillis)
                                         },
                                     legalHold = record.legalHold,
+                                    encryption =
+                                        record.encryptionAlgorithm?.let { algorithm ->
+                                            Encryption(
+                                                algorithm,
+                                                record.encryptionKeyMd5.orEmpty(),
+                                                record.encryptionIv ?: ByteArray(0),
+                                            )
+                                        },
                                     owner = record.owner,
                                     acl = record.acl,
-                                    encryption =
-                                        record.encryptionAlgorithm?.let {
-                                            Encryption(it, record.encryptionKeyMd5.orEmpty(), ByteArray(0))
-                                        },
+                                )
+                            // A record from before versions carries sequence 0 and the `null` version,
+                            // and every write of that key carried the same pair. Replayed as an insert
+                            // they would pile up as versions of a key that never had any; replaced,
+                            // they reproduce exactly the one entry the log was written to mean.
+                            if (record.versionId == NULL_VERSION) {
+                                for (located in locatedVersions(record.bucket, record.key)) {
+                                    if (objects[located]?.versionId == NULL_VERSION) objects.remove(located)
+                                }
+                            }
+                            objects[Located(record.bucket, record.key, record.sequence)] = stored
+                            // One past the highest sequence seen, so a restart does not hand out an id
+                            // that sorts underneath history.
+                            sequences.updateAndGet { maxOf(it, record.sequence + 1) }
+                        }
+
+                        is IndexRecord.UploadStarted -> {
+                            uploads[record.uploadId] =
+                                UploadState(
+                                    Upload(
+                                        id = record.uploadId,
+                                        bucket = record.bucket,
+                                        key = record.key,
+                                        metadata = record.metadata,
+                                        startedAt = Instant.ofEpochMilli(record.startedAtMillis),
+                                        checksumAlgorithm = record.checksumAlgorithm,
+                                        checksumType = record.checksumType,
+                                        retention =
+                                            record.retentionMode?.let {
+                                                Retention(it, record.retentionUntilMillis)
+                                            },
+                                        legalHold = record.legalHold,
+                                        owner = record.owner,
+                                        acl = record.acl,
+                                        encryption =
+                                            record.encryptionAlgorithm?.let {
+                                                Encryption(it, record.encryptionKeyMd5.orEmpty(), ByteArray(0))
+                                            },
+                                    ),
+                                )
+                        }
+
+                        is IndexRecord.UploadPart -> {
+                            // An upload the log never opened cannot have parts; a record for one is a
+                            // torn tail rather than something to invent an upload from.
+                            uploads[record.uploadId]?.parts?.put(
+                                record.number,
+                                Part(
+                                    number = record.number,
+                                    fileId = record.fileId,
+                                    size = record.size,
+                                    eTag = record.eTag,
+                                    lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
+                                    checksum = record.checksum,
+                                    iv = record.iv,
                                 ),
                             )
-                    }
+                        }
 
-                    is IndexRecord.UploadPart -> {
-                        // An upload the log never opened cannot have parts; a record for one is a
-                        // torn tail rather than something to invent an upload from.
-                        uploads[record.uploadId]?.parts?.put(
-                            record.number,
-                            Part(
-                                number = record.number,
-                                fileId = record.fileId,
-                                size = record.size,
-                                eTag = record.eTag,
-                                lastModified = Instant.ofEpochMilli(record.lastModifiedMillis),
-                                checksum = record.checksum,
-                                iv = record.iv,
-                            ),
-                        )
-                    }
-
-                    is IndexRecord.UploadEnded -> {
-                        uploads.remove(record.uploadId)
+                        is IndexRecord.UploadEnded -> {
+                            uploads.remove(record.uploadId)
+                        }
                     }
                 }
+            } catch (e: IndexRecord.UnknownKind) {
+                // Nothing in this constructor is undone yet, and that is what the message below
+                // promises: `recover` truncates the log to the last whole record **after** it has
+                // read them all, so a throw from inside leaves the file exactly as it was found.
+                log.close()
+                claim.close()
+                throw JournalFromNewerVersion(
+                    e.kind,
+                    "$logPath holds an index record of kind ${e.kind}, which this version of " +
+                        "bochka has no case for. Its checksum verified, so the record is intact " +
+                        "and was written by a newer version: this is a downgrade, not damage. " +
+                        "Nothing here has been changed — the journal is exactly as it was found, " +
+                        "and the version that wrote it opens this directory as before. Roll " +
+                        "forward, or restore a copy taken before the upgrade.",
+                )
             }
 
         // A refusal at startup rather than degradation into swap (Risk 7). A store that opens and
@@ -2444,6 +2461,24 @@ class ObjectStore(
     class BucketGone(
         val bucket: String,
     ) : RuntimeException("the bucket $bucket was deleted while this was being written")
+
+    /**
+     * Refused because the journal holds a record this build cannot read (M-222).
+     *
+     * Which means one thing and not the other. Recovery verifies CRC32C **before** it decodes
+     * anything, so a record that reaches the decoder is whole: a flipped bit fails the checksum
+     * and stops recovery as a torn tail, not as an unknown kind. A kind nobody here recognises
+     * therefore came from something that did recognise it — a newer version of bochka — and the
+     * store is intact rather than damaged.
+     *
+     * That distinction is the whole point of the type. The message is read during a rollback, by
+     * somebody who has just made a change and is deciding whether they have lost data, and the
+     * answer is no: roll forward and the same directory opens.
+     */
+    class JournalFromNewerVersion(
+        val kind: Int,
+        override val message: String,
+    ) : RuntimeException(message)
 
     /**
      * Refused because another process already has this data directory open (M-224).

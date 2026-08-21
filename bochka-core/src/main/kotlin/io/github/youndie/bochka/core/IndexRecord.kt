@@ -252,6 +252,11 @@ sealed interface IndexRecord {
         val uploadId: String,
     ) : IndexRecord
 
+    /** A record kind this build has no case for; see [ObjectStore.JournalFromNewerVersion]. */
+    class UnknownKind(
+        val kind: Int,
+    ) : IllegalArgumentException("unknown index record kind $kind")
+
     companion object {
         private const val KIND_BUCKET_CREATED: Byte = 1
         private const val KIND_BUCKET_DELETED: Byte = 2
@@ -774,7 +779,11 @@ sealed interface IndexRecord {
                 }
 
                 else -> {
-                    throw IllegalArgumentException("unknown index record kind $kind")
+                    // A type rather than a bare message, because the caller can say something this
+                    // one cannot: recovery knows the record's checksum was verified before it got
+                    // here, and that is what turns "unknown kind" into "written by a newer version
+                    // and intact" (M-222).
+                    throw UnknownKind(kind.toInt())
                 }
             }
         }

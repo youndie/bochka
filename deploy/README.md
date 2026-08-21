@@ -144,7 +144,7 @@ helm install bochka deploy/helm/bochka \
 | направление | что происходит |
 |---|---|
 | стор от старой версии открывает новая | **работает**: журнал читается целиком, `stopped by CLEAN`, объекты на месте |
-| стор от новой версии открывает старая | **отказ старта**: `unknown index record kind 26`, и журнал остаётся **байт в байт** прежним |
+| стор от новой версии открывает старая | **отказ старта**, и журнал остаётся **байт в байт** прежним |
 
 **Откат назад по версиям — это не «потеряете новые возможности», это «сервер не поднимется».**
 Хватает одного пустого бакета: запись о его создании с версии `v0.2.0` несёт владельца, а это тип
@@ -165,8 +165,24 @@ helm install bochka deploy/helm/bochka \
 kubectl delete pod <release>-0 -n <namespace>
 ```
 
-Ещё: `kubectl logs --tail` показывает хвост стека, а причина — в его первой строке. Смотреть
-надо весь лог падения, а не последние строки.
+**Что при этом написано в логе, зависит от версии, которая отказалась.** Начиная с M-222 это одна
+строка, объясняющая себя:
+
+```
+bochka will not start: …/index.log holds an index record of kind 99, which this version of bochka
+has no case for. Its checksum verified, so the record is intact and was written by a newer version:
+this is a downgrade, not damage. Nothing here has been changed — the journal is exactly as it was
+found, and the version that wrote it opens this directory as before. Roll forward, or restore a
+copy taken before the upgrade.
+```
+
+Утверждение «запись цела» — не вежливость: восстановление сверяет CRC32C **до** разбора, поэтому
+испорченный байт останавливает чтение как рваный хвост, а не как неизвестный тип. Дошло до
+разбора — значит записано целиком и тем, кто этот тип знал.
+
+Версии до этого отвечают `IllegalArgumentException: unknown index record kind N` и стеком, а
+`kubectl logs --tail` показывает хвост этого стека, где причины нет. Там смотреть надо весь лог
+падения, а не последние строки.
 
 **Одно поле здесь опаснее всех остальных вместе.** `lifecycleDaySeconds` — это длительность
 «суток» для правил жизненного цикла, и всё, кроме `86400`, удаляет данные раньше срока ровно
