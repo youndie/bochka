@@ -58,9 +58,43 @@ So the class is either one this chart knows, or one the operator says they have 
 themselves. Accepting a class and not expressing its requirements is the same shape as accepting a
 bucket policy and not enforcing it, and this repository refuses that one too.
 */}}
+{{/*
+M-216: a TLS entry with no `secretName`.
+
+Kubernetes allows it and it means one exact thing — "the controller has the certificate for these
+hosts, I am not handing you one". That is how Traefik's own ACME resolver works: the certificate
+lives in its acme.json and never becomes a Secret, so a chart that insists on a `secretName` cannot
+express the arrangement at all.
+
+It is also how a controller's *default* certificate gets used by accident, and that one is usually
+self-signed. The difference between the two is invisible in the manifest and very visible to a
+client, which is the shape of thing this chart refuses in silence and asks for out loud instead:
+name the controller that provides it. An empty string stays a refusal.
+*/}}
+{{- range .Values.ingress.tls }}
+{{- if not .secretName }}
+{{- if not $.Values.ingress.certificateFromController }}
+{{- fail (printf "ingress.tls has an entry with no secretName, for %v. That is legal Kubernetes and means the controller already holds a certificate for those hosts — Traefik's own ACME resolver, for instance, keeps it in acme.json and never makes a Secret. It is also what an accidental fall-through to the controller's default certificate looks like, and that one is usually self-signed: the client sees an untrusted certificate on requests carrying signed credentials. Set ingress.certificateFromController to the name of the controller that provides it, or give the entry a secretName." .hosts) }}
+{{- end }}
+{{- end }}
+{{- end }}
 {{- $class := .Values.ingress.className | default "nginx" }}
 {{- if and (ne $class "nginx") (ne $class .Values.ingress.requirementsExpressedFor) }}
+{{- if eq $class "traefik" }}
+{{/*
+M-211: the one foreign controller this chart has measured rather than reasoned about, and the
+reason the refusal above cannot simply say "put them in annotations".
+
+Three of the four requirements are Traefik's defaults and need nothing. The fourth is not
+expressible from an Ingress **at all**, by anybody: it lives in Traefik's static configuration,
+which belongs to the Traefik install rather than to any release routed through it. A chart that
+told the operator to write it into annotations would be sending them somewhere the setting does
+not exist.
+*/}}
+{{- fail (printf "ingress.className is \"traefik\", and this chart's annotation defaults are ingress-nginx's — on traefik they are inert. Measured on v3.6.0 (docs/measurements.md, M-211): buffering is off in both directions and there is no body size limit, so three of the four need nothing from you. Two things do. (1) entryPoints.<name>.transport.respondingTimeouts.readTimeout defaults to 60s and lives in Traefik's static configuration, which no Ingress can reach: an upload slower than a minute is cut mid-body. Set it to 0 on the entryPoint serving this Ingress. (2) A response bochka produces before reading the body — every refusal by signature, by ACL or by a missing bucket — does not reach a client that is waiting for 100 Continue, unless the declared body is over 256 KiB; below that Go drains the rest of the request first and both sides wait. That one has no setting: it is what running behind a Go proxy costs, and six of ceph/s3-tests fail on it. Set ingress.requirementsExpressedFor: \"traefik\" when you have read both.") }}
+{{- else }}
 {{- fail (printf "ingress.className is %q, and this chart's annotation defaults are ingress-nginx's — on %s they are inert. bochka needs four things from whatever proxies it: no body size limit, request buffering off, response buffering off, and read/send timeouts long enough for a large upload (deploy/nginx/nginx.conf). Express them in ingress.annotations for your controller and set ingress.requirementsExpressedFor: %q to say so — or put your own terminator in front of the ClusterIP Service and leave ingress.enabled false." $class $class $class) }}
+{{- end }}
 {{- end }}
 {{/*
 And the nginx keys come off for a foreign class rather than riding along. An inert annotation on

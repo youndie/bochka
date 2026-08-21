@@ -1,0 +1,20 @@
+# A controller this chart has neither annotations for nor a measurement of. `bad-ingress-class`
+# covers traefik, which since M-211 gets its own refusal built out of what was measured on it; this
+# one keeps the general branch — the one every other controller lands in — under a test. A branch
+# nobody exercises is the one that goes wrong quietly.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+ingress:
+  enabled: true
+  className: haproxy
+  hosts:
+    - host: s3.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: s3-example-com-tls
+      hosts:
+        - s3.example.com

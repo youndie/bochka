@@ -110,6 +110,7 @@
         "enabled": { "type": "boolean" },
         "className": { "type": "string" },
         "requirementsExpressedFor": { "type": "string" },
+        "certificateFromController": { "type": "string" },
         "annotations": { "type": "object" },
         "hosts": {
           "type": "array",
@@ -139,7 +140,6 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["secretName"],
             "properties": {
               "secretName": { "type": "string", "minLength": 1 },
               "hosts": { "type": "array", "items": { "type": "string", "minLength": 1 } }

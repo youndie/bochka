@@ -187,6 +187,17 @@ ingress:
   #   - secretName: s3-example-com-tls
   #     hosts:
   #       - s3.example.com
+  #
+  # An entry may also carry no `secretName` at all, and in Kubernetes that means one exact thing:
+  # the controller already has a certificate for those hosts. Traefik's own ACME resolver is the
+  # case that forced this (M-216) — it keeps the certificate in acme.json and never makes a Secret,
+  # so a chart that insists on a name cannot express the arrangement.
+  #
+  # It is also, byte for byte, what an accidental fall-through to the controller's *default*
+  # certificate looks like, and that one is usually self-signed: a client would be sending signed
+  # credentials over a certificate it cannot verify. The two are indistinguishable in the manifest,
+  # so the template asks which it is instead of guessing — name the controller here.
+  certificateFromController: ""
 
 # The health check. Its shape used to be forced by the server having no health endpoint at all: the
 # one answer an unauthenticated request got was `403 AccessDenied` on `GET /`, and kubelet counts
