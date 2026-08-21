@@ -15,7 +15,7 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # No setup-java step in *this* job: the build fetches its own JDK 25 toolchain
       # (settings.gradle.kts), so the runner's Java is not part of the answer. A green build here
       # means green on a machine with no JDK at all.
@@ -25,7 +25,7 @@ jobs:
   live-clients:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The toolchain compiles with 25; this **runs** the distribution, and the start script uses
       # whatever `java` is on PATH. On this runner that is 17, and the failure is
       # `UnsupportedClassVersionError: class file version 69.0` — which reads as a build problem
@@ -41,7 +41,7 @@ jobs:
   compatibility:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -57,7 +57,7 @@ jobs:
   image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: gradle/actions/setup-gradle@v4
       # No setup-java: the whole point of the image is that it carries its own runtime, and a job
       # that installed one would stop testing that.
@@ -85,7 +85,7 @@ jobs:
     needs: image
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: azure/setup-helm@v4
         with:
           # Pinned, like the aws-cli image the harness loads, and for the same reason: unpinned this
