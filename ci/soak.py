@@ -43,6 +43,11 @@ SIZE = int(os.environ.get("BOCHKA_SOAK_SIZE", str(2 * 1024 * 1024)))
 BIG_KEYS = int(os.environ.get("BOCHKA_SOAK_BIG_KEYS", "50"))
 BIG_SIZE = int(os.environ.get("BOCHKA_SOAK_BIG_SIZE", str(12 * 1024 * 1024)))
 REPORT_EVERY = int(os.environ.get("BOCHKA_SOAK_REPORT_EVERY", "500"))
+# A pause between cycles, and it is not throttling for its own sake: what this measures is age and
+# accumulated writes, not throughput — that is what the benchmarks are for. Running flat out writes
+# far more than any of the four questions needs and makes the generator a poor neighbour on a node
+# it shares, which is the only kind of node a soak ever gets.
+DELAY = float(os.environ.get("BOCHKA_SOAK_DELAY", "0.1"))
 BUCKET = "soak"
 CONTROL = "control"
 STOP_KEY = "stop"
@@ -162,6 +167,9 @@ def main() -> None:
             counts["error"] += 1
             print(f"ERROR cycle {cycle}: {type(e).__name__}: {e}", flush=True)
             time.sleep(1)
+
+        if DELAY:
+            time.sleep(DELAY)
 
         if cycle % REPORT_EVERY == 0:
             hours = (time.monotonic() - started) / 3600
