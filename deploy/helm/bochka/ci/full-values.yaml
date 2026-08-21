@@ -60,3 +60,8 @@ tolerations:
 # null, not {}: Helm merges maps, so an empty one leaves the chart default in place. This is the
 # form that actually removes the arch pin, and it is the form the day the image goes multi-arch.
 nodeSelector: null
+
+# The one setting here that widens what the store answers rather than how it runs. Off in the
+# shipped values; on in this set so that the rendering checks can say what each of the two looks
+# like, because "absent" and "0" are different things to an older image.
+anonymous: true

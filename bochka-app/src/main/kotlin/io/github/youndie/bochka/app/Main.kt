@@ -77,6 +77,15 @@ object Main {
             System.err.println("bochka will not start: lifecycle.day.seconds must be positive, not $lifecycleDay")
             kotlin.system.exitProcess(2)
         }
+        // Layer two of the access model, and it is announced rather than merely read (M28). A
+        // deployment that has it on is one where an unsigned request can be answered with bytes,
+        // and nobody should have to diff a values file to find that out — the startup dump prints
+        // every setting, and this line says what the setting means.
+        val anonymous = configuration[Configuration.Key.ANONYMOUS] == "1"
+        if (anonymous) {
+            println("anonymous access: ON — an unsigned request is answered by the acl, not refused outright")
+        }
+
         val handler =
             S3Handler(
                 store = store,
@@ -84,6 +93,7 @@ object Main {
                 router = S3Router(virtualHostSuffixes = configuration.list(Configuration.Key.VIRTUAL_HOST_SUFFIXES)),
                 accelRedirect = configuration[Configuration.Key.ACCEL_REDIRECT]?.trimEnd('/'),
                 lifecycleDay = lifecycleDay,
+                anonymous = anonymous,
             )
 
         val logged = LoggingHandler(handler, enabled = configuration[Configuration.Key.LOG] == "1")

@@ -226,6 +226,17 @@ spec:
             - name: BOCHKA_LIFECYCLE_DAY_SECONDS
               value: {{ .Values.lifecycleDaySeconds | toString | quote }}
             {{- end }}
+            {{- /*
+            Rendered only when on, for the same reason as the setting above: absent means "0" to
+            this server, and an older image answers `unknown setting` instead of starting. Off is
+            also the value this chart wants by default — turning it on makes a `public-read` bucket
+            readable by anybody who can reach the Service, which is a decision about the network
+            this runs on, not about the store.
+            */}}
+            {{- if .Values.anonymous }}
+            - name: BOCHKA_ANONYMOUS
+              value: "1"
+            {{- end }}
             {{- if gt (int .Values.maxObjects) 0 }}
             - name: BOCHKA_MAX_OBJECTS
               value: {{ .Values.maxObjects | toString | quote }}

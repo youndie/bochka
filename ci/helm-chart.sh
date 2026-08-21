@@ -126,6 +126,12 @@ expect_in "$work/minimal.yaml" 'runAsUser: 1000' "the uid is a number, because t
 expect_in "$work/minimal.yaml" 'readOnlyRootFilesystem: true' "the root filesystem is read-only"
 expect_in "$work/minimal.yaml" 'dev/tcp' "the probe is a request, not an open socket"
 expect_not_in "$work/minimal.yaml" 'httpGet' "the default probe is still exec: appVersion has no health handle"
+# Anonymous access is a capability, not a knob, so both directions are checked. Absent rather than
+# "0" on purpose: the variable arrived in a later server than some images this chart can name, and
+# an unknown BOCHKA_ name stops the process — the same reasoning that keeps
+# BOCHKA_LIFECYCLE_DAY_SECONDS out of a default render.
+expect_not_in "$work/minimal.yaml" 'BOCHKA_ANONYMOUS' "unsigned requests are refused unless somebody asks otherwise"
+expect_in "$work/full.yaml" 'BOCHKA_ANONYMOUS' "and asking for it renders the variable"
 expect_not_in "$work/minimal.yaml" 'JAVA_OPTS' "the runtime profile is never touched from the chart"
 expect_not_in "$work/minimal.yaml" 'terminationGracePeriodSeconds' "no invented grace period"
 expect_not_in "$work/minimal.yaml" 'preStop' "no preStop hook pretending to drain connections"

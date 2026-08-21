@@ -233,8 +233,15 @@ which is true of no benchmark this project could run on its own. So it is publis
 exists, ahead of everything else:
 
 > **466 of 744 passed (63%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
+>
+> **474 of 744 (64%)** — the same run with `BOCHKA_ANONYMOUS=1`.
 
-**276 of the 279 remaining failures** are things this store says in
+There are two because the number measures a configuration, not a codebase. Anonymous access ships
+turned off, so the run anybody gets by default cannot see it; the second number is what the switch
+is worth, taken by the same harness (`S3TESTS_ANONYMOUS=1 ./ci/s3-tests.sh`). Publishing one of
+them with a footnote would overstate the default and understate the work.
+
+**261 of the 278 remaining failures** are things this store says in
 ["What bochka is not"](#what-bochka-is-not) that it will never have — server-side encryption,
 grants to named users, bucket policies, IAM, storage classes. Every failure is classified with a reason
 ([docs/s3-tests.md](docs/s3-tests.md)), and one nobody has classified is reported by name as
@@ -245,8 +252,13 @@ the classification rather than by running anything, because three families sat b
 had stopped being true when the features arrived. A label saying "out of scope" over a defect is
 worse than no label — the unclassified count is watched, and a closed-looking question is not.
 
-**Two are in scope and not done**, and each is there because a decision is unmade rather than
-because work is: a key holding C1 control characters and the round trip of non-ASCII metadata.
+**Seventeen are in scope and not done**, and they split three ways. Four the server passes with
+anonymous access switched on, which is a configuration rather than a gap, and they are labelled
+`off-by-default` so that the label can be checked by flipping the switch. Eleven are work with an
+address in the backlog: a POST form carrying no policy at all, and an `OPTIONS` that is not a
+preflight — seven cases that had always failed and were explained by anonymity until anonymity
+arrived and they stayed. **Two** are there because a decision is unmade rather than because work
+is: a key holding C1 control characters and the round trip of non-ASCII metadata.
 A third — the ETag of a re-sent encrypted part — was one of these until the decision got made:
 an encrypted object's ETag is an HMAC of its plaintext under the client's key, which is the only
 shape that is both stable across re-sends and useless to anybody reading a listing.
@@ -255,7 +267,7 @@ is a "deferred" for ever. That whole distinction was itself a finding — those 
 the classification file while the backlog said there was nothing to do, which is two documents
 disagreeing about the same thing.
 
-Counted against what is in scope the score is 466 of 468 — 99% — and that number is here as a
+Counted against what is in scope the score is 466 of 483 — 96% — and that number is here as a
 warning rather than a boast: its denominator is chosen by this repository, and 99% of your own
 scope list is available to anyone willing to lengthen the list. **63% is the honest one because
 somebody else chose it.** What the number is for is the direction it moves, which is why the count
@@ -372,7 +384,10 @@ disagreeing — which reads like a bug in your project and is a missing line.
   policies, no STS. What it does have is the part that needs no user table: a bucket and an object
   belong to the key that made them, and the six canned ACLs decide what other keys may do with
   them. A grant to a named user is refused by name — it would be a permission language over people
-  this server does not know — and an unsigned request is still refused whatever the ACL says.
+  this server does not know. An unsigned request is refused whatever the ACL says until
+  `BOCHKA_ANONYMOUS=1` is set, and then a `public-read` bucket answers one — the switch adds a
+  capability, the ACL still decides. Only a request carrying *no* credentials can become anonymous:
+  a signature that fails to verify stays a failure at every setting.
 - **Not encrypted with a key of its own.** No TLS termination and no SSE-S3 or SSE-KMS: the first
   would wrap the socket and the second would make this process a keeper of secrets, with rotation
   and an audit trail behind it. **SSE-C is there**, and it is the one place the trade is worth it:

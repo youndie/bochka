@@ -10,6 +10,8 @@
 #                   bochka is not"). Failing it is the design, not a defect.
 #   deferred      — in scope eventually, nobody has claimed it. Becomes `defect` when it does.
 #   defect        — bochka should pass this and does not. Every one of these names the task.
+#   off-by-default — bochka does this, and the configuration this run measured does not turn it on.
+#                   The reason names the switch, so the line can be checked by flipping it.
 #
 # A case matching nothing is reported as `unclassified`, which is the point of the file: a
 # failure that nobody has looked at must not be able to hide inside a category.
@@ -90,11 +92,30 @@ out-of-scope	_iam	IAM is a different service; this store authenticates with stat
 out-of-scope	_sts	STS is a different service; this store authenticates with static keys
 out-of-scope	public_access_block	public access blocks belong with policies, which are out of scope
 out-of-scope	block_public	public access blocks belong with policies, which are out of scope
-out-of-scope	anonymous	анонимный доступ — слой 2 модели доступа (M28); ACL для него уже есть, разрешения ещё нет
+# Слой 2 сделан (M28), поэтому строка «разрешения ещё нет» стала неправдой. Что осталось под этим
+# именем — три кейса, и ни один не про разрешение: `list_buckets_anonymous` ждёт пустой список
+# вместо отказа и **помечен `fails_on_aws`** (это поведение RGW, S3 отвергает — и bochka тоже);
+# две формы шлют POST вообще без политики, что здесь отдельная задача (M-225).
+out-of-scope	list_buckets_anonymous	кейс ждёт пустой список вместо отказа и помечен fails_on_aws: так отвечает RGW, а S3 и bochka отвергают
+deferred	post_object_anonymous	POST-форма без политики в публичный бакет: слой 2 её пропускает, а форма всё ещё требует политику (M-225)
+deferred	post_object_tags_anonymous	то же самое, с тегами (M-225)
+deferred	post_object_set_success_code	форма без политики вовсе; тот же вопрос, что у двух строк выше (M-225)
+deferred	post_object_set_invalid_success_code	форма без политики вовсе; тот же вопрос (M-225)
+# Ниже — три строки про рубильник, а не про отсутствие функции. С `BOCHKA_ANONYMOUS=1` все четыре кейса
+# проходят — это измерено обоими прогонами в M28 (466 и 474 из 744), а не предположено.
+off-by-default	objects_anonymous	анонимный листинг бакета с public-read: слой 2 это умеет, поставка его не включает (BOCHKA_ANONYMOUS)
+off-by-default	anon_put_write_access	анонимная запись в бакет с public-read-write: то же самое (BOCHKA_ANONYMOUS)
+off-by-default	100_continue	кейс шлёт PUT без учётных данных сокетом и ждёт 100 после public-read-write (BOCHKA_ANONYMOUS)
 out-of-scope	website	static website hosting is out of the v1 scope
 # CORS is implemented (M14), and the eleven cases under this name fail for three different reasons,
 # none of them "we do not have CORS". Splitting them is the point of this file.
-out-of-scope	cors_origin	the case fetches across origins without a signature; anonymous access needs public-read ACLs
+# Семь кейсов стояли под «анонимному доступу нужны публичные ACL», и после M28 стало видно, что
+# причина была неверна для них с самого начала: они шлют **`OPTIONS`** на presign-ссылку и ждут
+# `400`, а bochka отвечает `403` — вопрос про preflight, а не про подпись (M-226). CORS-пара
+# отдельно: заголовков `Access-Control-*` в ответе нет вовсе.
+deferred	x_amz_expires	кейс шлёт OPTIONS на presign-ссылку и ждёт 400; здесь 403 — это про preflight, а не про анонимность (M-226)
+deferred	raw_put_authenticated_expired	то же: OPTIONS перед PUT ждёт 400 (M-226)
+deferred	cors_origin	ответ на межпроисхожденческий запрос не несёт Access-Control-Allow-Origin (M-226)
 out-of-scope	notification	bucket notifications are out of the v1 scope
 out-of-scope	replication	replication needs more than one node, which is the whole niche this is not
 out-of-scope	logging	server access logging is out of the v1 scope
@@ -102,10 +123,6 @@ out-of-scope	request_payment	requester pays is out of the v1 scope
 out-of-scope	storage_class	one storage class; there is one disk
 out-of-scope	_torrent	BitTorrent retrieval was removed from S3 itself
 out-of-scope	usage	usage accounting is a ceph extension, not S3
-out-of-scope	post_object_anonymous	an anonymous form needs a bucket open to everyone, which needs public ACLs
-out-of-scope	post_object_tags_anonymous	an anonymous form needs a bucket open to everyone, which needs public ACLs
-out-of-scope	post_object_set_success_code	the form carries no policy at all; it is an anonymous POST to a public bucket
-out-of-scope	post_object_set_invalid_success_code	the form carries no policy at all; it is an anonymous POST to a public bucket
 out-of-scope	post_object_success_redirect_action	the upload succeeds; the case then reads the redirect target unsigned, which needs public read
 out-of-scope	select	S3 Select is out of the v1 scope
 out-of-scope	restore	Glacier restore is out of the v1 scope
@@ -145,13 +162,11 @@ out-of-scope	bucket_head_extended	x-rgw-object-count is a ceph extension, not S3
 out-of-scope	unordered	allow-unordered is a ceph extension, not S3
 out-of-scope	public_block	public access blocks belong with policies
 out-of-scope	obj_public	публичный объект читают без подписи, а неподписанный запрос — это M28
-out-of-scope	100_continue	the case sets a public-read ACL first; Expect: 100-continue itself is covered by the live-client harness
 out-of-scope	multi_object_delete_key_limit	the case deletes more than a thousand keys in one request, which the protocol does not allow; bochka now answers MalformedXML instead of closing the connection, and the case expects it to succeed
 out-of-scope	get_location	the case compares the region against the suite's own api_name setting
 out-of-scope	bucket_list_return_data	the case reads an object ACL to compare owners
 
 out-of-scope	object_raw	the "raw" family builds its own unsigned or ACL-dependent requests; anonymous access needs public-read ACLs
-out-of-scope	object_anon	anonymous writes need public-write ACLs
 out-of-scope	obj_enc_conflict	contradictory server-side-encryption headers; encryption is out of scope
 # `bucket_gone` matched four test names and the reason explained one of them, so
 # `test_atomic_write_bucket_gone` — a write into a bucket deleted mid-upload, which answered 200 for

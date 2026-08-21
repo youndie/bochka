@@ -25,6 +25,7 @@ import io.github.youndie.bochka.s3.TagRules
 import io.github.youndie.bochka.s3.UriCodec
 import io.github.youndie.bochka.s3.sigv4.AwsChunkedDecoder
 import io.github.youndie.bochka.s3.sigv4.CanonicalRequest
+import io.github.youndie.bochka.s3.sigv4.ChunkSigning
 import io.github.youndie.bochka.s3.sigv4.KeyScope
 import io.github.youndie.bochka.s3.sigv4.S3Error
 import io.github.youndie.bochka.s3.sigv4.SignatureVerifier
@@ -94,6 +95,77 @@ class S3Handler(
 ) : HttpHandler {
     private val lifecycles = Lifecycles(store)
 
+    /**
+     * Who is asking, and how the body is framed — the two things a request carries past the head.
+     *
+     * A type of its own since M28, because until then they arrived together as a verified
+     * signature and now they do not: a request may carry no credentials and still have a body to
+     * read. `accessKeyId` is `null` for exactly that request and for no other — a signature that
+     * failed never gets here, `screen` refuses it.
+     */
+    private data class Caller(
+        val accessKeyId: String?,
+        val payloadHash: String,
+        val chunkSigning: ChunkSigning? = null,
+    )
+
+    /**
+     * Who owns a version an unsigned request creates (M28).
+     *
+     * Not nobody, and that is the point rather than a detail. In this model `owner == null` means
+     * "written before the model existed, so no model applies" — an object with no owner is open to
+     * every key. A `public-read-write` bucket would therefore turn each anonymous write into an
+     * object nobody can close, which is a hole made by two correct rules meeting.
+     *
+     * The bucket's owner instead: a request that named nobody has no identity to own anything, and
+     * the bucket's owner is who is accountable for what lands there. It is the same reasoning
+     * `bucket-owner-full-control` exists for, arrived at from the other side.
+     */
+    private fun ownerFor(
+        bucket: String,
+        accessKeyId: String?,
+    ): String? = accessKeyId ?: store.bucketOwner(bucket)
+
+    /**
+     * The key on a route an unsigned request can never reach.
+     *
+     * `screen` refuses those before a handler is chosen — `ListBuckets` has no bucket whose ACL
+     * could grant anything, and creating a bucket is not a question an ACL answers. This says so
+     * out loud instead of a `!!`: if the invariant ever breaks, the failure is a `500` naming the
+     * route, not an operation quietly performed for nobody.
+     */
+    private fun Caller.somebody(route: S3Router.Route): String =
+        accessKeyId ?: error("screen let an unsigned request reach $route, which no acl can grant")
+
+    /**
+     * Re-derives the caller for [handle], which is a second verification of the same head.
+     *
+     * Twice on purpose (see the note on [screen]): the handler is one object shared by every
+     * connection, so nothing may be carried between the two calls in a field.
+     */
+    private fun callerOf(head: HttpRequestParser.Head): Caller =
+        when (val verified = verifier.verify(head.toSignedRequest())) {
+            is SignatureVerifier.Result.Ok -> {
+                Caller(verified.accessKeyId, verified.payloadHash, verified.chunkSigning)
+            }
+
+            // No credentials, and `screen` has already decided whether that is allowed at all. What
+            // is left is the framing, which the head states on its own: an unsigned body cannot be
+            // one of the signed shapes, so there is no chain to seed.
+            SignatureVerifier.Result.Anonymous -> {
+                Caller(
+                    accessKeyId = null,
+                    payloadHash =
+                        head.header("x-amz-content-sha256")?.trim()?.takeIf { it.isNotEmpty() }
+                            ?: SignatureVerifier.UNSIGNED_PAYLOAD,
+                )
+            }
+
+            is SignatureVerifier.Result.Failure -> {
+                error("handle reached a request screen refused: ${verified.error}")
+            }
+        }
+
     override fun screen(head: HttpRequestParser.Head): HttpResponse? {
         val route = route(head)
         if (route is S3Router.Route.NotImplemented) {
@@ -124,6 +196,14 @@ class S3Handler(
                     if (!anonymous) {
                         return error(head, S3Error.ACCESS_DENIED, detail = "no credentials on the request")
                     }
+                    // With it on, the same gate decides — the one the signed path goes through, not
+                    // a second one written for this case. A separate path is how the two drift, and
+                    // a permission model that drifts leaks in the direction nobody is testing.
+                    //
+                    // `scopeRefusal` is absent because a scope narrows a **key**, and there is no
+                    // key here; the switch above is what a deployment narrows this with.
+                    aclRefusal(head, route, accessKeyId = null)?.let { return it }
+                    statedAclRefusal(head)?.let { return it }
                 }
             }
         }
@@ -280,15 +360,15 @@ class S3Handler(
         // Preflight сюда доходит неподписанным (см. `screen`), так что верификация ленивая:
         // приведение типа на неподписанном запросе упало бы на маршруте, которому подпись
         // не нужна.
-        val verification by lazy { verifier.verify(head.toSignedRequest()) as SignatureVerifier.Result.Ok }
+        val verification by lazy { callerOf(head) }
 
         return when (route) {
             is S3Router.Route.ListBuckets -> {
-                listBuckets(head, verification.accessKeyId)
+                listBuckets(head, verification.somebody(route))
             }
 
             is S3Router.Route.CreateBucket -> {
-                createBucket(head, route.bucket, verification.accessKeyId)
+                createBucket(head, route.bucket, verification.somebody(route))
             }
 
             is S3Router.Route.DeleteBucket -> {
@@ -433,7 +513,7 @@ class S3Handler(
     private fun copyObject(
         head: HttpRequestParser.Head,
         route: S3Router.Route.CopyObject,
-        accessKeyId: String,
+        accessKeyId: String?,
     ): HttpResponse {
         if (!store.hasBucket(route.sourceBucket)) {
             return error(head, S3Error.NO_SUCH_BUCKET, bucket = route.sourceBucket)
@@ -475,7 +555,8 @@ class S3Handler(
         val metadata = if (replacing) ObjectHeaders.read(head.headers) else source.metadata
         // The copy belongs to whoever made it, not to whoever owned the source: a copy is a new
         // object, and S3 gives it the caller as its owner.
-        val stored = store.copy(source, route.bucket, route.key, metadata, accessKeyId, statedAcl(head))
+        val stored =
+            store.copy(source, route.bucket, route.key, metadata, ownerFor(route.bucket, accessKeyId), statedAcl(head))
         return xml(
             S3Documents.copyObjectResult(stored.eTag, timestamp(stored.lastModified)),
         )
@@ -486,7 +567,7 @@ class S3Handler(
     private fun createUpload(
         head: HttpRequestParser.Head,
         route: S3Router.Route.CreateMultipartUpload,
-        accessKeyId: String,
+        accessKeyId: String?,
     ): HttpResponse {
         // The metadata travels on this request and not on the parts: the parts are bytes, the
         // object is what they become, and only this request knows anything about the object. The
@@ -526,7 +607,7 @@ class S3Handler(
                 // Kept with the upload rather than applied at the completion: the object appears
                 // minutes later, and an `x-amz-acl` that lived only in this request would be a
                 // permission accepted and then quietly dropped.
-                owner = accessKeyId,
+                owner = ownerFor(route.bucket, accessKeyId),
                 acl = statedAcl(head),
             )
 
@@ -555,7 +636,7 @@ class S3Handler(
     private suspend fun uploadPart(
         head: HttpRequestParser.Head,
         route: S3Router.Route.UploadPart,
-        verification: SignatureVerifier.Result.Ok,
+        verification: Caller,
         body: HttpHandler.RequestBody,
     ): HttpResponse {
         val checksums = PayloadChecksums.of { head.header(it) }
@@ -1417,7 +1498,7 @@ class S3Handler(
     private suspend fun putObject(
         head: HttpRequestParser.Head,
         route: S3Router.Route.PutObject,
-        verification: SignatureVerifier.Result.Ok,
+        verification: Caller,
         body: HttpHandler.RequestBody,
     ): HttpResponse {
         val payloadHash = verification.payloadHash
@@ -1480,7 +1561,7 @@ class S3Handler(
                     staged,
                     writePrecondition(head),
                     encryption = encryption,
-                    owner = verification.accessKeyId,
+                    owner = ownerFor(route.bucket, verification.accessKeyId),
                     acl = statedAcl(head),
                 )
             staged = null
@@ -1600,7 +1681,7 @@ class S3Handler(
 
     private suspend fun stageStreaming(
         head: HttpRequestParser.Head,
-        verification: SignatureVerifier.Result.Ok,
+        verification: Caller,
         body: HttpHandler.RequestBody,
         checksums: PayloadChecksums,
         sse: SseC? = null,
@@ -3156,18 +3237,41 @@ class S3Handler(
     private fun aclRefusal(
         head: HttpRequestParser.Head,
         route: S3Router.Route,
-        accessKeyId: String,
+        accessKeyId: String?,
     ): HttpResponse? {
-        val bucketName = bucketOf(route) ?: return null
+        // `x-amz-expected-bucket-owner` is a permission the caller states about the **bucket**,
+        // and it is checked before anything else here because it does not depend on who is asking:
+        // "answer me only if this bucket is still owned by X". Accepted and not enforced it is the
+        // shape this repository refuses everywhere — and it was exactly that until M28 opened the
+        // door far enough for a stranger to reach a `public-read-write` bucket while asking it
+        // (`ceph/s3-tests`: `test_expected_bucket_owner`).
+        expectedBucketOwnerRefusal(head, route)?.let { return it }
+
+        // Three places below decide **without** asking the access model, and each of them means
+        // "allowed" (M28). For a request that named nobody they would each be a hole, so each says
+        // so here rather than being caught by a rule further down that never runs.
+        //
+        // The first: a route with no bucket has no ACL to consult. `ListBuckets` is the whole of
+        // that set, and it is answered elsewhere by an owner filter — which for nobody would list
+        // every bucket nobody owns.
+        val bucketName =
+            bucketOf(route)
+                ?: return if (accessKeyId == null) refuseNobody(head, route, null) else null
         val bucket = AccessControl.Resource(store.bucketOwner(bucketName), store.bucketAcl(bucketName))
-        if (bucket.unrestricted) return null
+        // The second: a bucket older than the model has no model. Among keys — see AccessControl.
+        if (bucket.unrestricted) {
+            return if (accessKeyId == null) refuseNobody(head, route, bucketName) else null
+        }
 
         val allowed =
             when (route) {
                 // Creating a bucket that exists is not an access question — it is answered with
                 // `BucketAlreadyExists` by the handler, which is what a client needs to hear.
+                // The third: creating a bucket is not an access question — it is answered with
+                // `BucketAlreadyExists` by the handler, which is what a client needs to hear. For
+                // nobody it is a different question with an obvious answer.
                 is S3Router.Route.CreateBucket -> {
-                    true
+                    accessKeyId != null
                 }
 
                 // Deleting a bucket is not something a canned ACL can grant: `public-read-write`
@@ -3267,11 +3371,48 @@ class S3Handler(
         return AccessControl.Resource(stored.owner, stored.acl)
     }
 
+    /**
+     * `x-amz-expected-bucket-owner`, which is a condition rather than a credential.
+     *
+     * A bucket whose owner was never recorded can satisfy no expectation at all, and answering as
+     * though it did would be the opposite of what the header is for: it exists so that a client
+     * writing to a bucket name that may have changed hands finds out instead of writing.
+     */
+    private fun expectedBucketOwnerRefusal(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
+    ): HttpResponse? {
+        val expected = head.header("x-amz-expected-bucket-owner")?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val bucketName = bucketOf(route) ?: return null
+        if (store.bucketOwner(bucketName) == expected) return null
+        return error(
+            head,
+            S3Error.ACCESS_DENIED,
+            detail = "this bucket is not owned by $expected",
+            key = keyOf(route),
+            bucket = bucketName,
+        )
+    }
+
+    /** The refusal a request that named nobody gets where there is no ACL to ask. */
+    private fun refuseNobody(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
+        bucket: String?,
+    ): HttpResponse =
+        error(
+            head,
+            S3Error.ACCESS_DENIED,
+            detail = "this asks for something no acl can grant to a request without credentials",
+            key = keyOf(route),
+            bucket = bucket,
+        )
+
     private fun objectRead(
         bucket: String,
         key: ObjectKey,
         versionId: String?,
-        accessKeyId: String,
+        accessKeyId: String?,
         bucketResource: AccessControl.Resource,
     ): Boolean {
         val obj = objectResource(bucket, key, versionId) ?: return true

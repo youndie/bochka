@@ -61,7 +61,7 @@ def main():
         grouped[status][reason].append(name)
 
     print("why the rest fail:")
-    order = ["defect", "deferred", "out-of-scope", "unclassified"]
+    order = ["defect", "deferred", "off-by-default", "out-of-scope", "unclassified"]
     for status in order + [s for s in grouped if s not in order]:
         if status not in grouped:
             continue

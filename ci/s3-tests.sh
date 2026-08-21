@@ -17,6 +17,11 @@ readonly IMAGE=python:3.11-slim
 # `S3TESTS_LC_DAY` overrides it — not `BOCHKA_*`, because the server refuses a name in its own
 # namespace that it does not know, and would print its usage instead of starting.
 readonly LC_DAY=${S3TESTS_LC_DAY:-5}
+# Layer two of the access model, and off here because it is off in the shipped server (M28). The
+# number this harness prints is the number of the configuration people get, so turning it on
+# quietly would publish a score for a server nobody runs. `S3TESTS_ANONYMOUS=1` measures the other
+# configuration on purpose, and what it is worth is written beside it in docs/s3-tests.md.
+readonly ANONYMOUS=${S3TESTS_ANONYMOUS:-0}
 
 # Where the server under test is. Empty — which is CI and every run before M30 — means the one this
 # script starts itself on the loopback. `host:port` scores a **deployment** instead, and the number
@@ -132,11 +137,13 @@ if [ -z "$ENDPOINT" ]; then
   # sixty-second per-test timeout. At five it is fifty, and the timeout still measures a hang.
   BOCHKA_PORT=$PORT BOCHKA_BIND_ADDRESS=0.0.0.0 BOCHKA_DATA_DIR="$work/data" BOCHKA_LOG=1 \
     BOCHKA_LIFECYCLE_DAY_SECONDS=$LC_DAY \
+    BOCHKA_ANONYMOUS=$ANONYMOUS \
     BOCHKA_KEYS="s3main:s3mainsecret,s3alt:s3altsecret,s3tenant:s3tenantsecret" \
     "$root/bochka-app/build/install/bochka-app/bin/bochka-app" >"$log" 2>&1 &
 server_pid=$!
 else
   echo "scoring the deployment at $HOST:$TARGET_PORT rather than a server this script starts"
+  [ "$ANONYMOUS" = 1 ] && echo "  S3TESTS_ANONYMOUS=1 is set here, but the deployment decides its own"
   echo "  a lifecycle day is $LC_DAY s here; the same number has to be set on that server"
 fi
 

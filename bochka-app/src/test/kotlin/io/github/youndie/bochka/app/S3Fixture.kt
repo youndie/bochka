@@ -43,6 +43,8 @@ class S3Fixture(
      * замедляет его, либо делает мигающим, обычно и то и другое.
      */
     private val lifecycleDay: java.time.Duration = io.github.youndie.bochka.s3.Lifecycle.DAY,
+    /** Layer two of the access model, off as it ships (M28). */
+    anonymous: Boolean = false,
 ) : AutoCloseable {
     val root: Path = Files.createTempDirectory("bochka-e2e")
     val store = ObjectStore(root, ObjectStore.Durability.NONE)
@@ -60,6 +62,7 @@ class S3Fixture(
                     ),
                 router = S3Router(virtualHostSuffixes),
                 accelRedirect = accelRedirect,
+                anonymous = anonymous,
                 lifecycleDay = lifecycleDay,
             ),
             port = 0,
@@ -234,6 +237,31 @@ class S3Fixture(
             position += moved
             return moved
         }
+    }
+
+    /**
+     * A request carrying no credentials at all — what layer two is about (M28).
+     *
+     * Deliberately not a flag on [send]: an unsigned request is not a signed one with a field
+     * unset, and the two share no code here so that a test cannot accidentally sign what it meant
+     * to send bare.
+     */
+    fun unsigned(
+        method: String,
+        path: String,
+        query: String = "",
+        headers: List<Pair<String, String>> = emptyList(),
+        body: ByteArray = ByteArray(0),
+    ): Answer {
+        val uri = URI.create("http://127.0.0.1:$port$path" + if (query.isEmpty()) "" else "?$query")
+        val builder =
+            HttpRequest
+                .newBuilder(uri)
+                .method(method, HttpRequest.BodyPublishers.ofByteArray(body))
+                .header("Host", host)
+        for ((name, value) in headers) builder.header(name, value)
+        val response = client.send(builder.build(), BodyHandlers.ofByteArray())
+        return Answer(response.statusCode(), response.headers(), response.body())
     }
 
     /**

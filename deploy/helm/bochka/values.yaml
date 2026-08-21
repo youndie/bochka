@@ -139,6 +139,12 @@ lifecycleDaySeconds: 86400
 # somebody wrote one, the same way ingress.requirementsExpressedFor works.
 lifecycleDayShortenedFor: ""
 
+# Let a request with no credentials through to the ACL. Off, an unsigned request is 403 whatever
+# the ACL says; on, a `public-read` bucket answers anyone who can reach the Service — so this is a
+# statement about the network, not about the store. The switch only ever adds a capability: the ACL
+# still decides, and a signature that fails to verify stays a failure at either setting.
+anonymous: false
+
 # The ceiling on the number of objects. 0 leaves it derived from the heap, which is what the
 # shipped image prints: **399215**.
 #
