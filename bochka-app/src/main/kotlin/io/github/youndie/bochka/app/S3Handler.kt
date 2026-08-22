@@ -4068,7 +4068,6 @@ class S3Handler(
         return BucketPolicy.ARN_PREFIX + bucket + "/" + key
     }
 
-
     /**
      * What the bucket's policy says, or [BucketPolicy.Decision.NEUTRAL] when there is none.
      *
