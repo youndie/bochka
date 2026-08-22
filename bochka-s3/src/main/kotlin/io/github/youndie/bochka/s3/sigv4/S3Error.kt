@@ -316,6 +316,21 @@ enum class S3Error(
         404,
     ),
 
+    /**
+     * A bucket whose `PublicAccessBlock` was never set or has been removed (M-227).
+     *
+     * The model does not name this error — `GetPublicAccessBlock` lists no error shapes at all —
+     * so the source is the suite, which asserts the code twice by name:
+     * `test_get_undefined_public_block:14234` and `test_put_get_delete_public_block:14467`. Same
+     * shape as [NO_SUCH_BUCKET_POLICY], and same reason for the `404`: "no configuration" is an
+     * answer, and `NotImplemented` would be a different and untrue one.
+     */
+    NO_SUCH_PUBLIC_ACCESS_BLOCK_CONFIGURATION(
+        "NoSuchPublicAccessBlockConfiguration",
+        "The public access block configuration was not found",
+        404,
+    ),
+
     /** Same shape, same reason: a bucket with no lifecycle rules has a defined answer. */
     NO_SUCH_LIFECYCLE_CONFIGURATION(
         "NoSuchLifecycleConfiguration",

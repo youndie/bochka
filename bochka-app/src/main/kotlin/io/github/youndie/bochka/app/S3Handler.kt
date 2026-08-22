@@ -17,9 +17,11 @@ import io.github.youndie.bochka.s3.ListingRequest
 import io.github.youndie.bochka.s3.ObjectHeaders
 import io.github.youndie.bochka.s3.ObjectKeyRules
 import io.github.youndie.bochka.s3.PayloadChecksums
+import io.github.youndie.bochka.s3.PolicyStatus
 import io.github.youndie.bochka.s3.PostForm
 import io.github.youndie.bochka.s3.PostPolicy
 import io.github.youndie.bochka.s3.PostSignature
+import io.github.youndie.bochka.s3.PublicAccessBlock
 import io.github.youndie.bochka.s3.S3ErrorResponse
 import io.github.youndie.bochka.s3.S3Router
 import io.github.youndie.bochka.s3.SseC
@@ -202,6 +204,7 @@ class S3Handler(
                     scopeRefusal(head, route, verification.accessKeyId)?.let { return it }
                     aclRefusal(head, route, verification.accessKeyId)?.let { return it }
                     statedAclRefusal(head)?.let { return it }
+                    publicAclRefusal(head, route)?.let { return it }
                 }
 
                 is SignatureVerifier.Result.Anonymous -> {
@@ -218,6 +221,7 @@ class S3Handler(
                     // key here; the switch above is what a deployment narrows this with.
                     aclRefusal(head, route, accessKeyId = null)?.let { return it }
                     statedAclRefusal(head)?.let { return it }
+                    publicAclRefusal(head, route)?.let { return it }
                 }
             }
         }
@@ -414,7 +418,7 @@ class S3Handler(
             }
 
             is S3Router.Route.PostObject -> {
-                postObject(head, route.bucket, body)
+                postObject(head, route, body)
             }
 
             is S3Router.Route.CopyObject -> {
@@ -1284,9 +1288,10 @@ class S3Handler(
      */
     private suspend fun postObject(
         head: HttpRequestParser.Head,
-        bucket: String,
+        route: S3Router.Route.PostObject,
         body: HttpHandler.RequestBody,
     ): HttpResponse {
+        val bucket = route.bucket
         val boundary =
             PostForm.boundaryOf(head.header("content-type"))
                 ?: return error(head, S3Error.MALFORMED_POST_REQUEST, detail = "no multipart boundary", bucket = bucket)
@@ -1305,14 +1310,39 @@ class S3Handler(
         val raw = collected.toByteArray()
 
         val form: PostForm.Parsed
-        val accessKeyId: String
+        val accessKeyId: String?
         val keyText: String
         try {
             form = PostForm.parse(raw, boundary)
-            val policyField =
-                form["policy"]
-                    ?: throw PostSignature.Refused(S3Error.ACCESS_DENIED, "the form carries no policy")
-            accessKeyId = PostSignature.verify(form.fields, policyField, verifier.credentials, verifier.region)
+            val policyField = form["policy"]
+            accessKeyId =
+                if (policyField == null) {
+                    // A form with no policy names nobody, and that is layer two arriving at the one
+                    // entrance `screen` cannot judge (M-225). Until M28 this was `403` outright,
+                    // which was true then and became a second lock afterwards: the door had opened
+                    // everywhere else and this one branch still held it shut.
+                    //
+                    // **What replaces the refusal is not the absence of a check.** The two gates
+                    // below are the ones every unnamed request goes through — the deployment's
+                    // switch, then the bucket's ACL — and they are asked a few lines down, in the
+                    // same call the signed path makes. Nothing here decides anything.
+                    //
+                    // A signature without a policy is a different answer, and it is `400`: a
+                    // signature is taken over the policy, so one with no policy under it is a form
+                    // missing a part it declared. The suite pins the mirror image of that at `400`
+                    // (`test_post_object_missing_signature:2455`), and reading it as "anonymous"
+                    // instead would let a form shed its own conditions and be judged by the bucket
+                    // alone — a way around exactly what the signed path enforces.
+                    if (form["signature"] != null || form["x-amz-signature"] != null) {
+                        throw PostForm.Malformed(
+                            S3Error.MALFORMED_POST_REQUEST,
+                            "the form has a signature but no policy for it to be over",
+                        )
+                    }
+                    null
+                } else {
+                    PostSignature.verify(form.fields, policyField, verifier.credentials, verifier.region)
+                }
             // `${'$'}{filename}` is substituted **before** the policy is checked, and the order is the
             // whole of `test_post_object_set_key_from_filename:2167`: the form sends
             // `key=${'$'}{filename}` under a policy demanding `starts-with ${'$'}key, "foo"`, and the literal
@@ -1328,15 +1358,17 @@ class S3Handler(
             // here. It did acquire one, and the policy then refused the field nobody sent —
             // `test_post_object_no_key_specified:2448` got `403` where it wanted `400`, which is
             // the difference between "you may not" and "your form is incomplete".
-            val checked =
-                form.fields + mapOf("bucket" to bucket) +
-                    (if (form["key"] != null) mapOf("key" to keyText) else emptyMap())
-            PostPolicy.check(
-                PostPolicy.decode(policyField),
-                checked,
-                form.fileLength.toLong(),
-                java.time.Instant.now(),
-            )
+            if (policyField != null) {
+                val checked =
+                    form.fields + mapOf("bucket" to bucket) +
+                        (if (form["key"] != null) mapOf("key" to keyText) else emptyMap())
+                PostPolicy.check(
+                    PostPolicy.decode(policyField),
+                    checked,
+                    form.fileLength.toLong(),
+                    java.time.Instant.now(),
+                )
+            }
         } catch (e: PostForm.Malformed) {
             return error(head, e.error, detail = e.message, bucket = bucket)
         } catch (e: PostSignature.Refused) {
@@ -1346,17 +1378,20 @@ class S3Handler(
         }
 
         // The form is the one operation whose authorisation is decided **after** its body arrives,
-        // so the ACL of the bucket is checked here rather than in `screen` — where every other
-        // route's is. Without this line a signed form would write into anybody's bucket.
-        val bucketResource = AccessControl.Resource(store.bucketOwner(bucket), store.bucketAcl(bucket))
-        if (!AccessControl.allowsObjectWrite(bucketResource, accessKeyId)) {
-            return error(
-                head,
-                S3Error.ACCESS_DENIED,
-                detail = "the acl of this bucket does not allow it",
-                bucket = bucket,
-            )
+        // so the access model is asked here rather than in `screen` — where every other route's is.
+        // Without these two lines a signed form would write into anybody's bucket, and an unsigned
+        // one into every bucket.
+        //
+        // The switch first, exactly as in `screen`: a deployment with no public buckets should
+        // never run the computation behind it. Then `aclRefusal`, which is the **same** call the
+        // signed path makes — a second gate written for this entrance is how the two drift, and a
+        // permission model that drifts leaks in the direction nobody is testing. It brings the
+        // bucket policy with it (M29), which the hand-rolled check that stood here did not: a form
+        // is a `s3:PutObject` like any other.
+        if (accessKeyId == null && !anonymous) {
+            return error(head, S3Error.ACCESS_DENIED, detail = "no credentials on the request", bucket = bucket)
         }
+        aclRefusal(head, route, accessKeyId)?.let { return it }
 
         // The form's `acl` field is a canned name like the header's, and since M27 it is stored and
         // enforced rather than refused. `public-read` still promises **less** here than it does on
@@ -1364,11 +1399,24 @@ class S3Handler(
         // that difference is the contract, not a refusal: a form that names a canned ACL now gets
         // the sharing among keys that it asked for.
         val acl = form["acl"]
-        if (acl != null && AccessControl.Canned.of(acl) == null) {
+        val canned = AccessControl.Canned.of(acl)
+        if (acl != null && canned == null) {
             return error(
                 head,
                 S3Error.INVALID_ARGUMENT,
                 detail = "acl '$acl' is not one this server enforces",
+                bucket = bucket,
+            )
+        }
+        // `BlockPublicAcls` asked here as well as in the screen, because this is the one operation
+        // whose ACL is not in the head (§4.4): a form naming `public-read` would otherwise walk
+        // straight past the refusal every other route gets. The same shape as the bucket's ACL
+        // being checked here rather than upstream — a form is authorised after its body arrives.
+        if (canned != null && canned.public && publicAccessBlockOf(bucket)?.blockPublicAcls == true) {
+            return error(
+                head,
+                S3Error.ACCESS_DENIED,
+                detail = "BlockPublicAcls is on for this bucket, and '${canned.wireName}' is a public acl",
                 bucket = bucket,
             )
         }
@@ -1388,7 +1436,32 @@ class S3Handler(
 
         // The field names of a form are the header names of a `PUT`, which is why the metadata is
         // read by the same code — `content-type`, `cache-control`, `x-amz-meta-*` and the rest.
-        val metadata = ObjectHeaders.read(form.fields.map { it.key to it.value })
+        //
+        // Tags are the exception, and they are the one place where the same thing has two shapes
+        // on the same request. `x-amz-tagging` is `a=1&b=2`; the form field is called `tagging` and
+        // holds a whole `<Tagging>` **document** (`test_post_object_tags_anonymous_request:12203`).
+        // Nothing read it until M-225, and the authenticated twin of that case
+        // (`test_post_object_tags_authenticated_request:12234`) never noticed, because it checks
+        // the status and the body and never asks for the tags back.
+        val metadata =
+            try {
+                val fromFields = ObjectHeaders.read(form.fields.map { it.key to it.value })
+                val document = form["tagging"]?.takeIf { it.isNotEmpty() }
+                val tagged =
+                    if (document == null) {
+                        fromFields
+                    } else {
+                        fromFields.copy(tags = S3Requests.parseTagging(document.toByteArray(Charsets.UTF_8)))
+                    }
+                ObjectHeaders.check(tagged)?.let {
+                    return error(head, it.error, detail = it.detail, key = key, bucket = bucket)
+                }
+                tagged
+            } catch (e: ObjectHeaders.Malformed) {
+                return error(head, S3Error.INVALID_TAG, detail = e.message, key = key, bucket = bucket)
+            } catch (e: XmlReader.MalformedXmlException) {
+                return error(head, S3Error.MALFORMED_XML, detail = "tagging: ${e.message}", key = key, bucket = bucket)
+            }
 
         // And the checksum by the same code as well, for the same reason: `x-amz-checksum-sha256`
         // is a field of a form and a header of a `PUT`, and it means one thing in both. Excluding
@@ -1441,11 +1514,15 @@ class S3Handler(
                     staged,
                     ObjectStore.Precondition(),
                     encryption = encryption,
-                    owner = accessKeyId,
+                    // The same answer an unsigned `PUT` gets (see `ownerFor`): a form that named
+                    // nobody has no identity to own anything, and an object with no owner is open
+                    // to every key — which would make a `public-read-write` bucket a place where
+                    // anybody can create something nobody can close.
+                    owner = ownerFor(bucket, accessKeyId),
                     acl = acl,
                 )
             staged = null
-            formSuccess(form, bucket, key, stored.eTag, accessKeyId)
+            formSuccess(form, bucket, key, stored.eTag)
         } catch (e: ObjectStore.CeilingExceeded) {
             error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = key, bucket = bucket)
         } catch (e: ObjectStore.BucketGone) {
@@ -1468,7 +1545,6 @@ class S3Handler(
         bucket: String,
         key: ObjectKey,
         eTag: String,
-        accessKeyId: String,
     ): HttpResponse {
         val location = "/$bucket/$key"
         val redirect = form["success_action_redirect"] ?: form["redirect"]
@@ -1493,8 +1569,9 @@ class S3Handler(
         }
         // The access key is named nowhere in the answer, and that is deliberate: the browser that
         // posted the form is not the party that signed the policy, and telling it whose key it
-        // used would hand a page the identity of the service behind it.
-        check(accessKeyId.isNotEmpty())
+        // used would hand a page the identity of the service behind it. Since M-225 there may be
+        // no key at all — a form with no policy names nobody — which is the second reason it is
+        // not a parameter here.
         return HttpResponse(
             if (status ==
                 200
@@ -1807,6 +1884,10 @@ class S3Handler(
      * a policy, beside an access decision measured in nanoseconds.
      */
     private val decodedPolicies = java.util.concurrent.ConcurrentHashMap<String, Pair<ByteArray, BucketPolicy.Policy>>()
+
+    /** The same arrangement for the four public-access switches; see [publicAccessBlockOf]. */
+    private val decodedBlocks =
+        java.util.concurrent.ConcurrentHashMap<String, Pair<ByteArray, PublicAccessBlock.Configuration>>()
 
     /** An `ETag` as it travels: thirty-two hex characters in quotes. */
     private fun hexETag(bytes: ByteArray) =
@@ -2654,8 +2735,10 @@ class S3Handler(
 
         when (route.name) {
             "policy" -> return bucketPolicy(head, route, body)
+            "policyStatus" -> return bucketPolicyStatus(route)
             "acl" -> return bucketAcl(head, route, body)
             BucketLogging.NAME -> return bucketLogging(head, route, body)
+            PublicAccessBlock.NAME -> return bucketPublicAccessBlock(head, route, body)
         }
 
         val absent = if (route.name == "tagging") S3Error.NO_SUCH_TAG_SET else S3Error.NO_SUCH_CORS_CONFIGURATION
@@ -2848,10 +2931,28 @@ class S3Handler(
                 val collected = ByteArrayOutputStream()
                 body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
                 val document = collected.toByteArray()
-                try {
-                    BucketPolicy.decode(String(document))
-                } catch (e: BucketPolicy.Refused) {
-                    return error(head, e.error, detail = e.message, bucket = route.bucket)
+                val decoded =
+                    try {
+                        BucketPolicy.decode(String(document))
+                    } catch (e: BucketPolicy.Refused) {
+                        return error(head, e.error, detail = e.message, bucket = route.bucket)
+                    }
+                // `BlockPublicPolicy` (M-227), and it refuses rather than stores: the setting says
+                // "reject calls to PUT Bucket policy if the specified bucket policy allows public
+                // access", and a document accepted here would be enforced — the flag is not a
+                // filter over what a stored policy grants, that is `RestrictPublicBuckets`. `403`,
+                // which is what `test_block_public_policy:14340` reads through `check_access_denied`;
+                // `test_block_public_policy_with_principal:14357` is the other half and requires the
+                // same bucket to take a policy naming one account.
+                if (publicAccessBlockOf(route.bucket)?.blockPublicPolicy == true &&
+                    PublicAccessBlock.isPublic(decoded)
+                ) {
+                    return error(
+                        head,
+                        S3Error.ACCESS_DENIED,
+                        detail = "BlockPublicPolicy is on for this bucket, and this policy allows a principal of *",
+                        bucket = route.bucket,
+                    )
                 }
                 store.putBucketSubresource(route.bucket, "policy", document)
                 // 204, not 200, and this came from the suite rather than from the model: the
@@ -2863,6 +2964,84 @@ class S3Handler(
                 HttpResponse(204, "No Content")
             }
         }
+
+    /**
+     * `?publicAccessBlock` on a bucket: set the four switches, read them, remove them (M-227).
+     *
+     * Three status codes and none of them guessed. `PutPublicAccessBlock` has no `responseCode` in
+     * the model and answers **200**, which `test_block_public_restrict_public_buckets:14404`
+     * asserts; `DeletePublicAccessBlock` has `"responseCode": 204` and answers 204 **whether or not
+     * anything was there** — `test_get_undefined_public_block:14225` deletes from a bucket that
+     * never had one and requires 204, exactly like `DeleteBucketPolicy`; and a `GET` with nothing
+     * stored is `404 NoSuchPublicAccessBlockConfiguration`, a code the model does not carry and
+     * the suite names twice.
+     *
+     * The document is parsed and **redrawn**, unlike the bucket policy next door: nothing compares
+     * these bytes with what it sent, and redrawing is what lets the answer carry all four members
+     * when the request named one of them (see [PublicAccessBlock.encode]).
+     */
+    private suspend fun bucketPublicAccessBlock(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route.BucketSubresource,
+        body: HttpHandler.RequestBody,
+    ): HttpResponse =
+        when (route.method) {
+            "GET" -> {
+                val stored =
+                    store.bucketSubresource(route.bucket, PublicAccessBlock.NAME)
+                        ?: return error(
+                            head,
+                            S3Error.NO_SUCH_PUBLIC_ACCESS_BLOCK_CONFIGURATION,
+                            bucket = route.bucket,
+                        )
+                xml(stored)
+            }
+
+            "DELETE" -> {
+                store.putBucketSubresource(route.bucket, PublicAccessBlock.NAME, null)
+                HttpResponse(204, "No Content")
+            }
+
+            else -> {
+                // Read first, refuse after, like every other body-carrying sub-resource: answering
+                // while the client is still sending leaves both sides waiting (M26).
+                val collected = ByteArrayOutputStream()
+                body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+                val configuration =
+                    try {
+                        PublicAccessBlock.decode(collected.toByteArray())
+                    } catch (e: PublicAccessBlock.Refused) {
+                        return error(head, e.error, detail = e.message, bucket = route.bucket)
+                    } catch (e: XmlReader.MalformedXmlException) {
+                        return error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
+                    }
+                store.putBucketSubresource(
+                    route.bucket,
+                    PublicAccessBlock.NAME,
+                    PublicAccessBlock.encode(configuration),
+                )
+                HttpResponse(200, "OK")
+            }
+        }
+
+    /**
+     * `?policyStatus` on a bucket: whether it is public (M-228).
+     *
+     * The definition of public is [PolicyStatus] and nothing here; this is the plumbing that hands
+     * it the two facts it needs. Read-only, because S3 has no operation that writes a policy
+     * status — the router sends `PUT` and `DELETE` on this name to `NotImplemented` instead of
+     * here (`S3Router.READ_ONLY_SUBRESOURCES`).
+     *
+     * A stored document that will not decode counts as **no policy**, the same reading
+     * [policyDecisionFor] takes and for the same reason: it cannot arrive through
+     * `PutBucketPolicy`, which decodes before it stores, and a bucket that answered `500` to this
+     * because of a document written by a newer version of this server would be worse than one that
+     * reports on its ACL alone.
+     */
+    private fun bucketPolicyStatus(route: S3Router.Route.BucketSubresource): HttpResponse {
+        val policy = decodedPolicyOf(route.bucket)
+        return xml(S3Documents.policyStatusResult(PolicyStatus.isPublic(store.bucketAcl(route.bucket), policy)))
+    }
 
     /**
      * `?acl` on a bucket: read the truth, or set a canned name (M-193, M-194).
@@ -3547,7 +3726,11 @@ class S3Handler(
         val bucketName =
             bucketOf(route)
                 ?: return if (accessKeyId == null) refuseNobody(head, route, null) else null
-        val bucket = AccessControl.Resource(store.bucketOwner(bucketName), store.bucketAcl(bucketName))
+        val bucket =
+            underPublicAccessBlock(
+                bucketName,
+                AccessControl.Resource(store.bucketOwner(bucketName), store.bucketAcl(bucketName)),
+            )
 
         // Layer three (M-201б), and the two halves of it sit on either side of the ACL because
         // they are not the same kind of answer. A `Deny` is stronger than everything, including a
@@ -3750,12 +3933,28 @@ class S3Handler(
                         if (write) "s3:PutBucketLogging" else "s3:GetBucketLogging"
                     }
 
+                    // Removing the configuration takes the **Put** permission, not a delete one:
+                    // `DeletePublicAccessBlock` in the model says "to use this operation, you must
+                    // have the s3:PutBucketPublicAccessBlock permission", and there is no
+                    // `s3:DeleteBucketPublicAccessBlock` to have instead.
+                    PublicAccessBlock.NAME -> {
+                        if (write) "s3:PutBucketPublicAccessBlock" else "s3:GetBucketPublicAccessBlock"
+                    }
+
                     "policy" -> {
                         when (route.method) {
                             "GET" -> "s3:GetBucketPolicy"
                             "DELETE" -> "s3:DeleteBucketPolicy"
                             else -> "s3:PutBucketPolicy"
                         }
+                    }
+
+                    // Read-only, so there is no write name to choose between: the router produces
+                    // this route for `GET` alone. And unlike `?policy` above, a `Deny` on it is
+                    // allowed to bite — refusing to say whether a bucket is public bricks nothing,
+                    // because the document that says so can still be removed.
+                    "policyStatus" -> {
+                        "s3:GetBucketPolicyStatus"
                     }
 
                     else -> {
@@ -3912,27 +4111,144 @@ class S3Handler(
         resource: String,
         keys: ((String) -> String?)? = null,
     ): BucketPolicy.Decision {
-        val stored = store.bucketSubresource(bucket, "policy") ?: return BucketPolicy.Decision.NEUTRAL
+        val policy = decodedPolicyOf(bucket) ?: return BucketPolicy.Decision.NEUTRAL
+        val decision =
+            BucketPolicy.evaluate(
+                policy,
+                accessKeyId,
+                action,
+                resource,
+                keys ?: policyKeys(head, route, bucket),
+            )
+        // `RestrictPublicBuckets` lives here rather than at any one call site, and that is the
+        // whole reason it cannot be forgotten by one of them: an `Allow` from a public policy has
+        // to stop being an `Allow` everywhere it is read — the screen, the copy's source, and the
+        // question of whether a stranger may be told a key is missing. A `Deny` and a `NEUTRAL`
+        // pass through untouched: the flag restricts what a public policy grants, and a policy
+        // that grants nothing here is not what it is about.
+        if (decision != BucketPolicy.Decision.ALLOW) return decision
+        if (restrictsPublicPolicy(bucket, accessKeyId, policy)) return BucketPolicy.Decision.NEUTRAL
+        return decision
+    }
+
+    /** The bucket's policy, decoded once per version of itself, or `null` when there is none. */
+    private fun decodedPolicyOf(bucket: String): BucketPolicy.Policy? {
+        val stored = store.bucketSubresource(bucket, "policy") ?: return null
         val cached = decodedPolicies[bucket]
-        val policy =
-            if (cached != null && cached.first === stored) {
-                cached.second
-            } else {
-                val decoded =
-                    try {
-                        BucketPolicy.decode(String(stored))
-                    } catch (e: BucketPolicy.Refused) {
-                        return BucketPolicy.Decision.NEUTRAL
-                    }
-                decodedPolicies[bucket] = stored to decoded
-                decoded
+        if (cached != null && cached.first === stored) return cached.second
+        val decoded =
+            try {
+                BucketPolicy.decode(String(stored))
+            } catch (e: BucketPolicy.Refused) {
+                return null
             }
-        return BucketPolicy.evaluate(
-            policy,
-            accessKeyId,
-            action,
-            resource,
-            keys ?: policyKeys(head, route, bucket),
+        decodedPolicies[bucket] = stored to decoded
+        return decoded
+    }
+
+    /**
+     * Whether `RestrictPublicBuckets` takes this `Allow` away again (M-227).
+     *
+     * The setting reads, in the model's words, "restricts access to this bucket to only Amazon Web
+     * Services service principals and authorized users within this account if the bucket has a
+     * public policy" — so three parties keep what the document gave them and everybody else loses
+     * it: the owner, whose account this is, and the logging service acting on a bucket's behalf
+     * (M-202), which is the one service principal here. Anyone else — another key, and a request
+     * carrying no credentials at all — falls back to the ACL, which is where
+     * `test_block_public_restrict_public_buckets:14375` requires an anonymous reader to end up
+     * while the owner still reads the same object.
+     *
+     * Note what is **not** taken away: an explicit `Deny`. The flag exists to stop a policy handing
+     * things out, and a policy that refuses is not handing anything out.
+     */
+    private fun restrictsPublicPolicy(
+        bucket: String,
+        accessKeyId: String?,
+        policy: BucketPolicy.Policy,
+    ): Boolean {
+        if (publicAccessBlockOf(bucket)?.restrictPublicBuckets != true) return false
+        if (accessKeyId != null && accessKeyId.startsWith(BucketPolicy.SERVICE_PREFIX)) return false
+        if (accessKeyId != null && accessKeyId == store.bucketOwner(bucket)) return false
+        return PublicAccessBlock.isPublic(policy)
+    }
+
+    /**
+     * The bucket's `PublicAccessBlock`, decoded once per version of itself (M-227).
+     *
+     * Cached the way the policy beside it is, and for the same reason: this is read on the access
+     * path, and an XML parse per request next to an ACL decision measured at 12–14 ns (M-209) would
+     * be the expensive half of every answer. A document that will not decode reads as **no
+     * configuration** rather than as a refusal — it cannot arrive through the operation, which
+     * decodes before it stores, and a bucket answering `500` to everything because of a journal
+     * written by a newer server would be worse than one whose flags are not applied.
+     */
+    private fun publicAccessBlockOf(bucket: String): PublicAccessBlock.Configuration? {
+        val stored = store.bucketSubresource(bucket, PublicAccessBlock.NAME) ?: return null
+        val cached = decodedBlocks[bucket]
+        if (cached != null && cached.first === stored) return cached.second
+        val decoded =
+            try {
+                PublicAccessBlock.decode(stored)
+            } catch (e: PublicAccessBlock.Refused) {
+                return null
+            } catch (e: XmlReader.MalformedXmlException) {
+                return null
+            }
+        decodedBlocks[bucket] = stored to decoded
+        return decoded
+    }
+
+    /**
+     * The resource as the access model must see it once `IgnorePublicAcls` is on (M-227).
+     *
+     * A public canned name stops granting and **stays stored**: "enabling this setting doesn't
+     * affect the persistence of any existing ACLs", so `GetBucketAcl` and `GetObjectAcl` keep
+     * answering `public-read` while nothing acts on it. `test_ignore_public_acls:14415` walks
+     * exactly that pair — it sets the ACL again *after* switching the flag on, gets its `200`, and
+     * then requires the second key to be refused anyway.
+     *
+     * The cheap test comes first on purpose. Every request that reaches the access model passes
+     * through here, and all but the public ones are answered by an enum comparison rather than by
+     * two lookups in the store.
+     */
+    private fun underPublicAccessBlock(
+        bucket: String,
+        resource: AccessControl.Resource,
+    ): AccessControl.Resource {
+        if (!resource.canned.public) return resource
+        if (publicAccessBlockOf(bucket)?.ignorePublicAcls != true) return resource
+        return resource.copy(acl = AccessControl.Canned.PRIVATE.wireName)
+    }
+
+    /**
+     * Refuses a public canned ACL while `BlockPublicAcls` is on (M-227).
+     *
+     * Decided from the head, beside [statedAclRefusal] and for the same reason: `x-amz-acl` travels
+     * as a header on every route that can carry one — `PutObject`, `CreateBucket`, a copy, the
+     * start of a multipart upload, `PUT ?acl` on a bucket and on an object — so one question here
+     * covers all of them, and covers them **before** a body is read. The suite asks it twice from
+     * the two ends: `test_block_public_put_bucket_acls:14283` on the bucket's own ACL and
+     * `test_block_public_object_canned_acls:14312` on an object arriving with one, which also
+     * requires `private` to still go through.
+     *
+     * A bucket that does not exist yet has no configuration, so `CreateBucket` with a public ACL is
+     * not refused here — nor should it be: the block that would refuse it is the one the bucket is
+     * about to be created without.
+     */
+    private fun publicAclRefusal(
+        head: HttpRequestParser.Head,
+        route: S3Router.Route,
+    ): HttpResponse? {
+        val stated = AccessControl.Canned.of(head.header("x-amz-acl")) ?: return null
+        if (!stated.public) return null
+        val bucket = bucketOf(route) ?: return null
+        if (publicAccessBlockOf(bucket)?.blockPublicAcls != true) return null
+        return error(
+            head,
+            S3Error.ACCESS_DENIED,
+            detail = "BlockPublicAcls is on for this bucket, and '${stated.wireName}' is a public acl",
+            key = keyOf(route),
+            bucket = bucket,
         )
     }
 
@@ -4040,7 +4356,7 @@ class S3Handler(
         val stored =
             (if (versionId == null) store.currentVersion(bucket, key) else store.get(bucket, key, versionId))
                 ?: return null
-        return AccessControl.Resource(stored.owner, stored.acl)
+        return underPublicAccessBlock(bucket, AccessControl.Resource(stored.owner, stored.acl))
     }
 
     /**
@@ -4101,7 +4417,11 @@ class S3Handler(
         sourceVersionId: String?,
         accessKeyId: String?,
     ): HttpResponse? {
-        val bucketResource = AccessControl.Resource(store.bucketOwner(sourceBucket), store.bucketAcl(sourceBucket))
+        val bucketResource =
+            underPublicAccessBlock(
+                sourceBucket,
+                AccessControl.Resource(store.bucketOwner(sourceBucket), store.bucketAcl(sourceBucket)),
+            )
         val action = if (sourceVersionId == null) "s3:GetObject" else "s3:GetObjectVersion"
         val resource = BucketPolicy.ARN_PREFIX + sourceBucket + "/" + sourceKey
         val decision = policyDecisionFor(head, route, sourceBucket, accessKeyId, action, resource)
@@ -4177,6 +4497,16 @@ class S3Handler(
         return AccessControl.allows(bucketResource, accessKeyId, AccessControl.Permission.READ, bucketResource.owner)
     }
 
+    /**
+     * The bucket a route names, when it names one.
+     *
+     * `PostObject` was missing from here until M-225, and nothing had noticed because nothing had
+     * asked: the form's own handler carried the name in a local of its own. What it cost was
+     * quiet — the bucket was absent from every refusal a form got and from the CORS headers on
+     * those refusals — and it would have cost more the moment the access model started being
+     * consulted here, since a bucket policy asked about `null` is a policy that speaks about
+     * nothing.
+     */
     private fun bucketOf(route: S3Router.Route): String? =
         when (route) {
             is S3Router.Route.CreateBucket -> route.bucket
@@ -4188,6 +4518,7 @@ class S3Handler(
             is S3Router.Route.ListObjects -> route.bucket
             is S3Router.Route.DeleteObjects -> route.bucket
             is S3Router.Route.PutObject -> route.bucket
+            is S3Router.Route.PostObject -> route.bucket
             is S3Router.Route.GetObject -> route.bucket
             is S3Router.Route.HeadObject -> route.bucket
             is S3Router.Route.DeleteObject -> route.bucket

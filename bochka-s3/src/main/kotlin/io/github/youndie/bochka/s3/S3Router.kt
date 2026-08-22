@@ -413,6 +413,10 @@ class S3Router(
                         Route.BucketSubresource(bucket, params.keys.first { it in CONFIGURABLE_SUBRESOURCES }, "GET")
                     }
 
+                    params.keys.any { it in READ_ONLY_SUBRESOURCES } -> {
+                        Route.BucketSubresource(bucket, params.keys.first { it in READ_ONLY_SUBRESOURCES }, "GET")
+                    }
+
                     params.keys.any { it in BUCKET_SUBRESOURCES } -> {
                         Route.NotImplemented("GET /$bucket?${params.keys.first { it in BUCKET_SUBRESOURCES }}")
                     }
@@ -663,7 +667,29 @@ class S3Router(
          * строчка здесь, а не правка трёх ветвей маршрутизации.
          */
         val CONFIGURABLE_SUBRESOURCES =
-            setOf("tagging", "cors", "versioning", "object-lock", "lifecycle", "acl", "policy", "logging")
+            setOf(
+                "tagging",
+                "cors",
+                "versioning",
+                "object-lock",
+                "lifecycle",
+                "acl",
+                "policy",
+                "logging",
+                "publicAccessBlock",
+            )
+
+        /**
+         * Sub-resources that can only be **read**, because S3 has no operation that writes them.
+         *
+         * Not the set the note below remembers. That one held things this server answered by
+         * halves; this one holds things S3 itself answers by halves: there is no
+         * `PutBucketPolicyStatus` anywhere, so a `PUT` on `?policyStatus` is not a configuration
+         * we decline to store — it is an operation that does not exist, and [BUCKET_SUBRESOURCES]
+         * turns it into `NotImplemented` rather than into `CreateBucket`, which is what an unknown
+         * query on a bucket used to become (M-228).
+         */
+        val READ_ONLY_SUBRESOURCES = setOf("policyStatus")
 
         /*
          * There is no read-only set any more, and its emptiness is the record of a milestone.
@@ -698,6 +724,7 @@ class S3Router(
                 "accelerate",
                 "publicAccessBlock",
                 "ownershipControls",
+                "policyStatus",
             )
 
         val OBJECT_SUBRESOURCES =
