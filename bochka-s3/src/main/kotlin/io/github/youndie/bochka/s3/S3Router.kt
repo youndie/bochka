@@ -663,7 +663,17 @@ class S3Router(
          * строчка здесь, а не правка трёх ветвей маршрутизации.
          */
         val CONFIGURABLE_SUBRESOURCES =
-            setOf("tagging", "cors", "versioning", "object-lock", "lifecycle", "acl", "policy", "logging")
+            setOf(
+                "tagging",
+                "cors",
+                "versioning",
+                "object-lock",
+                "lifecycle",
+                "acl",
+                "policy",
+                "logging",
+                "publicAccessBlock",
+            )
 
         /*
          * There is no read-only set any more, and its emptiness is the record of a milestone.
