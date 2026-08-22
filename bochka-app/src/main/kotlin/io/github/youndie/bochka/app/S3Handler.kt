@@ -17,6 +17,7 @@ import io.github.youndie.bochka.s3.ListingRequest
 import io.github.youndie.bochka.s3.ObjectHeaders
 import io.github.youndie.bochka.s3.ObjectKeyRules
 import io.github.youndie.bochka.s3.PayloadChecksums
+import io.github.youndie.bochka.s3.PolicyStatus
 import io.github.youndie.bochka.s3.PostForm
 import io.github.youndie.bochka.s3.PostPolicy
 import io.github.youndie.bochka.s3.PostSignature
@@ -2675,6 +2676,7 @@ class S3Handler(
 
         when (route.name) {
             "policy" -> return bucketPolicy(head, route, body)
+            "policyStatus" -> return bucketPolicyStatus(route)
             "acl" -> return bucketAcl(head, route, body)
             BucketLogging.NAME -> return bucketLogging(head, route, body)
             PublicAccessBlock.NAME -> return bucketPublicAccessBlock(head, route, body)
@@ -2962,6 +2964,25 @@ class S3Handler(
                 HttpResponse(200, "OK")
             }
         }
+
+    /**
+     * `?policyStatus` on a bucket: whether it is public (M-228).
+     *
+     * The definition of public is [PolicyStatus] and nothing here; this is the plumbing that hands
+     * it the two facts it needs. Read-only, because S3 has no operation that writes a policy
+     * status — the router sends `PUT` and `DELETE` on this name to `NotImplemented` instead of
+     * here (`S3Router.READ_ONLY_SUBRESOURCES`).
+     *
+     * A stored document that will not decode counts as **no policy**, the same reading
+     * [policyDecisionFor] takes and for the same reason: it cannot arrive through
+     * `PutBucketPolicy`, which decodes before it stores, and a bucket that answered `500` to this
+     * because of a document written by a newer version of this server would be worse than one that
+     * reports on its ACL alone.
+     */
+    private fun bucketPolicyStatus(route: S3Router.Route.BucketSubresource): HttpResponse {
+        val policy = decodedPolicyOf(route.bucket)
+        return xml(S3Documents.policyStatusResult(PolicyStatus.isPublic(store.bucketAcl(route.bucket), policy)))
+    }
 
     /**
      * `?acl` on a bucket: read the truth, or set a canned name (M-193, M-194).
@@ -3863,6 +3884,14 @@ class S3Handler(
                         }
                     }
 
+                    // Read-only, so there is no write name to choose between: the router produces
+                    // this route for `GET` alone. And unlike `?policy` above, a `Deny` on it is
+                    // allowed to bite — refusing to say whether a bucket is public bricks nothing,
+                    // because the document that says so can still be removed.
+                    "policyStatus" -> {
+                        "s3:GetBucketPolicyStatus"
+                    }
+
                     else -> {
                         null
                     }
@@ -3979,6 +4008,7 @@ class S3Handler(
         val key = keyOf(route) ?: return BucketPolicy.ARN_PREFIX + bucket
         return BucketPolicy.ARN_PREFIX + bucket + "/" + key
     }
+
 
     /**
      * What the bucket's policy says, or [BucketPolicy.Decision.NEUTRAL] when there is none.
