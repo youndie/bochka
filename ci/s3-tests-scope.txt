@@ -82,12 +82,6 @@ out-of-scope	acl_revoke	снятие всех грантов — это язык
 out-of-scope	tags_acl_public	кейс раздаёт права группе грантом; группы — часть ACL, которой здесь нет
 deferred	bucket_policy_status	`GetBucketPolicyStatus` выводит публичность из политики; политики есть с M29, операции нет (M-228)
 out-of-scope	ignore_public_acls	блок публичного доступа — отдельная возможность, не ACL
-# Закрывающий прогон M29 (M-204) сказал про эти два кейса то, чего не знал никто: они падали не
-# на заголовках `Access-Control-*`, а на **подписи**. Сьют создаёт бакет с `public-read` и ходит
-# по нему `requests.get` без подписи, поэтому в поставке их останавливает выключенный аноним —
-# с `BOCHKA_ANONYMOUS=1` оба проходят, и это измерено, а не предположено. Девятнадцать локальных
-# тестов CORS этого увидеть не могли: все они подписаны.
-off-by-default	cors_origin	кейс ходит по бакету с public-read без подписи; с BOCHKA_ANONYMOUS=1 проходит (измерено в M-204)
 out-of-scope	cors_presigned_get_object_tenant_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_get_object_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_put_object_tenant_v2	the case presigns with SigV2, which this server does not verify
@@ -150,9 +144,14 @@ out-of-scope	website	static website hosting is out of the v1 scope
 #
 # Проверено тестом, а не рассуждением (`CorsTest`): с `BOCHKA_ANONYMOUS=1` неподписанный
 # кросс-доменный запрос получает и `200`, и заголовки; как поставляется — `403` до CORS.
+#
+# **Кейсов здесь два, а не три, и третий — самое ценное, что дал прогон** (M-204). Гипотеза
+# «все три упираются в рубильник» верна для двух: `cors_header_option` падал и **со включённым**
+# анонимом. Ждал он не флага, а починки — отказанный preflight получал `Access-Control-*` от
+# декоратора обычных ответов и отвечал `403`, сообщая, что запрос разрешён. Починено; кейс
+# проходит в обеих конфигурациях, поэтому правила под него нет.
 off-by-default	cors_origin_response	кейс шлёт неподписанные запросы по public-read бакету: слой два в поставке выключен (BOCHKA_ANONYMOUS)
 off-by-default	cors_origin_wildcard	то же самое, с правилом на любой источник (BOCHKA_ANONYMOUS)
-off-by-default	cors_header_option	то же самое, про заголовки запроса (BOCHKA_ANONYMOUS)
 out-of-scope	notification	bucket notifications are out of the v1 scope
 out-of-scope	replication	replication needs more than one node, which is the whole niche this is not
 out-of-scope	logging	server access logging is out of the v1 scope
