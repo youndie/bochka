@@ -141,5 +141,22 @@ jobs:
         run: |
           helm pull oci://ghcr.io/youndie/charts/bochka --version "$(sed -n 's/^version: *//p' deploy/helm/bochka/Chart.yaml)" \
             --destination "$RUNNER_TEMP"
-          helm template "$RUNNER_TEMP"/bochka-*.tgz --set auth.keys[0].id=k --set auth.keys[0].secret=s |
-            grep -q "image: ghcr.io/youndie/bochka:$GITHUB_REF_NAME"
+          # The quotes are the template's, and matching without them is a check that cannot pass:
+          # `image: "{{ .Values.image.repository }}:…"` has been quoted since the chart was written.
+          # This step was added after v0.2.0 and first ran at v0.3.1, where it failed for its own
+          # reason rather than the chart's — written, but never called until it was.
+          #
+          # The output is read whole rather than through `grep -q`, which exits at the first match
+          # and leaves the writer to its left with a SIGPIPE; under `pipefail` that is a status of
+          # 141 and a false negative that grows with the output (the same shape ci/ carried for
+          # months).
+          rendered=$(helm template "$RUNNER_TEMP"/bochka-*.tgz \
+            --set auth.keys[0].id=k --set auth.keys[0].secret=s)
+          case $rendered in
+            *"image: \"ghcr.io/youndie/bochka:$GITHUB_REF_NAME\""*) ;;
+            *)
+              echo "the published chart does not install $GITHUB_REF_NAME; it renders:"
+              echo "$rendered" | grep 'image:' || true
+              exit 1
+              ;;
+          esac
