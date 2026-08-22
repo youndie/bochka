@@ -240,12 +240,14 @@ exists, ahead of everything else:
 
 > **518 of 744 passed (70%)** — `ceph/s3-tests` at `5522d1c`, `./ci/s3-tests.sh`.
 >
-> **514 of 744 (69%)** — the same run with `BOCHKA_ANONYMOUS=1`, measured one milestone ago.
+> **533 of 744 (72%)** — the same run with `BOCHKA_ANONYMOUS=1`.
 
-The second number is the older of the two on purpose rather than by neglect: CI runs the shipped
-configuration, the switched one is a separate run, and three milestones have landed since it was
-taken. Eleven failures are labelled `off-by-default`, which is what that run would collect, but
-adding them up here would be arithmetic wearing a measurement's clothes.
+Both are measured, and measuring the second is what the first label is for. `off-by-default` says
+"this passes with the switch on", which is a claim about a run nobody has done until somebody does
+it — and one of the eleven did not pass with the switch on. It was waiting on a defect rather than
+a flag: the `PostResponse` a browser upload gets back carried a namespace, and the case reads it
+with an unqualified `find('Key')`. Our own test could not see that, because it compared a substring
+and a substring is blind to what the root element declares.
 
 There are two because the number measures a configuration, not a codebase. Anonymous access ships
 turned off, so the run anybody gets by default cannot see it; the second number is what the switch

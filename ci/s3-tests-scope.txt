@@ -143,7 +143,12 @@ out-of-scope	list_buckets_anonymous	кейс ждёт пустой список 
 # бакета, поэтому под рубильником, как и всё остальное во втором слое.
 off-by-default	post_object_anonymous	анонимная POST-форма в бакет public-read-write: слой 2 её пропускает, поставка слой 2 не включает (BOCHKA_ANONYMOUS)
 off-by-default	post_object_tags_anonymous	то же самое, плюс поле tagging документом (BOCHKA_ANONYMOUS)
-off-by-default	post_object_set_success_code	форма без политики вовсе; success_action_status тут ни при чём (BOCHKA_ANONYMOUS)
+# `…set_success_code` ждал **двух** вещей, и в этом была вся путаница. Как поставляется он падает
+# на рубильнике, как и три соседа, — строка ниже про это. Но падал он **и с включённым**, потому
+# что `<PostResponse>` уходил с пространством имён, а кейс читает `ET.fromstring(...).find('Key')`,
+# и неквалифицированный поиск в документе с `xmlns` не находит ничего. Дефект починен; общая
+# причина осталась верной только для одной из двух конфигураций, и правило теперь говорит обе.
+off-by-default	post_object_set_success_code	форма без политики: как поставляется ждёт рубильника (BOCHKA_ANONYMOUS); с ним проходит с тех пор, как PostResponse перестал нести пространство имён
 off-by-default	post_object_set_invalid_success_code	форма без политики вовсе; тот же случай (BOCHKA_ANONYMOUS)
 # Ниже — три строки про рубильник, а не про отсутствие функции. С `BOCHKA_ANONYMOUS=1` все четыре кейса
 # проходят — это измерено обоими прогонами в M28 (466 и 474 из 744), а не предположено.

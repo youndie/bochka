@@ -64,6 +64,53 @@ class PostObjectTest {
         }
     }
 
+    /**
+     * The same document, read the way a client reads it rather than as text.
+     *
+     * `test_post_object_set_success_code:2072` does `ET.fromstring(r.content).find('Key')`, which
+     * finds nothing when the root carries a default namespace — and every other document this
+     * server writes carries one, because [XmlWriter.document] puts it there unless told otherwise.
+     * The `PostResponse` of a browser upload is the exception, and the suite is the source: a
+     * parser looking for an unqualified `Key` only works against a document that has no namespace.
+     *
+     * The test beside this one could not see it. It asserts `"<Key>report.txt</Key>" in text`, and
+     * a substring is blind to what the root element declares — our test read the answer as
+     * characters while the client reads it as XML.
+     */
+    @Test
+    fun `the form's answer is a document a plain parser can read`() {
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+
+            val answer =
+                s3.postForm(
+                    "photos",
+                    s3.signedPolicy(
+                        policy(
+                            conditions =
+                                """{"bucket": "photos"}, ["starts-with", "${'$'}key", ""], """ +
+                                    """{"success_action_status": "201"}""",
+                        ),
+                    ) + listOf("key" to "report.txt", "success_action_status" to "201"),
+                    "тело".toByteArray(),
+                )
+
+            assertEquals(201, answer.status, answer.text)
+            val document =
+                javax.xml.parsers.DocumentBuilderFactory
+                    .newInstance()
+                    .newDocumentBuilder()
+                    .parse(answer.body.inputStream())
+            assertEquals("PostResponse", document.documentElement.tagName, answer.text)
+            assertNull(document.documentElement.getAttribute("xmlns").ifEmpty { null }, answer.text)
+            assertEquals(
+                "report.txt",
+                document.getElementsByTagName("Key").item(0)?.textContent,
+                answer.text,
+            )
+        }
+    }
+
     @Test
     fun `success_action_redirect sends the browser on with 303`() {
         S3Fixture().use { s3 ->

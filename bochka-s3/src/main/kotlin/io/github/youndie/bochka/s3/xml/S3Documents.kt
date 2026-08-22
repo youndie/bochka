@@ -639,7 +639,12 @@ object S3Documents {
         key: String,
         eTag: String,
     ): ByteArray =
-        XmlWriter(256).document("PostResponse") {
+        // **No namespace, unlike every other document here**, and the suite is the source rather
+        // than a preference: `test_post_object_set_success_code:2072` reads the answer with
+        // `ET.fromstring(r.content).find('Key')`, and an unqualified `find` matches nothing in a
+        // document whose root declares one. A browser upload's answer is read by whatever the page
+        // wrote, which is rarely a namespace-aware parser — S3 answers this one bare.
+        XmlWriter(256).document("PostResponse", namespace = null) {
             text("Location", location)
             text("Bucket", bucket)
             text("Key", key)
