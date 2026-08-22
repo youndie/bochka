@@ -5,7 +5,7 @@
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
 [![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-518%2F744-green)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![release](https://img.shields.io/badge/release-v0.2.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.2.0)
+[![release](https://img.shields.io/badge/release-v0.3.1-blue)](https://github.com/youndie/bochka/releases/tag/v0.3.1)
 
 An S3-compatible object store in Kotlin/JVM. One process, one node, one disk: no erasure coding,
 no replication, no quorum. On the outside, the protocol `aws s3`, `mc`, `boto3` and every S3
@@ -220,7 +220,9 @@ Three independent levels, because each is blind to what the others catch:
    The count of enabled tests is printed next to the percentage, because otherwise a rising score
    and a shrinking suite look identical.
 
-s3kn is in level 2 as well — `ci/s3kn.sh` runs its live tests against bochka, 20 of 21 today — but
+s3kn is in level 2 as well — `ci/s3kn.sh` runs its live tests against bochka, 20 of 21 today, and
+the one failure is settled rather than open: s3kn asserts the answer MinIO gives it, and
+`ceph/s3-tests:1597` sends the same shape and expects 200 unmarked. But
 it is the one client whose result is never the metric. Its author is this project's author, and
 testing a server with your own client is the weakest check available — it signs its bodies the one simple
 way, so it never exercises the thing most likely to be broken, and it does that while looking
