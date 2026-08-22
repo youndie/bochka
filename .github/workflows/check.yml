@@ -30,7 +30,7 @@ jobs:
       # whatever `java` is on PATH. On this runner that is 17, and the failure is
       # `UnsupportedClassVersionError: class file version 69.0` — which reads as a build problem
       # and is a runtime one. The image does not need this line because it ships its own JRE.
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
@@ -42,7 +42,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '25'
