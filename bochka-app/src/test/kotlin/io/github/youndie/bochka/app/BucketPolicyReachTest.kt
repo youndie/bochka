@@ -53,6 +53,11 @@ class BucketPolicyReachTest {
             Triple("GET", "/vault/a.txt", "attributes") to S3Router.Route.GetObjectAttributes::class,
             Triple("GET", "/vault/a.txt", "tagging") to S3Router.Route.ObjectTagging::class,
             Triple("GET", "/vault", "tagging") to S3Router.Route.BucketSubresource::class,
+            // A second sub-resource, because the first would cover the class while leaving the
+            // name uncovered: `?policyStatus` reports how open the bucket is, and a `Deny` on it
+            // has to bite. Unlike `?policy`, refusing it bricks nothing — the document that says
+            // so can still be removed (M-228).
+            Triple("GET", "/vault", "policyStatus") to S3Router.Route.BucketSubresource::class,
             Triple("GET", "/vault", "object-lock") to S3Router.Route.ObjectLockSubresource::class,
             Triple("GET", "/vault/a.txt", "acl") to S3Router.Route.ObjectAcl::class,
             Triple("POST", "/vault/a.txt", "uploads") to S3Router.Route.CreateMultipartUpload::class,

@@ -452,6 +452,24 @@ object S3Documents {
         }
 
     /**
+     * `<PolicyStatus>` — one boolean saying whether the bucket is public (M-228).
+     *
+     * The payload of `GetBucketPolicyStatusOutput` (`s3-service-2.json:5537`) is the `PolicyStatus`
+     * structure itself (`:10038`), so the root element is `PolicyStatus` rather than the operation's
+     * name — the same shape as `<Retention>` and unlike every list here.
+     *
+     * `IsPublic` is a boolean shape (`:7735`), and it goes out **lowercase** because that is what a
+     * generated client reads: botocore's XML parser answers a boolean with `text == 'true'`, so
+     * `TRUE` would arrive as `False` — the reassuring answer, on the bucket that is actually open.
+     * [XmlWriter.text] over a `Boolean` spells it that way, which is why the flag is not formatted
+     * here.
+     */
+    fun policyStatusResult(isPublic: Boolean): ByteArray =
+        XmlWriter(96).document("PolicyStatus") {
+            text("IsPublic", isPublic)
+        }
+
+    /**
      * `<AccessControlPolicy>` — the owner, and one grant per thing the canned name says (M27).
      *
      * It was a stand-in until this milestone: no owner model meant the honest answer was "you own

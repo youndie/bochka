@@ -17,6 +17,7 @@ import io.github.youndie.bochka.s3.ListingRequest
 import io.github.youndie.bochka.s3.ObjectHeaders
 import io.github.youndie.bochka.s3.ObjectKeyRules
 import io.github.youndie.bochka.s3.PayloadChecksums
+import io.github.youndie.bochka.s3.PolicyStatus
 import io.github.youndie.bochka.s3.PostForm
 import io.github.youndie.bochka.s3.PostPolicy
 import io.github.youndie.bochka.s3.PostSignature
@@ -2654,6 +2655,7 @@ class S3Handler(
 
         when (route.name) {
             "policy" -> return bucketPolicy(head, route, body)
+            "policyStatus" -> return bucketPolicyStatus(route)
             "acl" -> return bucketAcl(head, route, body)
             BucketLogging.NAME -> return bucketLogging(head, route, body)
         }
@@ -2863,6 +2865,25 @@ class S3Handler(
                 HttpResponse(204, "No Content")
             }
         }
+
+    /**
+     * `?policyStatus` on a bucket: whether it is public (M-228).
+     *
+     * The definition of public is [PolicyStatus] and nothing here; this is the plumbing that hands
+     * it the two facts it needs. Read-only, because S3 has no operation that writes a policy
+     * status — the router sends `PUT` and `DELETE` on this name to `NotImplemented` instead of
+     * here (`S3Router.READ_ONLY_SUBRESOURCES`).
+     *
+     * A stored document that will not decode counts as **no policy**, the same reading
+     * [policyDecisionFor] takes and for the same reason: it cannot arrive through
+     * `PutBucketPolicy`, which decodes before it stores, and a bucket that answered `500` to this
+     * because of a document written by a newer version of this server would be worse than one that
+     * reports on its ACL alone.
+     */
+    private fun bucketPolicyStatus(route: S3Router.Route.BucketSubresource): HttpResponse {
+        val policy = store.bucketSubresource(route.bucket, "policy")?.let { decodedPolicy(route.bucket, it) }
+        return xml(S3Documents.policyStatusResult(PolicyStatus.isPublic(store.bucketAcl(route.bucket), policy)))
+    }
 
     /**
      * `?acl` on a bucket: read the truth, or set a canned name (M-193, M-194).
@@ -3752,6 +3773,14 @@ class S3Handler(
                         }
                     }
 
+                    // Read-only, so there is no write name to choose between: the router produces
+                    // this route for `GET` alone. And unlike `?policy` above, a `Deny` on it is
+                    // allowed to bite — refusing to say whether a bucket is public bricks nothing,
+                    // because the document that says so can still be removed.
+                    "policyStatus" -> {
+                        "s3:GetBucketPolicyStatus"
+                    }
+
                     else -> {
                         null
                     }
@@ -3870,6 +3899,35 @@ class S3Handler(
     }
 
     /**
+     * [stored] as a decoded policy, or `null` when it will not decode.
+     *
+     * Decoded once per version of itself rather than once per request: `store` hands back the same
+     * array until somebody replaces it, so identity is the whole validity check — and without this
+     * a bucket with a policy would pay a JSON parse on every read, next to an ACL decision measured
+     * at 12–14 ns (M-209).
+     *
+     * `null` cannot happen through `PutBucketPolicy`, which decodes before it stores. It can happen
+     * to a journal written by a newer version of this server, and both callers read it as "no
+     * policy" rather than as a failure: a bucket answering `500` to everything because of a
+     * document it cannot read would be worse than one that falls back to its ACL.
+     */
+    private fun decodedPolicy(
+        bucket: String,
+        stored: ByteArray,
+    ): BucketPolicy.Policy? {
+        val cached = decodedPolicies[bucket]
+        if (cached != null && cached.first === stored) return cached.second
+        val decoded =
+            try {
+                BucketPolicy.decode(String(stored))
+            } catch (e: BucketPolicy.Refused) {
+                return null
+            }
+        decodedPolicies[bucket] = stored to decoded
+        return decoded
+    }
+
+    /**
      * What the bucket's policy says, or [BucketPolicy.Decision.NEUTRAL] when there is none.
      *
      * The document is decoded once per version of itself rather than once per request. `store`
@@ -3907,20 +3965,7 @@ class S3Handler(
         keys: ((String) -> String?)? = null,
     ): BucketPolicy.Decision {
         val stored = store.bucketSubresource(bucket, "policy") ?: return BucketPolicy.Decision.NEUTRAL
-        val cached = decodedPolicies[bucket]
-        val policy =
-            if (cached != null && cached.first === stored) {
-                cached.second
-            } else {
-                val decoded =
-                    try {
-                        BucketPolicy.decode(String(stored))
-                    } catch (e: BucketPolicy.Refused) {
-                        return BucketPolicy.Decision.NEUTRAL
-                    }
-                decodedPolicies[bucket] = stored to decoded
-                decoded
-            }
+        val policy = decodedPolicy(bucket, stored) ?: return BucketPolicy.Decision.NEUTRAL
         return BucketPolicy.evaluate(
             policy,
             accessKeyId,

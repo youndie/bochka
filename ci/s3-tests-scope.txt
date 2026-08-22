@@ -10,6 +10,10 @@
 #                   bochka is not"). Failing it is the design, not a defect.
 #   deferred      — in scope eventually, nobody has claimed it. Becomes `defect` when it does.
 #   defect        — bochka should pass this and does not. Every one of these names the task.
+#                   Read it as a conditional: a `defect` line placed above a broad rule, for a
+#                   family a finished milestone should already pass, is a sentinel. It says
+#                   nothing while the cases pass and keeps the broad rule from swallowing them
+#                   if they stop (see `bucket_policy_status`).
 #   off-by-default — bochka does this, and the configuration this run measured does not turn it on.
 #                   The reason names the switch, so the line can be checked by flipping it.
 #
@@ -80,7 +84,20 @@ out-of-scope	acl_grant	гранты по имени пользователя и�
 out-of-scope	header_acl_grants	то же самое заголовками `x-amz-grant-*`
 out-of-scope	acl_revoke	снятие всех грантов — это язык грантов, которого здесь нет
 out-of-scope	tags_acl_public	кейс раздаёт права группе грантом; группы — часть ACL, которой здесь нет
-deferred	bucket_policy_status	`GetBucketPolicyStatus` выводит публичность из политики; политики есть с M29, операции нет (M-228)
+# `GetBucketPolicyStatus` сделан в M-228, и широкая строка «операции нет» на всю семью снята:
+# пять кейсов из шести операция закрывает. Шестой падает **не на ней** — его политика несёт
+# `IpAddress` над `aws:SourceIp`, отвергаемые по имени с M-201в, так что кейс не доходит дальше
+# `put_bucket_policy`. Правило «условие делает утверждение непубличным» при этом исполняется,
+# на условиях, которые сервер умеет вычислять (§3.8).
+#
+# **Вторая строка — сторож, а не утверждение о живом дефекте.** Она нужна из-за порядка: широкое
+# правило про `acl` ниже подбирает по подстроке `acl` три имени из этой семьи
+# (`…public_acl…`, `…authpublic_acl…`, `…publicpolicy_acl…`), и без неё их провал приехал бы
+# успокаивающей причиной «что осталось от ACL после M27 — гранты» вместо честного шума. Правило
+# читается условно, как и любое здесь: **если** кейс упал, это дефект в M-228, и адрес назван.
+# Пока пятёрка проходит, строка не подбирает ничего. Прогон, который это покажет, — M-204.
+out-of-scope	nonpublicpolicy_acl_bucket_policy_status	политика кейса ставит условие на `aws:SourceIp`; адрес пира до решения не доходит, и оператор с ключом отвергаются по имени (§3.8, решение M-201в)
+defect	bucket_policy_status	`GetBucketPolicyStatus` сделан (M-228) — провал здесь дефект в нём, а не в ACL; строка стоит выше широкого правила про `acl`, чтобы оно не съело три имени из шести
 out-of-scope	ignore_public_acls	блок публичного доступа — отдельная возможность, не ACL
 out-of-scope	cors_presigned_get_object_tenant_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_get_object_v2	the case presigns with SigV2, which this server does not verify
