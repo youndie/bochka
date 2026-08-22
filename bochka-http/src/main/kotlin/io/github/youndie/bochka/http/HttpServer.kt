@@ -59,10 +59,12 @@ class HttpServer(
             scope.launch {
                 try {
                     session(connection)
-                } catch (_: Throwable) {
-                    // One connection dying is not the server dying. Nothing here is logged yet:
-                    // logging arrives with the app module, and a `printStackTrace` would be a
-                    // decision made by accident.
+                } catch (e: Throwable) {
+                    // One connection dying is not the server dying, so the loop goes on — but it
+                    // used to go on in silence, with a comment saying logging would arrive with the
+                    // app module. It has (M-229), and this is the way through: the decision about
+                    // what a dead connection is worth saying belongs up there, not here.
+                    handler.abandoned(e)
                 } finally {
                     connection.close()
                 }
@@ -161,6 +163,10 @@ class HttpServer(
         try {
             parser.feed(bytes)
         } catch (e: HttpRequestParser.Malformed) {
+            // Said out loud before it is answered (M-229). The client has always seen this refusal;
+            // until now the log above had no idea it happened, which is the same complaint M-205
+            // made about a `500` one layer up.
+            handler.malformed(e.status, e)
             val message = (e.message ?: "malformed request").toByteArray(StandardCharsets.UTF_8)
             val response =
                 HttpResponse(

@@ -45,6 +45,36 @@ interface HttpHandler {
     ): HttpResponse
 
     /**
+     * A request the server answered **without** this handler: it did not parse (M-229).
+     *
+     * Every other answer passes through [screen], [handle] or [failed], and the app layer learns
+     * about it by wrapping them. A request whose head is malformed never becomes a head at all, so
+     * there is nothing to wrap — the server writes the `400` or `431` itself and the client sees
+     * it, while the log above says nothing. That is the state where diagnosis becomes guessing.
+     *
+     * **This tells; it does not answer.** No return value, because the request never became one:
+     * there is no route, no bucket, nothing for the protocol layer to shape an error document
+     * around, and putting an S3 `<Error>` behind a request that is not yet S3 would be inventing a
+     * context. The default does nothing, so a handler that does not care stays as it was.
+     */
+    fun malformed(
+        status: Int,
+        cause: Throwable,
+    ) {
+    }
+
+    /**
+     * A connection that died with nobody left to answer (M-229).
+     *
+     * One connection dying is not the server dying, so this is caught and the loop goes on — but
+     * it used to be caught and **dropped**, with a comment saying logging would arrive with the
+     * app module. It has arrived; this is the way through. Nothing is written to the client,
+     * because by this point there is usually no client left to write to.
+     */
+    fun abandoned(cause: Throwable) {
+    }
+
+    /**
      * The body, handed over as it arrives rather than as one array: an object can be five
      * gigabytes, and the point of the whole design is never to hold one.
      */

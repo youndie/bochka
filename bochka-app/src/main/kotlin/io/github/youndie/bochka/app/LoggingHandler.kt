@@ -39,6 +39,35 @@ class LoggingHandler(
         return response
     }
 
+    /**
+     * A request the server answered without the handler seeing it (M-229).
+     *
+     * **Under the flag, unlike [failed], and the difference is whose fault it is.** A `500` is this
+     * server admitting a bug and prints whatever the configuration says; a head that will not parse
+     * is the client's doing, and a store on the open internet meets enough of them that printing
+     * every one unasked would be a way to lose the log rather than to keep it.
+     *
+     * The status column is kept even though there is no method and no target to put beside it: the
+     * whole of M-205 was that a line without `-> status` is invisible to every question a log is
+     * asked.
+     */
+    override fun malformed(
+        status: Int,
+        cause: Throwable,
+    ) {
+        if (enabled) println("bochka malformed -> $status cause=$cause")
+    }
+
+    /**
+     * A connection that died with nobody left to answer (M-229).
+     *
+     * Under the flag for the same reason, and more so: a client that hangs up mid-body is ordinary
+     * traffic rather than an event, and this fires for every one of them.
+     */
+    override fun abandoned(cause: Throwable) {
+        if (enabled) println("bochka abandoned cause=$cause")
+    }
+
     override fun screen(head: HttpRequestParser.Head): HttpResponse? {
         val response = delegate.screen(head)
         if (enabled && response != null) log(head, response.status, "screened", response)

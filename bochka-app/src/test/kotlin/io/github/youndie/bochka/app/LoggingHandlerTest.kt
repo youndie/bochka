@@ -90,6 +90,35 @@ class LoggingHandlerTest {
     }
 
     @Test
+    fun `a request that never became one still names its status`() {
+        // M-229: the server answers this without the handler, so the only thing the log can carry
+        // is what it was and what it got. The status column stays, because a line without one is
+        // invisible to counting — which was the whole of M-205.
+        val logging = LoggingHandler(Throwing(), enabled = true)
+
+        val output = printed { logging.malformed(400, IllegalArgumentException("no method")) }
+
+        assertContains(output, "-> 400")
+        assertContains(output, "no method")
+    }
+
+    @Test
+    fun `the client's mistakes stay under the flag, unlike the server's`() {
+        // The difference is whose fault it is. A 500 is this server admitting a bug and prints
+        // regardless; a head that will not parse and a connection that hangs up are ordinary
+        // traffic on the open internet, and printing every one unasked loses the log.
+        val quiet = LoggingHandler(Throwing(), enabled = false)
+
+        val malformed = printed { quiet.malformed(400, IllegalArgumentException("no method")) }
+        val abandoned = printed { quiet.abandoned(java.io.IOException("connection reset")) }
+        val failure = printed { quiet.failed(head, IllegalStateException("the index said no")) }
+
+        assertTrue(malformed.isEmpty(), malformed)
+        assertTrue(abandoned.isEmpty(), abandoned)
+        assertContains(failure, "-> 500")
+    }
+
+    @Test
     fun `an ordinary answer still logs once, and only when asked`() {
         val plain =
             object : HttpHandler {
