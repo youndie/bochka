@@ -6,7 +6,7 @@ type: application
 # The chart's own version, moved by chart changes alone. It is not the server's: an image is
 # published once per tag and can never be rewritten (Reposilite answers 409 to a second PUT, see
 # publish.yml), while a chart that fixes a label has nothing to do with the server it installs.
-version: 0.1.0
+version: 0.2.0
 
 # `v0.2.0`, with the letter, because that is the tag the release actually pushes:
 # `ghcr.io/youndie/bochka:${{ github.ref_name }}`, and `github.ref_name` is the git tag
@@ -26,7 +26,7 @@ version: 0.1.0
 # chart telling everybody to use less than it has. `publish.yml` checks the other half, that
 # `appVersion` is a tag that was actually published, because a chart carrying the previous
 # `appVersion` installs the previous server while calling itself this one.
-appVersion: "v0.2.0"
+appVersion: "v0.3.0"
 
 # 1.29, and it is two requirements rather than one. `persistentVolumeClaimRetentionPolicy` is
 # beta-on-by-default from 1.27 — on an older cluster the field is dropped without a word, and "the

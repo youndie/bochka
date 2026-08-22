@@ -124,8 +124,11 @@ expect_in "$work/minimal.yaml" 'fsGroup: 1000' "the volume is group-owned by the
 expect_in "$work/minimal.yaml" 'fsGroupChangePolicy: OnRootMismatch' "no recursive chown of the whole store on every start"
 expect_in "$work/minimal.yaml" 'runAsUser: 1000' "the uid is a number, because the image's User is a name"
 expect_in "$work/minimal.yaml" 'readOnlyRootFilesystem: true' "the root filesystem is read-only"
-expect_in "$work/minimal.yaml" 'dev/tcp' "the probe is a request, not an open socket"
-expect_not_in "$work/minimal.yaml" 'httpGet' "the default probe is still exec: appVersion has no health handle"
+# Moved at v0.3.0 with the default they pin (M-184). These two rows are the reason the move could
+# not be half-done: they described `exec` as the right answer, so widening the default without them
+# would have left the harness insisting on the narrow one.
+expect_in "$work/minimal.yaml" 'httpGet' "the default probe is http, because appVersion answers /-/healthy"
+expect_not_in "$work/minimal.yaml" 'dev/tcp' "and the forked shell every period is gone with it"
 # Anonymous access is a capability, not a knob, so both directions are checked. Absent rather than
 # "0" on purpose: the variable arrived in a later server than some images this chart can name, and
 # an unknown BOCHKA_ name stops the process — the same reasoning that keeps
@@ -170,7 +173,7 @@ else
   fail "BOCHKA_KEYS was assembled wrong: '$secret'"
 fi
 
-expect_in "$work/minimal.yaml" 'kubernetes.io/arch: amd64' "the arch pin is on by default, because the image has one architecture"
+expect_not_in "$work/minimal.yaml" 'kubernetes.io/arch' "no arch pin, because v0.3.0 publishes an index for two"
 # Single quotes, and it is not style: in double quotes the backticks below were command
 # substitution, so this line ran `nodeSelector: null` in the shell and printed its description with
 # the halves missing.
@@ -268,9 +271,13 @@ else
   arch_pinned=$(grep -c '^  kubernetes.io/arch: amd64' "$chart/values.yaml")
 
   # Does the published image answer the health handle the `http` probe needs?
+  # A published port rather than `--network host`, and that is not a preference: on Docker Desktop
+  # host networking is not the host's network, so the probe cannot reach the container and curl
+  # reports `000`. That reads as "the image does not answer" and is a fact about the machine —
+  # a check failing for a reason that is not its subject, which this harness exists to refuse.
   docker rm -f bochka-appversion >/dev/null 2>&1
-  if docker run -d --name bochka-appversion --network host \
-      -e BOCHKA_PORT=19099 -e BOCHKA_BIND_ADDRESS=0.0.0.0 -e BOCHKA_KEYS=probe:probe \
+  if docker run -d --name bochka-appversion -p 19099:9000 \
+      -e BOCHKA_BIND_ADDRESS=0.0.0.0 -e BOCHKA_KEYS=probe:probe \
       "$published" >/dev/null 2>&1; then
     sleep 7
     health=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 http://127.0.0.1:19099/-/healthy)

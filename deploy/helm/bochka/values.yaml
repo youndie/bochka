@@ -252,21 +252,21 @@ ingress:
 #   none  no probes at all, and then the Service keeps an endpoint pointed at a pod that may not
 #         be answering.
 probes:
-  # `http` is the right shape and is not the default yet, which is a statement about the *image*
-  # rather than about the chart. `GET /-/healthy` answers 200 without a signature (M-143) — but it
-  # answers it in the image this chart is built beside, and `appVersion` still names v0.2.0, which
-  # has no such handle. A default that needs an image newer than the one it asks for is a chart
-  # that installs a pod kubelet restarts forever. The two lines move together, at the release that
-  # publishes the handle.
+  # `http` since v0.3.0, which is the release that published the handle — and the three lines this
+  # comment used to promise would move together did move together (M-184). `GET /-/healthy` answers
+  # 200 without a signature (M-143), the image `appVersion` names now carries it, and
+  # `ci/helm-chart.sh` asks that image both ways: a default needing an image newer than the one it
+  # names is a pod kubelet restarts for ever, and a default left narrow after the image caught up
+  # is a chart telling you to use less than it has.
   #
-  # Until then `exec`: a `bash` and `/dev/tcp` request for `GET /`, passing on the 403 this server
-  # honestly answers an unsigned request. It costs a forked shell every period inside a cgroup
-  # whose memory budget is counted close, which is the whole reason the handle exists.
+  # What it replaced was `exec`: a `bash` and `/dev/tcp` request for `GET /`, passing on the 403
+  # this server honestly answers an unsigned request. It cost a forked shell every period inside a
+  # cgroup whose memory budget is counted close, which is the whole reason the handle exists.
   #
   # `tcp` is weaker than either and is here for a reason that is not fallback: an open port on this
   # server means the journal has been replayed, because the port is opened after recovery
   # (Main.kt:52-65). What it cannot see is a process that is up and answering nothing.
-  type: exec
+  type: http
   # 3 x 20 = 60 s before the pod is called failed. The port opens only after the journal is
   # replayed (Main.kt:52-65 -> HttpServer init), so a refused connection honestly means "still
   # recovering": 919 ms on an empty directory, 3.5 s for half a million objects on an uncompacted
@@ -390,18 +390,17 @@ persistence:
   # one, and the volume is entirely yours.
   existingClaim: ""
 
-# amd64, because that is the only architecture `appVersion` names. publish.yml now builds an index
-# for amd64 and arm64 (M-137), so this pin has an expiry date rather than a reason: the release that
-# publishes the index is the release that removes it, together with `appVersion` and with
-# `probes.type` above. Until then it stands, because v0.2.0 is a single amd64 manifest and an arm64
-# node pulls it happily and answers `exec format error` — which reads as a broken image rather than
-# as the wrong architecture.
+# **Gone since v0.3.0**, and the pin's own comment predicted the day: it stood only because
+# `appVersion` named a single amd64 manifest, and an arm64 node pulled that happily and answered
+# `exec format error` — which reads as a broken image rather than as the wrong architecture. The
+# release that published the two-architecture index (M-137) is the release that removed it, with
+# `probes.type` above and `appVersion` beside them.
 #
-# Removing it is `nodeSelector: null` or `--set nodeSelector=null`, and **not** `nodeSelector: {}`:
-# Helm merges maps, so an empty one leaves this default exactly where it was and the difference is
-# invisible until a pod does not schedule.
-nodeSelector:
-  kubernetes.io/arch: amd64
+# Left empty rather than deleted because the shape matters if it ever comes back: removing a pin is
+# `nodeSelector: null` or `--set nodeSelector=null`, and **not** `nodeSelector: {}` — Helm merges
+# maps, so an empty one leaves a default exactly where it was and the difference is invisible until
+# a pod does not schedule.
+nodeSelector: {}
 
 # Empty, and unlike nodeSelector above there is no default worth having: a store is not a workload
 # anybody wants on a tainted node by default. It is here because the one node this pod can run on is
