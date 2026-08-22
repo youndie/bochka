@@ -105,25 +105,4 @@ object PublicAccessBlock {
             text("BlockPublicPolicy", configuration.blockPublicPolicy)
             text("RestrictPublicBuckets", configuration.restrictPublicBuckets)
         }
-
-    /**
-     * Whether a bucket policy hands something to **anybody**, which is what both policy-facing
-     * flags are about.
-     *
-     * One statement is enough: `Allow`, a principal of `*`, and at least one resource. The last
-     * clause is not a detail — a statement with no `Resource` is accepted here and matches nothing
-     * (see [BucketPolicy]), so it grants nobody anything and cannot make a bucket public.
-     *
-     * **Conditions do not narrow this.** On AWS a condition that pins the caller's account or VPC
-     * keeps a `*` principal non-public; not one of the condition keys this server can answer
-     * ([BucketPolicy.KNOWN_CONDITION_KEYS]) says anything about who is calling — they are about the
-     * request. So a `*` principal here means every caller, whatever else the statement tests, and
-     * reading it as anything narrower would be this function guessing in the unsafe direction.
-     */
-    fun isPublic(policy: BucketPolicy.Policy): Boolean =
-        policy.statements.any { statement ->
-            statement.effect == BucketPolicy.Effect.ALLOW &&
-                statement.resources.isNotEmpty() &&
-                "*" in statement.principals
-        }
 }

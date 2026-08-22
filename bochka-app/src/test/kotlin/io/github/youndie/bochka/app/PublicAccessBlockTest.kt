@@ -348,6 +348,36 @@ class PublicAccessBlockTest {
         assertEquals(204, s3.send("PUT", "/photos", query = "policy", body = document.toByteArray()).status)
     }
 
+    /**
+     * The behaviour that changed when two definitions of "public" became one, and that nothing
+     * pinned until now.
+     *
+     * `BlockPublicPolicy` and `GetBucketPolicyStatus` were built in parallel and each wrote its own
+     * rule. They agreed about `Allow` and about `*`, and disagreed here: the reporting one calls a
+     * conditioned statement not public, the refusing one did not look at conditions at all. AWS
+     * spells both with a single rule, and a server that reported one answer and enforced the other
+     * would be describing a permission nobody has — so the stricter, reporting rule won, and
+     * a document like this one is now **taken**.
+     *
+     * Which is the interesting direction: the flag became slightly more permissive, and no test in
+     * either milestone noticed.
+     */
+    @Test
+    fun `BlockPublicPolicy takes a star principal that a condition narrows`() {
+        s3.createBucket("photos")
+        putBlock("photos", configuration(blockPublicPolicy = true))
+        val conditioned =
+            """{"Version": "2012-10-17", "Statement": [{"Action": "s3:GetObject", """ +
+                """"Principal": {"AWS": "*"}, "Effect": "Allow", "Resource": "arn:aws:s3:::photos/*", """ +
+                """"Condition": {"StringLike": {"s3:prefix": "public/*"}}}]}"""
+
+        assertEquals(204, s3.send("PUT", "/photos", query = "policy", body = conditioned.toByteArray()).status)
+
+        // And the other end of the same rule agrees, which is the whole point of there being one.
+        val status = s3.send("GET", "/photos", query = "policyStatus")
+        assertContains(status.text, "<IsPublic>false</IsPublic>", message = status.text)
+    }
+
     @Test
     fun `BlockPublicPolicy leaves a policy that is already there alone`() {
         // "Enabling this setting doesn't affect existing bucket policies" — the model. Taking the

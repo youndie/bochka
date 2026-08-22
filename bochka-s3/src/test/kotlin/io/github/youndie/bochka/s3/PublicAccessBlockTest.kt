@@ -102,15 +102,15 @@ class PublicAccessBlockTest {
 
     @Test
     fun `an Allow to a star principal is public`() {
-        assertTrue(PublicAccessBlock.isPublic(policy(""""*"""")))
-        assertTrue(PublicAccessBlock.isPublic(policy("""{"AWS": "*"}""")))
+        assertTrue(BucketPolicy.isPublic(policy(""""*"""")))
+        assertTrue(BucketPolicy.isPublic(policy("""{"AWS": "*"}""")))
     }
 
     @Test
     fun `an Allow to one account is not`() {
         // `test_block_public_policy_with_principal:14357` is exactly this document, and it requires
         // the same bucket that refuses the one above to accept this one.
-        assertFalse(PublicAccessBlock.isPublic(policy("""{"AWS": "arn:aws:iam::s3tenant1:root"}""")))
+        assertFalse(BucketPolicy.isPublic(policy("""{"AWS": "arn:aws:iam::s3tenant1:root"}""")))
     }
 
     @Test
@@ -118,7 +118,7 @@ class PublicAccessBlockTest {
         // The flags are about a policy handing something out; a policy that refuses hands out
         // nothing, and reading a `Deny` as public would make `BlockPublicPolicy` refuse the
         // strictest document anyone can write.
-        assertFalse(PublicAccessBlock.isPublic(policy(""""*"""", effect = "Deny")))
+        assertFalse(BucketPolicy.isPublic(policy(""""*"""", effect = "Deny")))
     }
 
     @Test
@@ -127,6 +127,6 @@ class PublicAccessBlockTest {
             """{"Version": "2012-10-17", "Statement": [{"Action": "s3:GetObject", """ +
                 """"Principal": "*", "Effect": "Allow"}]}"""
 
-        assertFalse(PublicAccessBlock.isPublic(BucketPolicy.decode(text)))
+        assertFalse(BucketPolicy.isPublic(BucketPolicy.decode(text)))
     }
 }

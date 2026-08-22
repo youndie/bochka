@@ -510,6 +510,53 @@ object BucketPolicy {
     }
 
     /**
+     * Whether this document opens the bucket to everybody (M-227, M-228).
+     *
+     * **One definition, read by two features that ask the same question from opposite ends.**
+     * `GetBucketPolicyStatus` reports it and `BlockPublicPolicy` refuses a document that has it,
+     * and AWS spells them with a single rule for a reason: a server that reported one answer and
+     * enforced the other would be telling the truth about a permission nobody has. They were
+     * written twice here, in parallel, by work that could not see itself — and the two were close
+     * enough to look identical and different enough to disagree about a statement carrying a
+     * condition.
+     */
+    fun isPublic(policy: Policy): Boolean = policy.statements.any { isPublic(it) }
+
+    /**
+     * Whether one statement, by itself, makes the bucket public. Four things, all of them required.
+     *
+     * * **`Allow`.** A `Deny` grants nothing, so it cannot open anything. No case pins this, and
+     *   saying so is part of the rule: it is derived from what the word means. It is derived
+     *   safely only because getting it wrong would raise a false alarm rather than hide a leak.
+     * * **`*` among the principals** (`test_get_publicpolicy_acl_bucket_policy_status:14107`).
+     *   A named principal is not public even when it is the only one
+     *   (`test_get_nonpublicpolicy_principal_bucket_policy_status:14167`), and a `{"Service": …}`
+     *   principal is not `*` here either — `BucketPolicy.matchesPrincipal` already refuses to let
+     *   `*` stand for the logging service, and a report that disagreed with the evaluator would
+     *   describe a permission nobody has.
+     * * **at least one action and at least one resource.** A statement with no `Resource` is
+     *   stored and matches **nothing** (M-202): inert, granting nothing, and therefore incapable
+     *   of making a bucket public. The two readings have to agree.
+     * * **no condition at all** (`test_get_nonpublicpolicy_acl_bucket_policy_status:14135`).
+     *
+     * That last rule is deliberately coarser than AWS's, which separates condition keys that
+     * narrow access from keys a caller can forge. The case pins exactly one direction — that a
+     * condition makes an otherwise public statement non-public — and inventing the distinction
+     * without a source would be common sense wearing a specification's clothes. Coarser in the
+     * direction of a false alarm, again, which is the only direction this file may err in.
+     *
+     * The case itself does not run against this server, and not because of this operation: its
+     * policy carries `IpAddress` over `aws:SourceIp`, both refused by name since M-201в because
+     * nothing here can evaluate them (§3.8). The rule is enforced on the conditions that can be.
+     */
+    fun isPublic(statement: Statement): Boolean =
+        statement.effect == BucketPolicy.Effect.ALLOW &&
+            "*" in statement.principals &&
+            statement.actions.isNotEmpty() &&
+            statement.resources.isNotEmpty() &&
+            statement.conditions.isEmpty()
+
+    /**
      * The wildcard match an S3 policy uses: `*` for any run of characters, `?` for one.
      *
      * Written out rather than compiled to a regex, because the text being matched is a key that may

@@ -2945,7 +2945,7 @@ class S3Handler(
                 // `test_block_public_policy_with_principal:14357` is the other half and requires the
                 // same bucket to take a policy naming one account.
                 if (publicAccessBlockOf(route.bucket)?.blockPublicPolicy == true &&
-                    PublicAccessBlock.isPublic(decoded)
+                    BucketPolicy.isPublic(decoded)
                 ) {
                     return error(
                         head,
@@ -4169,7 +4169,7 @@ class S3Handler(
         if (publicAccessBlockOf(bucket)?.restrictPublicBuckets != true) return false
         if (accessKeyId != null && accessKeyId.startsWith(BucketPolicy.SERVICE_PREFIX)) return false
         if (accessKeyId != null && accessKeyId == store.bucketOwner(bucket)) return false
-        return PublicAccessBlock.isPublic(policy)
+        return BucketPolicy.isPublic(policy)
     }
 
     /**
