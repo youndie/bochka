@@ -105,14 +105,18 @@ out-of-scope	_sts	STS is a different service; this store authenticates with stat
 deferred	public_access_block	`PublicAccessBlock` — отдельный API поверх политик; политики есть с M29 (M-227)
 deferred	block_public	`PublicAccessBlock` — отдельный API поверх политик; политики есть с M29 (M-227)
 # Слой 2 сделан (M28), поэтому строка «разрешения ещё нет» стала неправдой. Что осталось под этим
-# именем — три кейса, и ни один не про разрешение: `list_buckets_anonymous` ждёт пустой список
-# вместо отказа и **помечен `fails_on_aws`** (это поведение RGW, S3 отвергает — и bochka тоже);
-# две формы шлют POST вообще без политики, что здесь отдельная задача (M-225).
+# именем — один кейс, и он не про разрешение: `list_buckets_anonymous` ждёт пустой список
+# вместо отказа и **помечен `fails_on_aws`** (это поведение RGW, S3 отвергает — и bochka тоже).
 out-of-scope	list_buckets_anonymous	кейс ждёт пустой список вместо отказа и помечен fails_on_aws: так отвечает RGW, а S3 и bochka отвергают
-deferred	post_object_anonymous	POST-форма без политики в публичный бакет: слой 2 её пропускает, а форма всё ещё требует политику (M-225)
-deferred	post_object_tags_anonymous	то же самое, с тегами (M-225)
-deferred	post_object_set_success_code	форма без политики вовсе; тот же вопрос, что у двух строк выше (M-225)
-deferred	post_object_set_invalid_success_code	форма без политики вовсе; тот же вопрос (M-225)
+# Четыре формы без политики вовсе (M-225 закрыт). Все четыре — анонимная POST-форма в бакет
+# `public-read-write`, и две из них называются иначе: `set_success_code` и
+# `set_invalid_success_code` читаются как «про `success_action_status`», а это M16, работает
+# с тех пор. Падали они по той же одной причине — форма без политики. Разрешает по-прежнему ACL
+# бакета, поэтому под рубильником, как и всё остальное во втором слое.
+off-by-default	post_object_anonymous	анонимная POST-форма в бакет public-read-write: слой 2 её пропускает, поставка слой 2 не включает (BOCHKA_ANONYMOUS)
+off-by-default	post_object_tags_anonymous	то же самое, плюс поле tagging документом (BOCHKA_ANONYMOUS)
+off-by-default	post_object_set_success_code	форма без политики вовсе; success_action_status тут ни при чём (BOCHKA_ANONYMOUS)
+off-by-default	post_object_set_invalid_success_code	форма без политики вовсе; тот же случай (BOCHKA_ANONYMOUS)
 # Ниже — три строки про рубильник, а не про отсутствие функции. С `BOCHKA_ANONYMOUS=1` все четыре кейса
 # проходят — это измерено обоими прогонами в M28 (466 и 474 из 744), а не предположено.
 off-by-default	objects_anonymous	анонимный листинг бакета с public-read: слой 2 это умеет, поставка его не включает (BOCHKA_ANONYMOUS)

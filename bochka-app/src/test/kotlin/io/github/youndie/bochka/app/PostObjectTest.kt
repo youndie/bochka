@@ -134,8 +134,10 @@ class PostObjectTest {
 
     @Test
     fun `a form with no signature is refused, and stores nothing`() {
-        // `test_post_object_anonymous_request:1948` lands here. It wants a bucket open to everyone,
-        // and this server has no such bucket — so the refusal is the honest answer, not a gap.
+        // A form with no policy is an anonymous form since M-225, and this bucket grants nobody
+        // anything — so `403` is the ACL answering, not the blanket refusal that used to stand
+        // here. `AnonymousPostFormTest` is where the bucket that **does** grant it lives, in both
+        // configurations.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
 
@@ -143,6 +145,29 @@ class PostObjectTest {
 
             assertEquals(403, answer.status, answer.text)
             assertEquals(404, s3.get("photos", "report.txt").status)
+        }
+    }
+
+    @Test
+    fun `a correctly signed form into somebody else's private bucket is refused`() {
+        // Found by breaking the handler's access check and watching nothing go red (M-225). The
+        // check has stood since M27 and was covered by **no** test: every form here signs a policy
+        // over a bucket the same key owns, so the one thing the line prevents — a valid signature
+        // writing into a stranger's bucket — was never asked for. The mutation that found it is
+        // the same one M28 used, and it found the same shape of hole: a guard nothing fires.
+        S3Fixture().use { s3 ->
+            s3.send("PUT", "/photos", asOther = true)
+
+            val answer =
+                s3.postForm(
+                    "photos",
+                    s3.signedPolicy(policy()) + listOf("key" to "report.txt", "acl" to "private"),
+                    "тело".toByteArray(),
+                )
+
+            assertEquals(403, answer.status, answer.text)
+            assertTrue("AccessDenied" in answer.text, answer.text)
+            assertEquals(404, s3.send("GET", "/photos/report.txt", asOther = true).status)
         }
     }
 

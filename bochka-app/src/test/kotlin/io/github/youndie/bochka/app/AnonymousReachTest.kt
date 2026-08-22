@@ -53,10 +53,20 @@ class AnonymousReachTest {
      * Routes deliberately reachable without credentials, each for a reason that is not permission.
      *
      * `Preflight` is a browser asking before it authorises anything and cannot carry a signature at
-     * all; `Health` answers a kubelet that has none; `PostObject` carries its own signature in the
-     * form's policy rather than in the head; `NotImplemented` is refused before any of this.
+     * all; `Health` answers a kubelet that has none; `NotImplemented` is refused before any of this.
      * `CopyObject` and `UploadPartCopy` are covered by their non-copy siblings — the same handler
      * gate, one route apart — and need a source object to be routed at all.
+     *
+     * `PostObject` is the one that cannot be asked the blunt question at all: everything this test
+     * varies lives in the head, and what decides a form is its **body**. A bare `POST /vault` is
+     * `400 MalformedPOSTRequest` — no multipart boundary — before anybody is identified, which is
+     * the right answer and not the one this test can read. What covers it instead, by name: the
+     * handler asks the switch and then `aclRefusal`, the same call `screen` makes, and
+     * `AnonymousPostFormTest` asks it in both configurations —
+     * `a form with no policy at all uploads into a public-read-write bucket` for the open door,
+     * `and the same form as shipped is refused before the bucket is asked` for the switch,
+     * `a form with no policy into a bucket that grants nothing is refused with the switch on` and
+     * `a public-read bucket admits an anonymous reader and not an anonymous form` for the lock.
      */
     private val unsignedByDesign =
         setOf(

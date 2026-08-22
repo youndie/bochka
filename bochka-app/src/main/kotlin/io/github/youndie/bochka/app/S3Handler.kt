@@ -414,7 +414,7 @@ class S3Handler(
             }
 
             is S3Router.Route.PostObject -> {
-                postObject(head, route.bucket, body)
+                postObject(head, route, body)
             }
 
             is S3Router.Route.CopyObject -> {
@@ -1284,9 +1284,10 @@ class S3Handler(
      */
     private suspend fun postObject(
         head: HttpRequestParser.Head,
-        bucket: String,
+        route: S3Router.Route.PostObject,
         body: HttpHandler.RequestBody,
     ): HttpResponse {
+        val bucket = route.bucket
         val boundary =
             PostForm.boundaryOf(head.header("content-type"))
                 ?: return error(head, S3Error.MALFORMED_POST_REQUEST, detail = "no multipart boundary", bucket = bucket)
@@ -1305,14 +1306,39 @@ class S3Handler(
         val raw = collected.toByteArray()
 
         val form: PostForm.Parsed
-        val accessKeyId: String
+        val accessKeyId: String?
         val keyText: String
         try {
             form = PostForm.parse(raw, boundary)
-            val policyField =
-                form["policy"]
-                    ?: throw PostSignature.Refused(S3Error.ACCESS_DENIED, "the form carries no policy")
-            accessKeyId = PostSignature.verify(form.fields, policyField, verifier.credentials, verifier.region)
+            val policyField = form["policy"]
+            accessKeyId =
+                if (policyField == null) {
+                    // A form with no policy names nobody, and that is layer two arriving at the one
+                    // entrance `screen` cannot judge (M-225). Until M28 this was `403` outright,
+                    // which was true then and became a second lock afterwards: the door had opened
+                    // everywhere else and this one branch still held it shut.
+                    //
+                    // **What replaces the refusal is not the absence of a check.** The two gates
+                    // below are the ones every unnamed request goes through — the deployment's
+                    // switch, then the bucket's ACL — and they are asked a few lines down, in the
+                    // same call the signed path makes. Nothing here decides anything.
+                    //
+                    // A signature without a policy is a different answer, and it is `400`: a
+                    // signature is taken over the policy, so one with no policy under it is a form
+                    // missing a part it declared. The suite pins the mirror image of that at `400`
+                    // (`test_post_object_missing_signature:2455`), and reading it as "anonymous"
+                    // instead would let a form shed its own conditions and be judged by the bucket
+                    // alone — a way around exactly what the signed path enforces.
+                    if (form["signature"] != null || form["x-amz-signature"] != null) {
+                        throw PostForm.Malformed(
+                            S3Error.MALFORMED_POST_REQUEST,
+                            "the form has a signature but no policy for it to be over",
+                        )
+                    }
+                    null
+                } else {
+                    PostSignature.verify(form.fields, policyField, verifier.credentials, verifier.region)
+                }
             // `${'$'}{filename}` is substituted **before** the policy is checked, and the order is the
             // whole of `test_post_object_set_key_from_filename:2167`: the form sends
             // `key=${'$'}{filename}` under a policy demanding `starts-with ${'$'}key, "foo"`, and the literal
@@ -1328,15 +1354,17 @@ class S3Handler(
             // here. It did acquire one, and the policy then refused the field nobody sent —
             // `test_post_object_no_key_specified:2448` got `403` where it wanted `400`, which is
             // the difference between "you may not" and "your form is incomplete".
-            val checked =
-                form.fields + mapOf("bucket" to bucket) +
-                    (if (form["key"] != null) mapOf("key" to keyText) else emptyMap())
-            PostPolicy.check(
-                PostPolicy.decode(policyField),
-                checked,
-                form.fileLength.toLong(),
-                java.time.Instant.now(),
-            )
+            if (policyField != null) {
+                val checked =
+                    form.fields + mapOf("bucket" to bucket) +
+                        (if (form["key"] != null) mapOf("key" to keyText) else emptyMap())
+                PostPolicy.check(
+                    PostPolicy.decode(policyField),
+                    checked,
+                    form.fileLength.toLong(),
+                    java.time.Instant.now(),
+                )
+            }
         } catch (e: PostForm.Malformed) {
             return error(head, e.error, detail = e.message, bucket = bucket)
         } catch (e: PostSignature.Refused) {
@@ -1346,17 +1374,20 @@ class S3Handler(
         }
 
         // The form is the one operation whose authorisation is decided **after** its body arrives,
-        // so the ACL of the bucket is checked here rather than in `screen` — where every other
-        // route's is. Without this line a signed form would write into anybody's bucket.
-        val bucketResource = AccessControl.Resource(store.bucketOwner(bucket), store.bucketAcl(bucket))
-        if (!AccessControl.allowsObjectWrite(bucketResource, accessKeyId)) {
-            return error(
-                head,
-                S3Error.ACCESS_DENIED,
-                detail = "the acl of this bucket does not allow it",
-                bucket = bucket,
-            )
+        // so the access model is asked here rather than in `screen` — where every other route's is.
+        // Without these two lines a signed form would write into anybody's bucket, and an unsigned
+        // one into every bucket.
+        //
+        // The switch first, exactly as in `screen`: a deployment with no public buckets should
+        // never run the computation behind it. Then `aclRefusal`, which is the **same** call the
+        // signed path makes — a second gate written for this entrance is how the two drift, and a
+        // permission model that drifts leaks in the direction nobody is testing. It brings the
+        // bucket policy with it (M29), which the hand-rolled check that stood here did not: a form
+        // is a `s3:PutObject` like any other.
+        if (accessKeyId == null && !anonymous) {
+            return error(head, S3Error.ACCESS_DENIED, detail = "no credentials on the request", bucket = bucket)
         }
+        aclRefusal(head, route, accessKeyId)?.let { return it }
 
         // The form's `acl` field is a canned name like the header's, and since M27 it is stored and
         // enforced rather than refused. `public-read` still promises **less** here than it does on
@@ -1388,7 +1419,32 @@ class S3Handler(
 
         // The field names of a form are the header names of a `PUT`, which is why the metadata is
         // read by the same code — `content-type`, `cache-control`, `x-amz-meta-*` and the rest.
-        val metadata = ObjectHeaders.read(form.fields.map { it.key to it.value })
+        //
+        // Tags are the exception, and they are the one place where the same thing has two shapes
+        // on the same request. `x-amz-tagging` is `a=1&b=2`; the form field is called `tagging` and
+        // holds a whole `<Tagging>` **document** (`test_post_object_tags_anonymous_request:12203`).
+        // Nothing read it until M-225, and the authenticated twin of that case
+        // (`test_post_object_tags_authenticated_request:12234`) never noticed, because it checks
+        // the status and the body and never asks for the tags back.
+        val metadata =
+            try {
+                val fromFields = ObjectHeaders.read(form.fields.map { it.key to it.value })
+                val document = form["tagging"]?.takeIf { it.isNotEmpty() }
+                val tagged =
+                    if (document == null) {
+                        fromFields
+                    } else {
+                        fromFields.copy(tags = S3Requests.parseTagging(document.toByteArray(Charsets.UTF_8)))
+                    }
+                ObjectHeaders.check(tagged)?.let {
+                    return error(head, it.error, detail = it.detail, key = key, bucket = bucket)
+                }
+                tagged
+            } catch (e: ObjectHeaders.Malformed) {
+                return error(head, S3Error.INVALID_TAG, detail = e.message, key = key, bucket = bucket)
+            } catch (e: XmlReader.MalformedXmlException) {
+                return error(head, S3Error.MALFORMED_XML, detail = "tagging: ${e.message}", key = key, bucket = bucket)
+            }
 
         // And the checksum by the same code as well, for the same reason: `x-amz-checksum-sha256`
         // is a field of a form and a header of a `PUT`, and it means one thing in both. Excluding
@@ -1441,11 +1497,15 @@ class S3Handler(
                     staged,
                     ObjectStore.Precondition(),
                     encryption = encryption,
-                    owner = accessKeyId,
+                    // The same answer an unsigned `PUT` gets (see `ownerFor`): a form that named
+                    // nobody has no identity to own anything, and an object with no owner is open
+                    // to every key — which would make a `public-read-write` bucket a place where
+                    // anybody can create something nobody can close.
+                    owner = ownerFor(bucket, accessKeyId),
                     acl = acl,
                 )
             staged = null
-            formSuccess(form, bucket, key, stored.eTag, accessKeyId)
+            formSuccess(form, bucket, key, stored.eTag)
         } catch (e: ObjectStore.CeilingExceeded) {
             error(head, S3Error.INSUFFICIENT_STORAGE, detail = e.message, key = key, bucket = bucket)
         } catch (e: ObjectStore.BucketGone) {
@@ -1468,7 +1528,6 @@ class S3Handler(
         bucket: String,
         key: ObjectKey,
         eTag: String,
-        accessKeyId: String,
     ): HttpResponse {
         val location = "/$bucket/$key"
         val redirect = form["success_action_redirect"] ?: form["redirect"]
@@ -1493,8 +1552,9 @@ class S3Handler(
         }
         // The access key is named nowhere in the answer, and that is deliberate: the browser that
         // posted the form is not the party that signed the policy, and telling it whose key it
-        // used would hand a page the identity of the service behind it.
-        check(accessKeyId.isNotEmpty())
+        // used would hand a page the identity of the service behind it. Since M-225 there may be
+        // no key at all — a form with no policy names nobody — which is the second reason it is
+        // not a parameter here.
         return HttpResponse(
             if (status ==
                 200
@@ -4171,6 +4231,16 @@ class S3Handler(
         return AccessControl.allows(bucketResource, accessKeyId, AccessControl.Permission.READ, bucketResource.owner)
     }
 
+    /**
+     * The bucket a route names, when it names one.
+     *
+     * `PostObject` was missing from here until M-225, and nothing had noticed because nothing had
+     * asked: the form's own handler carried the name in a local of its own. What it cost was
+     * quiet — the bucket was absent from every refusal a form got and from the CORS headers on
+     * those refusals — and it would have cost more the moment the access model started being
+     * consulted here, since a bucket policy asked about `null` is a policy that speaks about
+     * nothing.
+     */
     private fun bucketOf(route: S3Router.Route): String? =
         when (route) {
             is S3Router.Route.CreateBucket -> route.bucket
@@ -4182,6 +4252,7 @@ class S3Handler(
             is S3Router.Route.ListObjects -> route.bucket
             is S3Router.Route.DeleteObjects -> route.bucket
             is S3Router.Route.PutObject -> route.bucket
+            is S3Router.Route.PostObject -> route.bucket
             is S3Router.Route.GetObject -> route.bucket
             is S3Router.Route.HeadObject -> route.bucket
             is S3Router.Route.DeleteObject -> route.bucket
