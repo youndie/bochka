@@ -94,7 +94,7 @@ jobs:
           # changed the wording of a schema violation from "Expected: boolean" to "got string, want
           # boolean", and a chart that refused the value exactly as designed turned this job red.
           # Moving this number is a deliberate edit, made when somebody is looking at the output.
-          version: v3.17.0
+          version: v4.2.4
       - uses: helm/kind-action@v1
         with:
           # The harness creates and deletes its own cluster: it names the release `bochka` on
