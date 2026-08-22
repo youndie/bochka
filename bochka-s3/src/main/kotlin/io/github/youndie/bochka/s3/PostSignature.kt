@@ -20,10 +20,12 @@ import javax.crypto.spec.SecretKeySpec
  * ([PostPolicy]) и её подпись — независимые операции над одним и тем же куском текста, и путать
  * их порядок нельзя: пересобранный JSON отличается пробелами, и подпись от него не сойдётся.
  *
- * Формы подписи здесь только две, потому что третья — анонимная POST без подписи вовсе — требует
- * бакета, открытого на запись всем. Такого бакета этот сервер не заводит (`PutBucketAcl`
- * отвергается), поэтому и форма не нужна: принять её значило бы обещать анонимный доступ,
- * которого нет.
+ * Формы подписи здесь только две, и третьей — анонимной формы без подписи вовсе — здесь нет
+ * намеренно: у неё нечего проверять. Такая форма до этого объекта не доходит, её решает вызывающий
+ * (`S3Handler.postObject`, M-225) теми же двумя воротами, что и всякий запрос без учётных данных:
+ * рубильник `BOCHKA_ANONYMOUS` и ACL бакета. Раньше здесь было записано, что бакета, открытого
+ * на запись всем, этот сервер не заводит; с M27 заводит (`public-read-write` хранится
+ * и исполняется), а с M28 такой запрос вообще доходит до модели доступа.
  */
 object PostSignature {
     class Refused(
@@ -53,7 +55,8 @@ object PostSignature {
             // A policy with no signature is an incomplete form, not a refused one: nobody has
             // been denied anything, the request is simply missing a part it declared. `400`, and
             // `test_post_object_missing_signature:2486` pins it. A form with neither policy nor
-            // signature never reaches here — that one is anonymous, and anonymous is `403`.
+            // signature never reaches here — that one named nobody, and what it may do is the
+            // bucket's ACL to say (M-225).
             else -> throw Refused(S3Error.MALFORMED_POST_REQUEST, "the form has a policy but no signature")
         }
     }
