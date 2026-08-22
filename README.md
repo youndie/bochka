@@ -48,6 +48,12 @@ per bucket and per version, canned ACLs stored and **enforced**, and one order b
 models of permissions — the key scope narrows first, the ACL decides inside what it left, and
 neither can hand back what the other took away.
 
+On top of that: bucket policies, which are the first layer here that **grants** rather than takes
+away, a bucket logging configuration whose target has to agree in its own policy before it is
+accepted, and `PublicAccessBlock` — four switches that refuse a public ACL and a public policy as
+they arrive and stop obeying the ones already stored. Every one of the four does something; a flag
+written down and not applied is read as a lock that is not there.
+
 And encryption with a key the client brings: `SSE-C` on single and multipart uploads, with the
 server keeping the algorithm and the key's MD5 and never the key. An object nobody encrypted is
 untouched by it — same `transferTo`, same cost — and what an encrypted one costs is a measured
@@ -243,7 +249,7 @@ them with a footnote would overstate the default and understate the work.
 
 **224 of the 254 remaining failures** are things this store says in
 ["What bochka is not"](#what-bochka-is-not) that it will never have — server-side encryption,
-grants to named users, bucket policies, IAM, storage classes. Every failure is classified with a reason
+grants to named users, IAM, storage classes. Every failure is classified with a reason
 ([docs/s3-tests.md](docs/s3-tests.md)), and one nobody has classified is reported by name as
 `unclassified` rather than folded into a category. That count is zero.
 
@@ -257,7 +263,9 @@ anonymous access switched on, which is a configuration rather than a gap, and th
 `off-by-default` so that the label can be checked by flipping the switch. Twenty-four are work with
 an address in the backlog: `PublicAccessBlock` and `GetBucketPolicyStatus`, both of which became
 reachable the moment bucket policies existed, a POST form carrying no policy at all, and an
-`OPTIONS` that is not a preflight. **Two** are there because a decision is unmade rather than
+`OPTIONS` that is not a preflight. **`PublicAccessBlock` has since been built** — all four flags,
+enforced rather than stored — so these counts describe the run before it and not the code in this
+tree; the run that turns that into numbers is the next one. **Two** are there because a decision is unmade rather than
 because work is: a key holding C1 control characters and the round trip of non-ASCII metadata.
 A third — the ETag of a re-sent encrypted part — was one of these until the decision got made:
 an encrypted object's ETag is an HMAC of its plaintext under the client's key, which is the only
@@ -380,10 +388,12 @@ disagreeing — which reads like a bug in your project and is a missing line.
   refuses to open at all, instead of degrading into swap.
 - **Not multi-class storage.** One disk means one storage class, so a lifecycle rule carrying a
   `Transition` is refused by name rather than stored and never acted on.
-- **Not an identity system.** Access keys are a static list in the configuration; no IAM, no bucket
-  policies, no STS. What it does have is the part that needs no user table: a bucket and an object
-  belong to the key that made them, and the six canned ACLs decide what other keys may do with
-  them. A grant to a named user is refused by name — it would be a permission language over people
+- **Not an identity system.** Access keys are a static list in the configuration; no IAM and no
+  STS. What it does have is the part that needs no user table: a bucket and an object belong to
+  the key that made them, the six canned ACLs decide what other keys may do with them, a bucket
+  policy can hand a capability to a key the ACL never named, and `PublicAccessBlock` can take the
+  public half of both away again. This bullet said "no bucket policies" for a milestone after they
+  arrived, which is the failure mode a section about what does not exist has by nature. A grant to a named user is refused by name — it would be a permission language over people
   this server does not know. An unsigned request is refused whatever the ACL says until
   `BOCHKA_ANONYMOUS=1` is set, and then a `public-read` bucket answers one — the switch adds a
   capability, the ACL still decides. Only a request carrying *no* credentials can become anonymous:

@@ -53,6 +53,12 @@ class BucketPolicyReachTest {
             Triple("GET", "/vault/a.txt", "attributes") to S3Router.Route.GetObjectAttributes::class,
             Triple("GET", "/vault/a.txt", "tagging") to S3Router.Route.ObjectTagging::class,
             Triple("GET", "/vault", "tagging") to S3Router.Route.BucketSubresource::class,
+            // A second sub-resource beside `tagging`, because this table is keyed by route class
+            // and one row would leave every other **name** unasked: a sub-resource that maps to no
+            // policy action is exactly the invisible-and-therefore-allowed case above, and it is
+            // reached by adding a name rather than a route (M-227).
+            Triple("GET", "/vault", "publicAccessBlock") to S3Router.Route.BucketSubresource::class,
+            Triple("DELETE", "/vault", "publicAccessBlock") to S3Router.Route.BucketSubresource::class,
             Triple("GET", "/vault", "object-lock") to S3Router.Route.ObjectLockSubresource::class,
             Triple("GET", "/vault/a.txt", "acl") to S3Router.Route.ObjectAcl::class,
             Triple("POST", "/vault/a.txt", "uploads") to S3Router.Route.CreateMultipartUpload::class,

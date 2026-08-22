@@ -359,18 +359,24 @@ class S3Fixture(
      * the server so that the test signs the way a client signs — with `javax.crypto` and nothing
      * of ours in between.
      */
-    fun signedPolicy(json: String): List<Pair<String, String>> {
+    fun signedPolicy(
+        json: String,
+        /** Sign the form as the second key, which is how a form reaches somebody else's bucket. */
+        asOther: Boolean = false,
+    ): List<Pair<String, String>> {
         val policy =
             java.util.Base64
                 .getEncoder()
                 .encodeToString(json.toByteArray(Charsets.UTF_8))
         val mac = javax.crypto.Mac.getInstance("HmacSHA1")
-        mac.init(javax.crypto.spec.SecretKeySpec(SECRET.toByteArray(Charsets.UTF_8), "HmacSHA1"))
+        val secret = if (asOther) OTHER_SECRET else SECRET
+        mac.init(javax.crypto.spec.SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA1"))
         val signature =
             java.util.Base64
                 .getEncoder()
                 .encodeToString(mac.doFinal(policy.toByteArray(Charsets.UTF_8)))
-        return listOf("AWSAccessKeyId" to ACCESS_KEY, "policy" to policy, "signature" to signature)
+        val key = if (asOther) OTHER_ACCESS_KEY else ACCESS_KEY
+        return listOf("AWSAccessKeyId" to key, "policy" to policy, "signature" to signature)
     }
 
     fun createBucket(

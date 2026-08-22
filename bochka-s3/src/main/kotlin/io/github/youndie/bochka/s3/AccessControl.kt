@@ -35,11 +35,21 @@ object AccessControl {
      */
     enum class Canned(
         val wireName: String,
+        /**
+         * Whether this name is **public** in the sense `PublicAccessBlock` uses (M-227).
+         *
+         * Three of the six, and `authenticated-read` is the one that surprises: it grants to the
+         * `AuthenticatedUsers` group, which is every account in the world holding any credentials
+         * at all, so S3 counts it as public and so does the suite —
+         * `test_block_public_put_bucket_acls:14283` requires it refused beside the two `public-*`
+         * names. The `bucket-owner-*` pair names one key each and is never public.
+         */
+        val public: Boolean = false,
     ) {
         PRIVATE("private"),
-        PUBLIC_READ("public-read"),
-        PUBLIC_READ_WRITE("public-read-write"),
-        AUTHENTICATED_READ("authenticated-read"),
+        PUBLIC_READ("public-read", public = true),
+        PUBLIC_READ_WRITE("public-read-write", public = true),
+        AUTHENTICATED_READ("authenticated-read", public = true),
         BUCKET_OWNER_READ("bucket-owner-read"),
         BUCKET_OWNER_FULL_CONTROL("bucket-owner-full-control"),
         ;
