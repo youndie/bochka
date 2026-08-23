@@ -14,4 +14,10 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.coroutines.test)
+    // Somebody else's S3 client, in the tests of the module somebody else's tests would use
+    // (M-230). The live-client harness is four containers looking at the server from outside the
+    // process, and none of them can be the client of the embedded mode: on the JVM that client is
+    // a library in the same JVM. So the oracle for this module belongs in `check`, not in a script
+    // that needs docker.
+    testImplementation(libs.minio)
 }
