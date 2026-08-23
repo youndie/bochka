@@ -24,6 +24,12 @@ junit = "5.11.4"
 # Reads compiled classes in a test. The only dependency here that exists to check a property of the
 # code rather than to be part of it.
 asm = "9.10.1"
+# The client the embedded niche is actually occupied with on the JVM, and a test dependency of
+# `bochka-embedded` only (M-230). It is here as an **oracle**, not as a reference: the MinIO
+# *server* rejects keys S3 accepts and is explicitly not the standard here (project rule), while
+# its *client* is somebody else's signer and framer, which is the whole point. Checked against
+# maven-metadata.xml on 2026-08-23: 9.0.3 is the last version.
+minio = "9.0.3"
 
 [libraries]
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -31,6 +37,7 @@ coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", ve
 junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
 junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
 asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
+minio = { module = "io.minio:minio", version.ref = "minio" }
 benchmark-runtime = { module = "org.jetbrains.kotlinx:kotlinx-benchmark-runtime", version.ref = "benchmark" }
 
 [plugins]

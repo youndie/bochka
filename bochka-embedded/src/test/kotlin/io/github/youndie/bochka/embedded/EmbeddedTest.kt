@@ -6,6 +6,7 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse.BodyHandlers
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
@@ -110,6 +111,20 @@ class EmbeddedTest {
             assertEquals(500, head(bochka, "/anything"))
             assertEquals(500, head(bochka, "/anything"))
             assertTrue(head(bochka, "/anything") != 500)
+        }
+    }
+
+    @Test
+    fun `статус, которому двойник не может назвать код, отвергается`() {
+        // M-231, и это то же правило, по которому сервер отвергает непринимаемую политику: ответ,
+        // принятый и названный неверно, узнаётся не ошибкой, а тестом, который прошёл зря.
+        // `404` двойник назвать не может — отказ вводится до разбора запроса, и `NoSuchBucket`
+        // от `NoSuchKey` он в этот момент не отличает.
+        Bochka.start().use { bochka ->
+            val refusal = assertFailsWith<IllegalArgumentException> { bochka.failNext(404) }
+
+            assertTrue(refusal.message!!.contains("404"), refusal.message!!)
+            assertTrue(refusal.message!!.contains("503"), "the message names what can be ordered")
         }
     }
 
