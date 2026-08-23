@@ -214,7 +214,11 @@ Three independent levels, because each is blind to what the others catch:
 2. **Live clients, from the first milestone rather than after it** — `aws-cli`, `boto3`, `rclone`,
    `mc`. This is the only level where the first two findings above show up at all. It also runs
    them at once: eight uploads of eight keys, and eight uploads of *one* key, which must leave an
-   object equal to one of them rather than a mixture of two.
+   object equal to one of them rather than a mixture of two. Those four are containers looking at
+   the server from outside the process, which cannot be the client of the **embedded** mode: on the
+   JVM that client is a library in the same JVM. So `bochka-embedded` carries its own foreign
+   client — `io.minio:minio`, eleven operations and a multipart upload — and it runs in the gate
+   rather than in a script that needs docker.
 3. **Somebody else's suite as a counter** — `ceph/s3-tests`, wired up early not to pass but to
    produce a number, with an exclusion list committed to the repository and a reason on every line.
    The count of enabled tests is printed next to the percentage, because otherwise a rising score
