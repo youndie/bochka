@@ -329,7 +329,9 @@ than a convenience, because terminating TLS inside the JVM would cost the read p
 project is built around. [deploy/](deploy/) has the configuration and the reasoning.
 
 There is a Helm chart in [deploy/helm/bochka](deploy/helm/bochka) with a harness that installs it
-into a real kubelet, and from the next release it is published as an OCI package beside the image.
+into a real kubelet, and it is published as an OCI package beside the image —
+`oci://ghcr.io/youndie/charts/bochka`, versioned on its own because a chart that fixes a label has
+nothing to do with the server it installs.
 What it is for is stated rather than left to be inferred: production on one machine. Helm is not
 how anybody runs a store in a test — that is the section below — so there is no mode in which the
 volume is optional. `heapProfile: small` there asks for the smaller of the two shipped profiles,
@@ -356,7 +358,7 @@ same signature verification, same four body framings, same storage.
 
 ```kotlin
 repositories { maven("https://reposilite.kotlin.website/snapshots") }
-dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:0.2.0") }
+dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:0.4.0") }
 ```
 
 A store per test class, reset between tests — what is expensive is the start, not the state:
