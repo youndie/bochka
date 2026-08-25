@@ -30,6 +30,14 @@ asm = "9.10.1"
 # its *client* is somebody else's signer and framer, which is the whole point. Checked against
 # maven-metadata.xml on 2026-08-23: 9.0.3 is the last version.
 minio = "9.0.3"
+# Мутационное тестирование. **Гоняется CLI, а не Gradle-плагин**, и это не вкусовщина:
+# `info.solidsoft.gradle.pitest` последний раз выпускался в сентябре 2023 года, то есть под Gradle 8,
+# а движок жив и вышел 2026-08-04 — проверено по maven-metadata.xml обоих. Через плагин пришлось бы
+# чинить чужую совместимость с Gradle 9 ради запуска, который и так есть отдельной программой.
+pitest = "1.25.9"
+# Отдельный артефакт, потому что pitest сам не знает ни одного тестового движка: без него прогон
+# находит ноль тестов и выглядит как код, который нечем убить.
+pitestJunit5 = "1.2.3"
 
 [libraries]
 coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
@@ -38,6 +46,8 @@ junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "jun
 junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
 asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
 minio = { module = "io.minio:minio", version.ref = "minio" }
+pitest-cli = { module = "org.pitest:pitest-command-line", version.ref = "pitest" }
+pitest-junit5 = { module = "org.pitest:pitest-junit5-plugin", version.ref = "pitestJunit5" }
 benchmark-runtime = { module = "org.jetbrains.kotlinx:kotlinx-benchmark-runtime", version.ref = "benchmark" }
 
 [plugins]

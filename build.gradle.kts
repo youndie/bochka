@@ -173,5 +173,88 @@ subprojects {
                 exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
             }
         }
+
+        // Мутационное тестирование: прогон, а не упражнение.
+        //
+        // В M28 семь мутаций делались руками и нашли двух сторожей, которых не ловило **ничто**,
+        // и два теста, проходивших не по той причине, что написана в их именах. Такой тест зелёный,
+        // выглядит покрытием и останется зелёным, если убрать проверку, ради которой он написан.
+        // Отсюда задача: тот же вопрос, заданный подряд, а не там, где хватило внимания.
+        //
+        // Задача **не входит в `check`** и входить не должна. Она долгая, а её результат — не
+        // порог, а список выживших, каждого из которых читают отдельно: процент выживаемости —
+        // такое же число ни о чём, как процент покрытия (`docs/mutation.md`).
+        if (project.name != "bochka-benchmark") {
+            val pitest = configurations.create("pitest")
+            dependencies.add("pitest", rootProject.libs.pitest.cli)
+            dependencies.add("pitest", rootProject.libs.pitest.junit5)
+
+            tasks.register<JavaExec>("mutationTest") {
+                group = "verification"
+                description = "Ломает этот модуль по одному месту и говорит, что тесты не заметили"
+
+                // Классы нужны собранные, а тесты — заведомо зелёные: pitest отказывается
+                // мутировать код, чей набор падает и без мутации, и это правильный отказ.
+                dependsOn(tasks.named("test"))
+
+                classpath = pitest
+                mainClass.set("org.pitest.mutationtest.commandline.MutationCoverageReport")
+                javaLauncher.set(
+                    project.extensions
+                        .getByType<JavaToolchainService>()
+                        .launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) },
+                )
+
+                val sourceSets = project.extensions.getByType<SourceSetContainer>()
+                val main = sourceSets.getByName("main")
+                val test = sourceSets.getByName("test")
+                val reportDir = layout.buildDirectory.dir("reports/pitest")
+
+                // Профиль форкнутого теста едет и сюда. Миньоны pitest — отдельные JVM, и тест,
+                // сверяющий `bochka.expectedJvmArgs`, в них упадёт без мутации вовсе; прогон тогда
+                // не «нашёл дефект», а не начался. Разделитель у pitest — запятая, поэтому
+                // значения с пробелами внутри одного аргумента проходят, а с запятой — нет.
+                @Suppress("UNCHECKED_CAST")
+                val profile = rootProject.extra["bochkaJvmArgs"] as List<String>
+                val specDir =
+                    rootProject.layout.projectDirectory
+                        .dir("docs/spec")
+                        .asFile.absolutePath
+                val forkArgs =
+                    profile +
+                        listOf(
+                            "-Dbochka.expectedJvmArgs=${profile.joinToString(" ")}",
+                            "-Dbochka.specDir=$specDir",
+                            "-Djdk.httpclient.allowRestrictedHeaders=host",
+                        )
+
+                // Только код этого модуля мутируется, но на путь кладётся всё, чем он живёт.
+                val mutable = main.output.classesDirs
+                val fullPath = test.runtimeClasspath
+
+                // Ограничить прогон одним классом или семейством: `-PmutationTarget=…S3Handler`.
+                // Полный прогон модуля идёт десятки минут, а сузить его — единственный способ
+                // задать вопрос про **одно** место и получить ответ сегодня.
+                val target = providers.gradleProperty("mutationTarget").getOrElse("io.github.youndie.bochka.*")
+
+                argumentProviders.add(
+                    CommandLineArgumentProvider {
+                        listOf(
+                            "--reportDir", reportDir.get().asFile.absolutePath,
+                            "--targetClasses", target,
+                            "--targetTests", "io.github.youndie.bochka.*",
+                            "--sourceDirs", main.allSource.srcDirs.joinToString(",") { it.absolutePath },
+                            "--mutableCodePaths", mutable.joinToString(",") { it.absolutePath },
+                            "--classPath", fullPath.joinToString(",") { it.absolutePath },
+                            "--testPlugin", "junit5",
+                            "--outputFormats", "HTML,XML",
+                            "--timestampedReports", "false",
+                            "--jvmArgs", forkArgs.joinToString(","),
+                            "--threads", Runtime.getRuntime().availableProcessors().toString(),
+                        )
+                    },
+                )
+            }
+        }
     }
 }

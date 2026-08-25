@@ -5,6 +5,8 @@ import java.io.InputStreamReader
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
@@ -209,5 +211,139 @@ class HttpServerTest {
 
             assertEquals(-1, reader.read(), "the server should have closed the connection")
         }
+    }
+
+    /**
+     * The read path this whole project is built around, and until now nothing in this module ran a
+     * byte through it: `FileSlice` was constructed in `:bochka-app` and nowhere else, so `sendFile`
+     * and `sendFiltered` were reached only end to end, through S3. Thirty mutations of their
+     * arithmetic went unnoticed because no test here ever opened a file.
+     *
+     * The size is deliberate. A payload larger than the socket's send buffer makes `transferTo`
+     * return short and the loop go round again — the branch the KDoc calls "not optional" and the
+     * one a small fixture never enters.
+     */
+    private fun withFile(
+        size: Int,
+        block: (Path, ByteArray) -> Unit,
+    ) {
+        val bytes = ByteArray(size) { ('a' + it % 26).code.toByte() }
+        val path = Files.createTempFile("bochka-send", ".bin")
+        try {
+            Files.write(path, bytes)
+            block(path, bytes)
+        } finally {
+            Files.deleteIfExists(path)
+        }
+    }
+
+    private fun serving(slice: (Path) -> HttpResponse.FileSlice) =
+        { path: Path ->
+            object : HttpHandler {
+                override fun failed(
+                    head: HttpRequestParser.Head,
+                    cause: Throwable,
+                ): HttpResponse = HttpResponse(500, "Error")
+
+                override fun screen(head: HttpRequestParser.Head): HttpResponse? = null
+
+                override suspend fun handle(
+                    head: HttpRequestParser.Head,
+                    body: HttpHandler.RequestBody,
+                ): HttpResponse = HttpResponse(200, "OK", file = slice(path))
+            }
+        }
+
+    @Test
+    fun `a file goes out whole, over more socket writes than one`() {
+        withFile(400_000) { path, bytes ->
+            withServer(serving { HttpResponse.FileSlice(it, 0, bytes.size.toLong()) }(path)) { socket, reader ->
+                socket.getOutputStream().write("GET /o HTTP/1.1\r\nHost: h\r\n\r\n".toByteArray())
+                val (lines, body) = readResponse(reader)
+
+                assertEquals("HTTP/1.1 200 OK", lines.first())
+                assertTrue(lines.any { it == "Content-Length: ${bytes.size}" }, lines.toString())
+                assertEquals(String(bytes, StandardCharsets.ISO_8859_1), body)
+            }
+        }
+    }
+
+    @Test
+    fun `a range goes out as the range and not as the file`() {
+        // offset and length are two longs the loop adds to and subtracts from, and every mutation
+        // of that arithmetic survived: with offset zero and a length equal to the file, the wrong
+        // answers and the right one are the same bytes.
+        withFile(100_000) { path, bytes ->
+            val offset = 12_345L
+            val length = 50_000L
+            withServer(serving { HttpResponse.FileSlice(it, offset, length) }(path)) { socket, reader ->
+                socket.getOutputStream().write("GET /o HTTP/1.1\r\nHost: h\r\n\r\n".toByteArray())
+                val (_, body) = readResponse(reader)
+
+                val expected = String(bytes, offset.toInt(), length.toInt(), StandardCharsets.ISO_8859_1)
+                assertEquals(expected, body)
+            }
+        }
+    }
+
+    @Test
+    fun `a head states the length of the file and sends none of it`() {
+        withFile(70_000) { path, bytes ->
+            withServer(serving { HttpResponse.FileSlice(it, 0, bytes.size.toLong()) }(path)) { socket, reader ->
+                socket.getOutputStream().write("HEAD /o HTTP/1.1\r\nHost: h\r\n\r\n".toByteArray())
+                val (lines, body) = readResponse(reader, expectBody = false)
+
+                assertTrue(lines.any { it == "Content-Length: ${bytes.size}" }, lines.toString())
+                assertEquals("", body)
+            }
+        }
+    }
+
+    @Test
+    fun `a filtered range is transformed, and the filter sees the range rather than the file`() {
+        // The slow path (SSE-C, M26). It reads in 64 KiB chunks, so a range longer than one chunk
+        // and starting away from zero is the only shape that tells a correct `position + read`
+        // from an incorrect one.
+        withFile(200_000) { path, bytes ->
+            val offset = 5_000L
+            val length = 150_000L
+            val flip =
+                HttpResponse.Filter { buffer, from, count ->
+                    for (i in from until from + count) buffer[i] = (buffer[i].toInt() xor 0x20).toByte()
+                }
+            withServer(serving { HttpResponse.FileSlice(it, offset, length, through = flip) }(path)) { socket, reader ->
+                socket.getOutputStream().write("GET /o HTTP/1.1\r\nHost: h\r\n\r\n".toByteArray())
+                val (_, body) = readResponse(reader)
+
+                val expected =
+                    ByteArray(length.toInt()) { (bytes[offset.toInt() + it].toInt() xor 0x20).toByte() }
+                assertEquals(String(expected, StandardCharsets.ISO_8859_1), body)
+            }
+        }
+    }
+
+    @Test
+    fun `a closed server gives the port back and its selector thread ends`() {
+        // `close` is three calls in a row and removing any one of them left the whole suite green:
+        // the harness closes the server at the end of every test and never asks what closing did.
+        // A server that keeps the port is what the next start collides with, and a selector thread
+        // that outlives its server is one more thread on every run that leaks one.
+        val server = HttpServer(Recording())
+        val port = server.boundPort
+        val before = Thread.getAllStackTraces().keys.count { it.name == "bochka-selector" && it.isAlive }
+
+        server.close()
+
+        // Bindable again: SO_REUSEADDR lets a port in TIME_WAIT be taken, never one still listening.
+        java.net.ServerSocket().use { it.bind(InetSocketAddress("127.0.0.1", port)) }
+
+        val deadline = System.nanoTime() + 2_000_000_000L
+        var after = before
+        while (System.nanoTime() < deadline) {
+            after = Thread.getAllStackTraces().keys.count { it.name == "bochka-selector" && it.isAlive }
+            if (after < before) break
+            Thread.sleep(20)
+        }
+        assertTrue(after < before, "the selector thread outlived the server it belongs to")
     }
 }

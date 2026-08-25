@@ -143,7 +143,7 @@ startup log names both.
 
 ## How it is checked
 
-Four levels, because each is blind to what the others catch:
+Five levels, because each is blind to what the others catch:
 
 - **the gate** — `./gradlew check`, including the 34 official AWS SigV4 vectors run in the
   *verifying* direction, and a bytecode check that fails on a lock in the read path;
@@ -154,7 +154,12 @@ Four levels, because each is blind to what the others catch:
   deployment so the number includes whatever proxies it ([docs/s3-tests.md](docs/s3-tests.md));
 - **crash and cluster** — a test that kills the JVM with `SIGKILL` mid-write and demands that
   everything the log admitted to still reads back, and a chart harness that installs into a real
-  kubelet rather than rendering YAML.
+  kubelet rather than rendering YAML;
+- **the code, broken on purpose** — [`ci/mutation.py`](ci/mutation.py) over a pitest run, asking
+  what can be changed without a single test noticing. Its answer is a list of survivors and never a
+  percentage; the first run said that removing **both** `fsync` calls leaves all 779 tests green,
+  because a `SIGKILL` kills a process and the page cache belongs to the machine
+  ([docs/mutation.md](docs/mutation.md)).
 
 The first milestone was not "seven operations" but **one `PUT` accepted four different ways** —
 signed, `UNSIGNED-PAYLOAD`, and both streaming framings — verified by clients that share no code
