@@ -44,7 +44,7 @@ jobs:
       # rather than as the wrong architecture. Cheap here and nowhere else: this image compiles
       # nothing, so emulation runs one `useradd` and a copy.
       - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v7
         with:
           context: .
