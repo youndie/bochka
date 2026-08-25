@@ -303,13 +303,13 @@ object S3Documents {
         }
 
     /**
-     * `<Tagging><TagSet>` — тот же документ на чтении, что и на записи (`s3-service-2.json:13301`),
-     * и порядок в нём по ключу, а не по тому, как теги приехали.
+     * `<Tagging><TagSet>` — the same document on a read as on a write
+     * (`s3-service-2.json:13301`), ordered by key rather than by how the tags arrived.
      *
-     * Набор тегов неупорядочен: одно и то же множество приезжает документом в одном порядке и
-     * заголовком `x-amz-tagging` в другом. Ответ по ключу означает, что у множества одно
-     * представление, каким бы способом его ни положили, — и `test_put_obj_with_tags:12281`
-     * сравнивает именно документ, а не множество.
+     * A tag set is unordered: the same set arrives as a document in one order and as an
+     * `x-amz-tagging` header in another. Answering in key order means the set has one
+     * representation whichever way it was put — and `test_put_obj_with_tags:12281` compares the
+     * document rather than the set.
      */
     fun taggingResult(tags: Map<String, String>): ByteArray =
         XmlWriter(128 + tags.size * 64).document("Tagging") {
@@ -339,12 +339,12 @@ object S3Documents {
         }
 
     /**
-     * `<LifecycleConfiguration>` — и отвечает он **тем документом, который прислали**.
+     * `<LifecycleConfiguration>` — and it answers with **the document that was sent**.
      *
-     * Правило с `<Prefix>` у самого правила и правило с `<Prefix>` внутри `<Filter>` — это два
-     * разных правила на проводе, хотя отбирают они одно и то же. `test_lifecycle_get:8451`
-     * сравнивает то, что положил, с тем, что получил, целиком, поэтому нормализация одной формы
-     * в другую — это не приведение к порядку, а другой ответ.
+     * A rule with a `<Prefix>` of its own and a rule with a `<Prefix>` inside a `<Filter>` are two
+     * different rules on the wire, though they select the same thing. `test_lifecycle_get:8451`
+     * compares what it put with what it got back, whole — so normalising one form into the other is
+     * not tidying up, it is a different answer.
      */
     fun lifecycleResult(lifecycle: Lifecycle): ByteArray =
         XmlWriter(256 + lifecycle.rules.size * 256).document("LifecycleConfiguration") {

@@ -7,13 +7,14 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /**
- * Область ключа (M19) — то, что на самом деле спрашивают под словом «права».
+ * A key's scope (M19) — what is actually being asked for under the word "permissions".
  *
- * Почти всё здесь — про **отрицательное**, и это не стиль, а необходимость: ценность такой
- * настройки ровно в том, чего она не даёт сделать. Положительных проверок мало, и полагаться на
- * них нельзя — ключ, который «всё умеет», проходит их все и в режиме `ro` тоже.
+ * Almost everything here is about the **negative**, and that is a necessity rather than a style:
+ * the value of a setting like this lies exactly in what it stops you doing. There are few positive
+ * assertions and they cannot be relied on — a key that "can do everything" passes all of them in
+ * `ro` mode too.
  *
- * Внешнее число веха не двигает: у S3 такого понятия нет, и в сьюте на него тестов нет.
+ * The milestone moves no external number: S3 has no such notion, and the suite has no tests for it.
  */
 class KeyScopeTest {
     private fun readOnly() = KeyScope(KeyScope.Mode.RO)
@@ -27,13 +28,13 @@ class KeyScopeTest {
             s3.put("photos", "a.txt", "тело")
         }
         S3Fixture(scope = readOnly()).use { s3 ->
-            // Бакет и объект кладём в обход HTTP: ключ этого фикстура уже не умеет, и это ровно
-            // то, что проверяет следующий тест.
+            // The bucket and the object are put around HTTP: this fixture's key can no longer do
+            // that, which is exactly what the next test checks.
             s3.store.createBucket("photos")
 
             assertEquals(200, s3.send("GET", "/photos", query = "list-type=2").status)
             assertEquals(200, s3.send("GET", "/").status)
-            assertEquals(404, s3.get("photos", "a.txt").status, "читать можно, но объекта нет")
+            assertEquals(404, s3.get("photos", "a.txt").status, "reading is allowed, but there is no object")
         }
     }
 
@@ -44,7 +45,7 @@ class KeyScopeTest {
 
             assertEquals(403, s3.put("photos", "a.txt", "тело").status)
             assertEquals(403, s3.send("DELETE", "/photos/a.txt").status)
-            assertEquals(403, s3.send("PUT", "/other").status, "создание бакета — тоже запись")
+            assertEquals(403, s3.send("PUT", "/other").status, "creating a bucket is a write too")
             assertEquals(403, s3.send("POST", "/photos/a.txt", query = "uploads").status)
             assertEquals(403, s3.send("POST", "/photos", query = "delete").status)
         }
@@ -52,14 +53,14 @@ class KeyScopeTest {
 
     @Test
     fun `a refused write leaves nothing in the store`() {
-        // Отказ принимается в `screen`, то есть по одним заголовкам (§1.2) — соединение при этом
-        // закрывается, потому что тело осталось непрочитанным.
+        // The refusal is decided in `screen`, that is from the headers alone (§1.2) — and the
+        // connection closes, because the body was left unread.
         //
-        // Тело здесь маленькое **намеренно**. Первая версия слала четыре мебибайта, чтобы «дока-
-        // зать», что их не читают, и повесила прогон: сервер отвечает и закрывает соединение,
-        // клиент в этот момент ещё пишет, и обе стороны ждут друг друга. То, что отказ приходит
-        // до тела, проверяется устройством `screen`, а не размером запроса; здесь проверяется
-        // только то, что записи не случилось.
+        // The body here is small **on purpose**. The first version sent four mebibytes to "prove"
+        // they were not read, and hung the run: the server answers and closes the connection while
+        // the client is still writing, and both sides wait for each other. That the refusal comes
+        // before the body is proved by how `screen` is built, not by the size of a request; what is
+        // checked here is only that no write happened.
         S3Fixture(scope = readOnly()).use { s3 ->
             s3.store.createBucket("photos")
 
@@ -72,8 +73,8 @@ class KeyScopeTest {
 
     @Test
     fun `a bucket outside the scope does not exist rather than being refused`() {
-        // Невидимость важнее отказа: `AccessDenied` подтверждает, что имя занято, и это уже
-        // рассказ о чужом бакете. Поэтому `NoSuchBucket`.
+        // Invisibility matters more than a refusal: an `AccessDenied` confirms the name is taken,
+        // and that is already telling somebody about another party's bucket. Hence `NoSuchBucket`.
         S3Fixture(scope = scopedTo("photos")).use { s3 ->
             s3.store.createBucket("photos")
             s3.store.createBucket("secrets")
@@ -93,14 +94,14 @@ class KeyScopeTest {
             val listing = s3.send("GET", "/").text
 
             assertTrue("photos" in listing, listing)
-            assertTrue("secrets" !in listing, "список показал чужой бакет: $listing")
+            assertTrue("secrets" !in listing, "the listing showed somebody else's bucket: $listing")
         }
     }
 
     @Test
     fun `a key nobody narrowed keeps everything`() {
-        // Настройка, которая только сужает, не может запереть владельца снаружи собственного
-        // стора — поэтому отсутствие записи означает полный доступ, а не пустой.
+        // A setting that only narrows cannot lock the owner out of their own store — so the absence
+        // of an entry means full access rather than none.
         S3Fixture().use { s3 ->
             assertEquals(200, s3.createBucket("photos").status)
             assertEquals(200, s3.put("photos", "a.txt", "тело").status)
@@ -116,8 +117,8 @@ class KeyScopeTest {
             ),
             KeyScope.parse(listOf("backup=ro@photos|reports", "app=rw")),
         )
-        // Падать при старте, а не молча раздавать не тот доступ: настройку с опечаткой лучше
-        // увидеть в отказе подняться.
+        // Fail at startup rather than quietly hand out the wrong access: a setting with a typo is
+        // better seen as a refusal to start.
         assertFailsWith<IllegalArgumentException> { KeyScope.parse(listOf("backup=readonly")) }
         assertFailsWith<IllegalArgumentException> { KeyScope.parse(listOf("backup")) }
     }

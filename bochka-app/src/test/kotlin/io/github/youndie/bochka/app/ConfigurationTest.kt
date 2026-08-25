@@ -8,15 +8,18 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * Что процесс печатает про себя при старте и что он отказывается считать настройкой (M-141, M-142).
+ * What the process prints about itself at startup, and what it refuses to treat as configuration
+ * (M-141, M-142).
  *
- * Обе задачи — про одно и то же место с разных сторон: строка конфигурации в логе. Первая про то,
- * что в ней **есть** лишнее (секрет уезжает в `kubectl logs` при каждом запуске), вторая — про то,
- * что переменная, которую документирует **собственный стартовый скрипт образа**, останавливает
- * процесс с кодом 2, то есть штатный способ передать JVM-опции этому дистрибутиву ломает его.
+ * Both tasks are about the same place from opposite sides: the configuration line in the log. The
+ * first is about what it **contains** that it should not (a secret going into `kubectl logs` on
+ * every start); the second is about a variable documented by the image's **own start script**
+ * stopping the process with code 2 — that is, the standard way of passing JVM options to this
+ * distribution breaking it.
  *
- * Проверки отрицательные: ценность обеих ровно в том, чего не должно случиться, а положительная
- * проверка («настройка прочиталась») проходит и с секретом в логе, и без него.
+ * The assertions are negative: the value of both lies exactly in what must not happen, while a
+ * positive assertion ("the configuration was read") passes with the secret in the log and without
+ * it.
  */
 class ConfigurationTest {
     private fun of(vararg environment: Pair<String, String>) =

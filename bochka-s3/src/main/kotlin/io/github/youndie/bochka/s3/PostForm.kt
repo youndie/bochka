@@ -3,25 +3,26 @@ package io.github.youndie.bochka.s3
 import io.github.youndie.bochka.s3.sigv4.S3Error
 
 /**
- * `multipart/form-data` — пятая форма входного пути, и единственная, которая переворачивает его
- * правило.
+ * `multipart/form-data` — the fifth form of the input path, and the only one that turns its rule
+ * upside down.
  *
- * Весь остальной вход построен на том, что отказ возможен **до** чтения тела: подпись живёт
- * в заголовках, и `403` не стоит пяти гигабайт (§1.2). У формы политика и подпись лежат
- * **внутри тела**, между полями, — аутентифицировать, не прочитав его, нельзя в принципе.
- * Это форма протокола, а не наша недоработка, и защита от неё одна: [LIMIT] до разбора и
- * `content-length-range` из самой политики после.
+ * All the rest of the input is built on refusal being possible **before** the body is read: the
+ * signature lives in the headers, and a `403` does not cost five gigabytes (§1.2). In a form the
+ * policy and the signature lie **inside the body**, between the fields — authenticating without
+ * reading it is impossible in principle. That is the protocol's shape rather than an omission of
+ * ours, and there is one defence against it: [LIMIT] before parsing, and `content-length-range`
+ * from the policy itself afterwards.
  *
- * Поле `file` по определению последнее: всё, что после него, S3 игнорирует, и клиенты на это
- * рассчитывают. Поэтому разбор идёт по порядку и останавливается на нём.
+ * The `file` field is last by definition: S3 ignores everything after it and clients rely on that.
+ * So the parsing runs in order and stops there.
  */
 object PostForm {
     /**
-     * Потолок на форму целиком, кроме содержимого файла.
+     * The bound on the whole form, the file's contents aside.
      *
-     * Двадцать килобайт — это политика, подпись и десяток полей с запасом; форма больше этого
-     * либо ошибка, либо попытка заставить сервер разобрать то, чего он не собирался читать.
-     * Проверяется **до** разбора, потому что после уже поздно.
+     * Twenty kilobytes is a policy, a signature and a dozen fields with room to spare; a form
+     * larger than that is either a mistake or an attempt to make the server parse what it never
+     * meant to read. Checked **before** parsing, because afterwards is too late.
      */
     const val LIMIT: Int = 20 * 1024
 
@@ -31,11 +32,11 @@ object PostForm {
     ) : RuntimeException(message)
 
     /**
-     * Разобранная форма: поля до `file` и границы самого файла в исходном массиве.
+     * A parsed form: the fields before `file`, and the file's own bounds inside the original array.
      *
-     * Содержимое файла **не копируется** — хранятся смещение и длина. Форма приезжает целиком
-     * в память (иначе подпись не проверить), и делать вторую копию гигабайта ради удобства
-     * значило бы удвоить единственное место, где этот сервер вынужден держать тело.
+     * The file's contents are **not copied** — an offset and a length are kept. The form arrives
+     * whole in memory (there is no other way to check the signature), and making a second copy of a
+     * gigabyte for convenience would double the one place this server is forced to hold a body.
      */
     data class Parsed(
         val fields: Map<String, String>,
@@ -46,7 +47,8 @@ object PostForm {
         operator fun get(name: String): String? = fields[name.lowercase()]
     }
 
-    /** `multipart/form-data; boundary=…` — граница из заголовка, без неё разбирать нечего. */
+    /** `multipart/form-data; boundary=…` — the boundary from the header; without it there is
+     *  nothing to parse. */
     fun boundaryOf(contentType: String?): String? {
         val value = contentType ?: return null
         if (!value.startsWith("multipart/form-data", ignoreCase = true)) return null
@@ -70,25 +72,30 @@ object PostForm {
         var fileName: String? = null
 
         var at = indexOf(body, delimiter, 0)
-        if (at < 0) throw Malformed(S3Error.MALFORMED_POST_REQUEST, "в теле нет границы формы")
+        if (at < 0) throw Malformed(S3Error.MALFORMED_POST_REQUEST, "the body has no form boundary")
 
         while (at >= 0) {
             var cursor = at + delimiter.size
-            // `--` после границы — конец формы. Проверяется до перевода строки, потому что
-            // у последней границы его может и не быть.
+            // `--` after the boundary is the end of the form. Checked before the line break,
+            // because the last boundary may not have one.
             if (cursor + 1 < body.size && body[cursor] == '-'.code.toByte() && body[cursor + 1] == '-'.code.toByte()) {
                 break
             }
             cursor = skipEndOfLine(body, cursor) ?: break
 
             val headerEnd = indexOf(body, DOUBLE_EOL, cursor)
-            if (headerEnd < 0) throw Malformed(S3Error.MALFORMED_POST_REQUEST, "у части формы нет заголовков")
+            if (headerEnd < 0) throw Malformed(S3Error.MALFORMED_POST_REQUEST, "a part of the form has no headers")
             val headers = String(body, cursor, headerEnd - cursor, Charsets.ISO_8859_1)
             val contentStart = headerEnd + DOUBLE_EOL.size
 
             val next = indexOf(body, delimiter, contentStart)
-            if (next < 0) throw Malformed(S3Error.MALFORMED_POST_REQUEST, "часть формы не закрыта границей")
-            // Перед границей стоит перевод строки, принадлежащий разделителю, а не содержимому.
+            if (next <
+                0
+            ) {
+                throw Malformed(S3Error.MALFORMED_POST_REQUEST, "a part of the form is not closed by a boundary")
+            }
+            // A line break precedes the boundary, and it belongs to the delimiter rather than to the
+            // content.
             val contentEnd = trimTrailingEndOfLine(body, contentStart, next)
 
             val name = dispositionValue(headers, "name")?.lowercase()
@@ -96,7 +103,7 @@ object PostForm {
                 fileOffset = contentStart
                 fileLength = contentEnd - contentStart
                 fileName = dispositionValue(headers, "filename")
-                // Всё после `file` S3 игнорирует, и клиенты на это рассчитывают.
+                // S3 ignores everything after `file`, and clients rely on that.
                 break
             }
             if (name != null) {
@@ -105,7 +112,7 @@ object PostForm {
             at = next
         }
 
-        if (fileOffset < 0) throw Malformed(S3Error.MALFORMED_POST_REQUEST, "в форме нет поля file")
+        if (fileOffset < 0) throw Malformed(S3Error.MALFORMED_POST_REQUEST, "the form has no file field")
         return Parsed(fields, fileOffset, fileLength, fileName)
     }
 
@@ -132,7 +139,8 @@ object PostForm {
         return end
     }
 
-    /** `Content-Disposition: form-data; name="key"; filename="a.txt"` — значение по имени. */
+    /** `Content-Disposition: form-data; name="key"; filename="a.txt"` — a value looked up by
+     *  name. */
     private fun dispositionValue(
         headers: String,
         attribute: String,

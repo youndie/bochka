@@ -288,11 +288,12 @@ class ObjectStore(
     )
 
     /**
-     * Именованные настройки бакета — теги, CORS и что появится дальше — байтами, как они пришли.
+     * A bucket's named settings — tags, CORS and whatever comes next — as the bytes they arrived
+     * as.
      *
-     * Ядро знает, что у бакета есть настройки, и не знает, что означает `tagging`: разбирает их
-     * слой S3, которому и положено знать этот словарь. Ключ внешней карты — имя бакета, чтобы
-     * удаление бакета уносило настройки одним движением.
+     * The core knows a bucket has settings and does not know what `tagging` means: the S3 layer
+     * parses them, and it is the layer whose business that vocabulary is. The outer map is keyed by
+     * bucket name, so deleting a bucket takes its settings with it in one move.
      */
     private val subresources = ConcurrentHashMap<String, ConcurrentHashMap<String, ByteArray>>()
 
@@ -385,8 +386,9 @@ class ObjectStore(
 
                         is IndexRecord.BucketDeleted -> {
                             buckets.remove(record.bucket)
-                            // Настройки уходят вместе с бакетом: иначе бакет, созданный заново под тем
-                            // же именем, унаследовал бы чужие теги и CORS, и узнали бы об этом не сразу.
+                            // The settings go with the bucket: otherwise a bucket recreated under
+                            // the same name would inherit somebody else's tags and CORS, and that
+                            // would not be noticed at once.
                             subresources.remove(record.bucket)
                             versioningStates.remove(record.bucket)
                             objectLocks.remove(record.bucket)
@@ -588,13 +590,14 @@ class ObjectStore(
     )
 
     /**
-     * Меняет теги существующего объекта, не трогая его байты.
+     * Changes the tags of an existing object without touching its bytes.
      *
-     * Это единственная операция, которая переписывает метаданные уже лежащего объекта, и потому
-     * она делается тем же `compute`, что и запись: между чтением и записью иначе появляется окно,
-     * в котором объект успевает смениться, и теги достанутся не тому.
+     * This is the only operation that rewrites the metadata of an object already in place, which is
+     * why it goes through the same `compute` a write does: otherwise a window opens between the
+     * read and the write in which the object has time to change, and the tags land on the wrong
+     * one.
      *
-     * `false` — объекта нет; теги существуют только у него.
+     * `false` means there is no object; tags exist only on one.
      */
     fun setTags(
         bucket: String,
@@ -612,15 +615,17 @@ class ObjectStore(
     }
 
     /**
-     * Забывает всё: бакеты, объекты, настройки, загрузки в полёте — и **удаляет их файлы**.
+     * Forgets everything — buckets, objects, settings, uploads in flight — and **deletes their
+     * files**.
      *
-     * Для тестового двойника это операция между тестами: перезапуск стоит нового стора, нового
-     * сокета и нового журнала, а сброс — очистки структур и одного обхода каталога. Тысяча
-     * раундов без удаления файлов заполнила бы диск тем, на что никто не смотрит.
+     * For a test double this is the operation between tests: a restart costs a new store, a new
+     * socket and a new journal, while a reset costs clearing some structures and one walk of a
+     * directory. A thousand rounds without deleting files would fill the disk with something nobody
+     * ever looks at.
      *
-     * Журнал при этом **пишется заново с нуля**, а не дополняется надгробиями: смысл сброса в том,
-     * что состояния больше нет, а журнал из миллиона удалений — это состояние, которое придётся
-     * переигрывать при следующем открытии.
+     * The journal is **written again from scratch** rather than appended to with tombstones: the
+     * point of a reset is that there is no state any more, and a journal of a million deletions is
+     * state that will have to be replayed at the next open.
      */
     fun reset() {
         writing.withLock {
@@ -644,17 +649,17 @@ class ObjectStore(
         }
     }
 
-    /** Документ настройки, или `null`, если её не клали или сняли. */
+    /** A setting's document, or `null` if it was never put or has been removed. */
     fun bucketSubresource(
         bucket: String,
         name: String,
     ): ByteArray? = subresources[bucket]?.get(name)
 
     /**
-     * Кладёт настройку или снимает её (`document == null`).
+     * Puts a setting or removes it (`document == null`).
      *
-     * Пишется в журнал, потому что это состояние бакета: конфигурация, пережившая перезапуск
-     * только в памяти, — это конфигурация, о которой клиенту сказали неправду.
+     * Written to the journal, because this is state of the bucket: a configuration that survives a
+     * restart only in memory is a configuration the client was told an untruth about.
      */
     fun putBucketSubresource(
         bucket: String,
@@ -2221,8 +2226,8 @@ class ObjectStore(
                         ),
                     )
                     records++
-                    // Настройки — тоже живое состояние: уплотнение, потерявшее их, потеряло бы
-                    // конфигурацию, о которой клиенту уже ответили.
+                    // Settings are live state too: a compaction that lost them would lose a
+                    // configuration the client has already been told about.
                     for ((name, document) in subresources[bucket].orEmpty()) {
                         fresh.append(IndexRecord.encode(IndexRecord.BucketSubresource(bucket, name, document)))
                         records++

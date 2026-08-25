@@ -158,10 +158,11 @@ class S3Router(
         ) : Route
 
         /**
-         * Именованная настройка бакета: `?tagging`, `?cors`.
+         * A bucket's named setting: `?tagging`, `?cors`.
          *
-         * Одним маршрутом на три метода и на оба имени, потому что различаются они только тем,
-         * какой документ разбирать, — а это вопрос к слою, который знает документы.
+         * One route for three methods and both names, because the only thing that differs between
+         * them is which document to parse — and that is a question for the layer that knows
+         * documents.
          */
         data class BucketSubresource(
             val bucket: String,
@@ -197,7 +198,8 @@ class S3Router(
             val versionId: String? = null,
         ) : Route
 
-        /** `?tagging` у объекта: те же три метода, но теги живут в метаданных объекта. */
+        /** `?tagging` on an object: the same three methods, with the tags living in the object's
+         *  metadata. */
         data class ObjectTagging(
             val bucket: String,
             val key: ObjectKey,
@@ -205,11 +207,11 @@ class S3Router(
         ) : Route
 
         /**
-         * `OPTIONS` — preflight, и он единственный не подписывается.
+         * `OPTIONS` — the preflight, and the only thing that is not signed.
          *
-         * Браузер шлёт его до всякой авторизации: у клиентского кода в этот момент нет ни ключа,
-         * ни повода его показывать. Проверка подписи для него отключается **по маршруту**, а не
-         * по методу вообще, чтобы «неподписанный» не расползлось.
+         * The browser sends it before any authorisation: at that moment the client code has neither
+         * a key nor a reason to present one. Signature checking is switched off for it **per
+         * route** rather than per method, so that "unsigned" does not spread.
          */
         data class Preflight(
             val bucket: String,
@@ -486,9 +488,9 @@ class S3Router(
         val key = ObjectKey(UriCodec.decode(rawKey))
         val uploadId = params["uploadId"]
 
-        // Preflight приходит на тот адрес, который браузер собирается запросить, — то есть чаще
-        // на объект, чем на бакет. Правила при этом принадлежат бакету, поэтому ключ здесь
-        // не нужен и маршрут тот же.
+        // A preflight arrives at the address the browser intends to request — that is, more often
+        // at an object than at a bucket. The rules belong to the bucket, so the key is not needed
+        // here and the route is the same.
         if (method == "OPTIONS") return Route.Preflight(bucket)
 
         return when (method) {
@@ -660,11 +662,11 @@ class S3Router(
         const val HEALTH_PATH = "-/healthy"
 
         /**
-         * Настройки, которые bochka **хранит**, а не отвергает.
+         * The settings bochka **stores** rather than refuses.
          *
-         * Список нарочно отдельный от [BUCKET_SUBRESOURCES] и проверяется раньше: то, что мы
-         * умеем, должно перехватываться до общего отказа, и добавление новой настройки — это
-         * строчка здесь, а не правка трёх ветвей маршрутизации.
+         * Deliberately a separate list from [BUCKET_SUBRESOURCES], and checked earlier: what this
+         * server can do has to be intercepted before the blanket refusal, and adding a new setting
+         * is a line here rather than an edit to three routing branches.
          */
         val CONFIGURABLE_SUBRESOURCES =
             setOf(

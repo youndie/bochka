@@ -66,21 +66,22 @@ class Bochka private constructor(
     val objectCount: Int get() = store.objectCount
 
     /**
-     * Какие бакеты есть — для утверждения в тесте, а не для работы.
+     * Which buckets exist — for an assertion in a test rather than for work.
      *
-     * Через `ListBuckets` то же самое стоит подписанного запроса и разбора XML, то есть проверка
-     * начинает зависеть от двух вещей вместо одной. Тест, упавший на подписи, ничего не говорит
-     * про бакеты.
+     * The same thing through `ListBuckets` costs a signed request and an XML parse, so the
+     * assertion starts depending on two things instead of one. A test that failed on the signature
+     * says nothing about buckets.
      */
     val bucketNames: List<String> get() = store.bucketNames()
 
     /**
-     * Забывает всё, не перезапуская сервер: порт, эндпоинт и ключи остаются теми же.
+     * Forgets everything without restarting the server: the port, the endpoint and the keys stay
+     * the same.
      *
-     * То, что зовут между тестами. Перезапуск стоит нового стора и нового сокета, а значит
-     * и нового эндпоинта, который придётся куда-то передать; сброс не стоит ничего из этого.
-     * Заготовленные отказы снимаются тоже — иначе отказ, заведённый в одном тесте, срабатывает
-     * в следующем, и ищут его там, где не заводили.
+     * The thing called between tests. A restart costs a new store and a new socket, and therefore a
+     * new endpoint that has to be passed somewhere; a reset costs none of that. Primed refusals are
+     * cleared too — otherwise a refusal set up in one test fires in the next, and it gets hunted
+     * for where it was never set up.
      */
     fun reset() {
         store.reset()
@@ -88,21 +89,21 @@ class Bochka private constructor(
     }
 
     /**
-     * Прогоняет правила жизненного цикла **сейчас** и говорит, что удалил.
+     * Runs the lifecycle rules **now** and says what it deleted.
      *
-     * Фоновый обход идёт и сам, но тест, который его ждёт, — это тест со `sleep`, а `sleep`
-     * в тесте либо делает его медленным, либо делает его мигающим, обычно и то и другое. Здесь
-     * обход зовут, и он заканчивается до возврата: правило со сроком в один «день» при
-     * `lifecycleDay = Duration.ofMillis(1)` проверяется без единой паузы.
+     * The background sweep runs on its own too, but a test that waits for it is a test with a
+     * `sleep` in it, and a `sleep` in a test either makes it slow or makes it flaky, usually both.
+     * Here the sweep is called and finishes before returning: a rule with a term of one "day" and
+     * `lifecycleDay = Duration.ofMillis(1)` is checked without a single pause.
      */
     fun sweepLifecycle(): LifecycleSweep.Report = lifecycle.sweep()
 
     /**
-     * Кладёт объект напрямую, минуя HTTP: заготовка для теста, который начинается **с состояния**.
+     * Puts an object directly, bypassing HTTP: a fixture for a test that starts **from a state**.
      *
-     * Не «удобная обёртка над SDK»: тут нет ни подписи, ни сокета, ни разбора. Тест, которому
-     * нужно, чтобы объект просто был, иначе платит за это десятком вызовов клиента и своей
-     * первой минутой чтения.
+     * Not a "convenient wrapper over the SDK": there is no signature, no socket and no parsing
+     * here. A test that just needs an object to exist otherwise pays for it with a dozen client
+     * calls and the first minute of its reader's attention.
      */
     @JvmOverloads
     fun put(
@@ -117,26 +118,27 @@ class Bochka private constructor(
     }
 
     /**
-     * Ответить [status] на следующие [times] запросов — что бы клиент ни спросил.
+     * Answer [status] to the next [times] requests, whatever the client asks for.
      *
-     * Единственное, чего настоящее хранилище не умеет и что от тестового двойника нужно всерьёз:
-     * заставить клиентский код пережить отказ. Снимается само, когда счётчик кончится, и целиком
-     * при [reset].
+     * The one thing a real store cannot do and a test double is seriously needed for: making client
+     * code live through a refusal. It clears itself once the counter runs out, and entirely on
+     * [reset].
      *
-     * **[times] обязан покрывать повторы клиента, а не число вызовов в тесте** (M-231). Клиент
-     * с повторами съедает заготовку целиком и молча: у `io.minio:minio` 9.x повторяются `408`,
-     * `429`, `499`, `500`, `502`, `503`, `504` и `520`, по умолчанию пять раз, — поэтому
-     * `failNext(503, times = 1)` до вызывающего кода не доходит **вовсе**, повтор попадает уже
-     * в исправный сервер, и тест, проверяющий обработку отказа, зеленеет, ничего не проверив.
-     * Это ровно тот класс, ради которого заготовка и заведена. Число берут с запасом
-     * (`times = 10` переживает пять повторов), а «отказ дошёл» проверяют утверждением про
-     * исключение, а не отсутствием жалоб.
+     * **[times] has to cover the client's retries rather than the number of calls in the test**
+     * (M-231). A retrying client eats the priming whole and silently: `io.minio:minio` 9.x retries
+     * `408`, `429`, `499`, `500`, `502`, `503`, `504` and `520`, five times by default — so
+     * `failNext(503, times = 1)` never reaches the calling code **at all**, the retry lands on a
+     * healthy server, and a test checking refusal handling goes green having checked nothing. That
+     * is exactly the class of thing the priming exists for. Take the number with room to spare
+     * (`times = 10` outlives five retries), and assert that "the refusal arrived" through an
+     * exception rather than through an absence of complaints.
      *
-     * Заказать можно статус, которому следует код ошибки: `400`, `403`, `405`, `408`, `412`,
-     * `429`, `500`, `501`, `502`, `503`, `504`, `507`. Прочие — `IllegalArgumentException`:
-     * отказ вводится до разбора запроса, поэтому `404` двойник назвать не может (`NoSuchBucket`
-     * или `NoSuchKey` — он ещё не знает), а код, выбранный наугад, стоил бы дороже отсутствующего:
-     * клиент переключается именно по коду.
+     * The statuses that can be ordered are the ones an error code follows from: `400`, `403`,
+     * `405`, `408`, `412`, `429`, `500`, `501`, `502`, `503`, `504`, `507`. Anything else is an
+     * `IllegalArgumentException`: the refusal is injected before the request is parsed, so the
+     * double cannot name a `404` (`NoSuchBucket` or `NoSuchKey` — it does not know yet), and a code
+     * picked at random would cost more than a missing one, because a client branches on exactly
+     * that code.
      */
     @JvmOverloads
     fun failNext(
@@ -193,10 +195,10 @@ class Bochka private constructor(
             val failures = InjectedFailures(handler)
             val server = HttpServer(LoggingHandler(failures, enabled = log), bindAddress = "127.0.0.1", port = port)
             val sweep = LifecycleSweep(store, Lifecycles(store), lifecycleDay)
-            // Фоновый обход есть и здесь, потому что правило, принятое и не исполняемое, врёт
-            // одинаково в сервере и в тестовом двойнике. Поток — демон и живёт до `close`:
-            // встроенная bochka заводится по одной на тест, и оставленный поток на тест — это
-            // сначала странные логи, а потом кончившаяся память.
+            // The background sweep runs here too, because a rule accepted and not carried out lies
+            // the same way in the server and in a test double. The thread is a daemon and lives
+            // until `close`: an embedded bochka is started once per test, and one leaked thread per
+            // test means strange logs first and exhausted memory after.
             val ticker =
                 java.util.concurrent.Executors.newSingleThreadScheduledExecutor { runnable ->
                     Thread(runnable, "bochka-lifecycle").apply { isDaemon = true }
@@ -204,14 +206,15 @@ class Bochka private constructor(
             val period = lifecycleDay.dividedBy(10).coerceIn(Duration.ofMillis(50), Duration.ofHours(1))
             ticker.scheduleWithFixedDelay(
                 {
-                    // Поймать здесь **обязательно**, и по причине, не имеющей отношения к тому,
-                    // что случилось: у `scheduleWithFixedDelay` исключение из задачи отменяет её
-                    // навсегда — и молча. Обход перестал бы выполняться вовсе, а узнать об этом
-                    // было бы неоткуда.
+                    // Catching here is **mandatory**, for a reason that has nothing to do with what
+                    // went wrong: an exception out of a `scheduleWithFixedDelay` task cancels it
+                    // forever, and silently. The sweep would stop running altogether with nowhere
+                    // to learn that from.
                     //
-                    // Но причина **называется** (M-207): раньше здесь стоял голый
-                    // `runCatching { … }`, и сломанный обход в встроенном режиме был неотличим
-                    // от исправного. Печатается так же, как в `Main.startLifecycle`.
+                    // But the cause is **named** (M-207): what stood here was a bare
+                    // `runCatching { … }`, and a broken sweep in the embedded mode was
+                    // indistinguishable from a healthy one. Printed the same way as in
+                    // `Main.startLifecycle`.
                     runCatching { sweep.sweep() }.onFailure { println("lifecycle sweep failed: $it") }
                 },
                 period.toMillis(),

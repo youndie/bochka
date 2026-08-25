@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Читает отчёт pitest и печатает то, ради чего мутации гоняются: список выживших.
+"""Reads a pitest report and prints what mutations are run for: the list of survivors.
 
-Процент выживаемости здесь не считается специально. Он мерил бы **набор мутаций**, а набор
-на Kotlin наполовину состоит из кода, который написал компилятор, — и тогда цифра растёт от
-того, что кто-то убрал `data class`, а не от того, что тесты стали строже.
+There is deliberately no survival percentage here. It would measure the **mutation set**, and on
+Kotlin half of that set is code the compiler wrote — so the figure moves when somebody drops a
+`data class`, not when the tests get stricter.
 
-Отсюда три корзины вместо одной:
+Hence three buckets rather than one:
 
-* **шум** — мутация в коде, которого нет в исходнике. Каждое правило ниже названо поимённо
-  и печатает свой счёт: правило, съевшее настоящую мутацию, обязано быть видно;
-* **не покрыто** — до этой строки не доходил ни один тест. Это карта, а не приговор;
-* **выжило** — тест туда доходил и мутацию не заметил. Единственная корзина, которую читают.
+* **noise** — a mutation in code that is not in the source. Every rule below is named and prints its
+  own count: a rule that swallowed a real mutation has to be visible;
+* **uncovered** — no test ever reached this line. That is a map, not a verdict;
+* **survived** — a test did reach it and did not notice the change. The only bucket anybody reads.
 """
 
 from __future__ import annotations
@@ -21,46 +21,47 @@ import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from pathlib import Path
 
-# Правило = (имя, предикат). Имя печатается со счётом, поэтому «прочее» здесь быть не может:
-# корзина без имени — это место, где потерянную мутацию никто не найдёт.
+# A rule is (name, predicate). The name is printed with its count, so there can be no bucket called
+# "other" here: a bucket without a name is where a lost mutation would never be found.
 NOISE_RULES: list[tuple[str, object]] = [
     (
-        "компиляторная проверка на null (Intrinsics)",
+        "compiler null check (Intrinsics)",
         lambda m: "kotlin/jvm/internal/Intrinsics" in m["desc"],
     ),
     (
-        "возобновление корутины (ResultKt::throwOnFailure, Continuation::resumeWith)",
+        "coroutine resumption (ResultKt::throwOnFailure, Continuation::resumeWith)",
         lambda m: "kotlin/ResultKt::throwOnFailure" in m["desc"]
         or "kotlin/coroutines/Continuation::resumeWith" in m["desc"],
     ),
     (
-        "маркер COROUTINE_SUSPENDED у suspend-функции",
+        "the COROUTINE_SUSPENDED marker of a suspend function",
         lambda m: m["desc"].startswith("replaced return value with null")
         and "Lkotlin/coroutines/Continuation;" in m["signature"],
     ),
     (
-        # Лямбда билдера возвращает Unit, и её значение выбрасывается вызывающим. Подмена на null
-        # ненаблюдаема по устройству, а не потому, что теста нет.
-        "значение Unit-лямбды, которое никто не читает",
+        # A builder lambda returns Unit and its value is discarded by the caller. Replacing it with
+        # null is unobservable by construction rather than because a test is missing.
+        "the Unit value of a lambda nobody reads",
         lambda m: m["desc"].startswith("replaced return value with null")
         and m["signature"].endswith("Lkotlin/Unit;"),
     ),
     (
-        "сгенерированный член data class (equals/hashCode/toString/copy/componentN)",
+        "a generated data class member (equals/hashCode/toString/copy/componentN)",
         lambda m: m["method"] in ("equals", "hashCode", "toString", "copy", "copy$default")
         or re.fullmatch(r"component\d+", m["method"]) is not None,
     ),
     (
-        "синтетический метод компилятора (доступ, мост, лямбда)",
+        "a synthetic compiler method (accessor, bridge, lambda)",
         lambda m: m["method"].startswith("access$")
         or m["method"].endswith("$lambda")
         or "$default" in m["method"],
     ),
 ]
 
-# pitest считает эти статусы убитыми, и он прав: мутация, повесившая процесс или съевшая кучу,
-# отличима от исходного кода — в этом весь вопрос. Названы отдельно, потому что читаются иначе:
-# TIMED_OUT в цикле нередко значит «мутация сломала выход», а не «тест поймал».
+# pitest counts these statuses as detected, and it is right to: a mutation that hung the process or
+# ate the heap is distinguishable from the original code, which is the whole question. Named
+# separately because they read differently: a TIMED_OUT inside a loop often means the mutation broke
+# the exit rather than that a test caught it.
 DETECTED = {"KILLED", "TIMED_OUT", "MEMORY_ERROR", "RUN_ERROR"}
 
 
@@ -88,13 +89,13 @@ def main() -> int:
         return 2
     path = Path(sys.argv[1])
     if not path.exists():
-        print(f"нет отчёта: {path}", file=sys.stderr)
+        print(f"no report at {path}", file=sys.stderr)
         return 2
 
     mutations = parse(path)
     if not mutations:
-        # Пустой отчёт — это не «нечего ломать», это не запустившийся прогон.
-        print(f"{path}: ноль мутаций — прогон не состоялся", file=sys.stderr)
+        # An empty report is not "nothing to break", it is a run that never happened.
+        print(f"{path}: zero mutations — the run did not take place", file=sys.stderr)
         return 1
 
     noise = Counter()
@@ -119,22 +120,22 @@ def main() -> int:
 
     print(f"# {path}")
     print()
-    print(f"мутаций всего      {len(mutations)}")
-    print(f"  шум              {sum(noise.values())}  (правила ниже)")
-    print(f"  обнаружено       {detected}")
-    print(f"  не покрыто       {n_unc}  <- ни один тест не доходил")
-    print(f"  ВЫЖИЛО           {n_surv}  <- читать поимённо")
+    print(f"mutations       {len(mutations)}")
+    print(f"  noise         {sum(noise.values())}  (rules below)")
+    print(f"  detected      {detected}")
+    print(f"  uncovered     {n_unc}  <- no test ever reached it")
+    print(f"  SURVIVED      {n_surv}  <- read one by one")
     print()
 
-    print("шум по правилам:")
+    print("noise by rule:")
     for name, count in noise.most_common():
         print(f"  {count:5}  {name}")
     for name, _ in NOISE_RULES:
         if name not in noise:
-            print(f"  {0:5}  {name}  <- правило ничего не подобрало")
+            print(f"  {0:5}  {name}  <- this rule matched nothing")
     print()
 
-    for title, bucket in (("ВЫЖИЛИ", survived), ("НЕ ПОКРЫТЫ", uncovered)):
+    for title, bucket in (("SURVIVED", survived), ("UNCOVERED", uncovered)):
         if not bucket:
             continue
         print(f"## {title}")
@@ -152,6 +153,6 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except BrokenPipeError:
-        # `| head` закрывает трубу, и трассировка на этом месте выглядит как поломка отчёта.
+        # `| head` closes the pipe, and a traceback at that point reads as a broken report.
         sys.stdout = None
         raise SystemExit(0)

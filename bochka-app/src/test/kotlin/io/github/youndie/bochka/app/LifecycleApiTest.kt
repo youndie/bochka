@@ -9,15 +9,16 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * `?lifecycle` целиком: три метода, пять отказов и заголовок `x-amz-expiration`.
+ * `?lifecycle` in full: three methods, five refusals and the `x-amz-expiration` header.
  *
- * Форма — `docs/spec/s3-service-2.json`, `BucketLifecycleConfiguration` (`:2127`) и
- * `LifecycleRule` (`:7896`). Тела запросов сняты с botocore, а не сочинены: половина проверок
- * здесь про то, чем документ **приезжает**, а не про то, чем он выглядит в документации.
+ * The shape is in `docs/spec/s3-service-2.json`, `BucketLifecycleConfiguration` (`:2127`) and
+ * `LifecycleRule` (`:7896`). The request bodies were taken off botocore rather than invented: half
+ * the assertions here are about what the document **arrives as** rather than about what it looks
+ * like in the documentation.
  */
 class LifecycleApiTest {
     @Test
-    fun `бакет без правил отвечает отказом с именем, а не пустым документом`() {
+    fun `a bucket with no rules answers with a named refusal rather than an empty document`() {
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
 
@@ -29,7 +30,7 @@ class LifecycleApiTest {
     }
 
     @Test
-    fun `правила кладутся, читаются и снимаются`() {
+    fun `rules are put, read and removed`() {
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
 
@@ -41,21 +42,21 @@ class LifecycleApiTest {
             assertTrue("<ID>test1/</ID>" in read.text, read.text)
             assertTrue("<Days>31</Days>" in read.text, read.text)
             assertTrue("<Days>120</Days>" in read.text, read.text)
-            // Префикс уехал тем же членом, каким приехал: `test_lifecycle_get:8451` сравнивает
-            // правила целиком, и правило с `<Filter>` вместо `<Prefix>` — уже другое правило.
+            // The prefix left as the same member it arrived as: `test_lifecycle_get:8451` compares
+            // whole rules, and a rule with `<Filter>` instead of `<Prefix>` is a different rule.
             assertTrue("<Prefix>test1/</Prefix>" in read.text, read.text)
             assertFalse("<Filter>" in read.text, read.text)
 
             assertEquals(204, s3.send("DELETE", "/photos", query = "lifecycle").status)
             assertEquals(404, s3.send("GET", "/photos", query = "lifecycle").status)
-            // И ещё раз, по пустому месту: `test_lifecycle_delete:8462` пинит `204` с обеих
-            // сторон — до постановки правил и после снятия.
+            // And once more against nothing: `test_lifecycle_delete:8462` pins `204` on both sides
+            // — before the rules are put in place and after they are removed.
             assertEquals(204, s3.send("DELETE", "/photos", query = "lifecycle").status)
         }
     }
 
     @Test
-    fun `правило без идентификатора получает его на записи и держит на чтении`() {
+    fun `a rule without an identifier gets one on the write and keeps it on the read`() {
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             val body =
@@ -66,31 +67,31 @@ class LifecycleApiTest {
 
             val first = s3.send("GET", "/photos", query = "lifecycle").text
             assertTrue("<ID>" in first, first)
-            // Тот же самый при повторном чтении, а не новый каждый раз: идентификатор придуман
-            // один раз и лежит в сохранённом документе.
+            // The same one on a second read rather than a new one every time: the identifier was
+            // invented once and lives in the stored document.
             assertEquals(first, s3.send("GET", "/photos", query = "lifecycle").text)
         }
     }
 
     @Test
-    fun `сломанный документ и неисполнимый документ отвергаются разными кодами`() {
+    fun `a broken document and an unenforceable one are refused with different codes`() {
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
 
             fun refusal(body: String) = s3.send("PUT", "/photos", query = "lifecycle", body = body.toByteArray())
 
-            // `Status: enabled` — документ не является документом (`ExpirationStatus`, `:4881`).
+            // `Status: enabled` — the document is not a document (`ExpirationStatus`, `:4881`).
             val status = refusal(rule("<Expiration><Days>2</Days></Expiration>", status = "enabled"))
             assertEquals(400, status.status, status.text)
             assertTrue("MalformedXML" in status.text, status.text)
 
-            // Всё остальное разбирается и не может быть исполнено.
+            // Everything below parses and cannot be carried out.
             val unworkable =
                 listOf(
-                    "ноль дней" to rule("<Expiration><Days>0</Days></Expiration>"),
-                    "длинный ID" to rule("<Expiration><Days>2</Days></Expiration>", id = "a".repeat(256)),
-                    "дата не в полночь" to rule("<Expiration><Date>1970-08-22T19:08:21Z</Date></Expiration>"),
-                    "переход между классами хранения" to
+                    "zero days" to rule("<Expiration><Days>0</Days></Expiration>"),
+                    "a long ID" to rule("<Expiration><Days>2</Days></Expiration>", id = "a".repeat(256)),
+                    "a date that is not midnight" to rule("<Expiration><Date>1970-08-22T19:08:21Z</Date></Expiration>"),
+                    "a transition between storage classes" to
                         rule(
                             "<Expiration><Date>2023-09-27T00:00:00Z</Date></Expiration>" +
                                 "<Transition><Date>2030-01-01T00:00:00Z</Date>" +
@@ -103,13 +104,13 @@ class LifecycleApiTest {
                 assertTrue("InvalidArgument" in answer.text, "$what: ${answer.text}")
             }
 
-            // И ни один из отказов не оставил после себя настройку.
+            // And none of the refusals left a configuration behind.
             assertEquals(404, s3.send("GET", "/photos", query = "lifecycle").status)
         }
     }
 
     @Test
-    fun `два правила с одним идентификатором — отказ`() {
+    fun `two rules with one identifier are a refusal`() {
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             val body =
@@ -128,10 +129,11 @@ class LifecycleApiTest {
     }
 
     @Test
-    fun `пустой фильтр приезжает самозакрывающимся элементом и принимается`() {
-        // Ровно то тело, которое botocore кладёт на провод для `Filter: {}`
-        // (`test_lifecycle_set_empty_filter:9349`). До M23 сервер отвечал на него `MalformedXML`,
-        // потому что читатель XML отвергал `<x/>` — а другой формы у стандартного клиента нет.
+    fun `an empty filter arrives as a self-closing element and is accepted`() {
+        // Exactly the body botocore puts on the wire for `Filter: {}`
+        // (`test_lifecycle_set_empty_filter:9349`). Until M23 the server answered it with
+        // `MalformedXML`, because the XML reader refused `<x/>` — and the standard client has no
+        // other form.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             val body =
@@ -144,19 +146,19 @@ class LifecycleApiTest {
     }
 
     @Test
-    fun `x-amz-expiration отвечает на запись и на чтение`() {
-        // `test_lifecycle_expiration_header_put:9162` и `…_head:9174`. Форма заголовка —
-        // `expiry-date="…", rule-id="…"`, и кейс разбирает её регуляркой, то есть проверяет
-        // именно её, а не наличие чего-нибудь.
+    fun `x-amz-expiration answers on a write and on a read`() {
+        // `test_lifecycle_expiration_header_put:9162` and `…_head:9174`. The header's form is
+        // `expiry-date="…", rule-id="…"`, and the case parses it with a regular expression — so it
+        // checks that form rather than the presence of something.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             s3.send("PUT", "/photos", query = "lifecycle", body = rule().toByteArray())
 
             val written = s3.put("photos", "days1/foo", "bar")
             val header = written.header("x-amz-expiration")
-            assertNotNull(header, "заголовка нет на записи")
+            assertNotNull(header, "the header is missing on the write")
             assertTrue(Regex("""expiry-date="(.+)", rule-id="rule1"""").containsMatchIn(header), header)
-            // Полночь UTC, а не «сутки от сейчас»: округление — часть того, что S3 обещает.
+            // Midnight UTC rather than "a day from now": the rounding is part of what S3 promises.
             assertTrue(header.contains("00:00:00 GMT"), header)
 
             assertEquals(header, s3.send("HEAD", "/photos/days1/foo").header("x-amz-expiration"))
@@ -165,10 +167,10 @@ class LifecycleApiTest {
     }
 
     @Test
-    fun `x-amz-expiration отсутствует, когда объект под правило не подходит`() {
-        // Вторая половина `test_lifecycle_expiration_header_tags_head:9192`, и та, которую легко
-        // не сделать: кейс ставит правило по тегу, читает заголовок, меняет тег в правиле и
-        // требует, чтобы заголовка не стало.
+    fun `x-amz-expiration is absent when the object does not match the rule`() {
+        // The second half of `test_lifecycle_expiration_header_tags_head:9192`, and the half that is
+        // easy to leave undone: the case puts a rule on a tag, reads the header, changes the tag in
+        // the rule, and demands the header be gone.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             s3.put("photos", "obj_key1", "body")
@@ -180,7 +182,7 @@ class LifecycleApiTest {
             s3.send("PUT", "/photos", query = "lifecycle", body = taggedRule("key2", "tag1").toByteArray())
             assertNull(s3.send("HEAD", "/photos/obj_key1").header("x-amz-expiration"))
 
-            // И объект вне префикса тоже без заголовка, при том же правиле.
+            // And an object outside the prefix carries no header either, under the same rule.
             s3.send("PUT", "/photos", query = "lifecycle", body = rule().toByteArray())
             s3.put("photos", "elsewhere/foo", "bar")
             assertNull(s3.send("HEAD", "/photos/elsewhere/foo").header("x-amz-expiration"))
@@ -188,10 +190,10 @@ class LifecycleApiTest {
     }
 
     @Test
-    fun `укороченный день виден в заголовке, а не только в обходе`() {
-        // Единица «дня» приходит в заголовок из той же настройки, по которой удаляет обход. Если
-        // бы заголовок считался сутками всегда, сервер обещал бы один срок и удалял по другому —
-        // и увидеть это можно было бы только по пропавшему объекту.
+    fun `a shortened day shows in the header, not only in the sweep`() {
+        // The unit of a "day" reaches the header from the same setting the sweep deletes on. If the
+        // header were always computed in twenty-four hours, the server would promise one term and
+        // delete on another — and the only way to see that would be a vanished object.
         S3Fixture(lifecycleDay = Duration.ofSeconds(10)).use { s3 ->
             s3.createBucket("photos")
             s3.send("PUT", "/photos", query = "lifecycle", body = rule().toByteArray())
@@ -199,7 +201,7 @@ class LifecycleApiTest {
             val header = s3.put("photos", "days1/foo", "bar").header("x-amz-expiration")
 
             assertNotNull(header)
-            // Десять секунд от «сейчас» — это сегодня, а не полночь через сутки.
+            // Ten seconds from now is today, not the midnight a day away.
             assertFalse(header.contains("00:00:00 GMT"), header)
         }
     }

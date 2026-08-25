@@ -163,17 +163,18 @@ object Main {
     }
 
     /**
-     * Обход правил жизненного цикла — отдельным потоком от уборки, и вот почему.
+     * The lifecycle sweep, on a thread of its own separate from housekeeping — and here is why.
      *
-     * Уборка занимается своим хозяйством и опаздывать ей можно: сирота, подобранная через час,
-     * ничем не отличается от подобранной сразу. Здесь опоздание видно снаружи — объект, которому
-     * вышел срок, всё ещё отвечает на `GET`, — поэтому период не настраивается отдельно, а
-     * выводится из длительности «дня»: десятая его часть, но не чаще раза в секунду и не реже
-     * раза в час. У суток это час; у пятисекундного «дня», которым пользуется тест, — секунда.
+     * Housekeeping tends to its own affairs and is allowed to be late: an orphan collected an hour
+     * on is no different from one collected at once. Here lateness is visible from outside — an
+     * object past its term still answers a `GET` — so the period is not configured separately but
+     * derived from the length of a "day": a tenth of it, no oftener than once a second and no rarer
+     * than once an hour. For twenty-four hours that is an hour; for the five-second "day" a test
+     * uses, a second.
      *
-     * Отдельная настройка была бы четвёртым способом сказать то же самое и первым способом
-     * рассогласовать: «день» в секунду при обходе раз в час означает правила, которые не
-     * исполняются, и ни одна из двух настроек по отдельности не выглядит неверной.
+     * A separate setting would be a fourth way of saying the same thing and the first way of making
+     * the two disagree: a "day" of one second with a sweep once an hour means rules that are not
+     * carried out, and neither of the two settings looks wrong on its own.
      */
     private fun startLifecycle(
         store: ObjectStore,

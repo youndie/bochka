@@ -6,15 +6,16 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 
 /**
- * Ручка здоровья: единственный ответ этого сервера без подписи и без бакета (M-143).
+ * The health endpoint: the one answer this server gives with no signature and no bucket (M-143).
  *
- * Заведена не ради удобства. Kubelet считает провалом любой ответ, кроме 2xx/3xx, а честный ответ
- * этого сервера неаутентифицированному клиенту — `403`; отсюда в чарте стояла проба `exec`, то есть
- * форк `bash` каждый период внутри cgroup, где бюджет памяти посчитан почти впритык. С этой ручкой
- * проба становится `httpGet` и перестаёт стоить процесса.
+ * Not added for convenience. A kubelet counts anything but a 2xx/3xx as a failure, and this
+ * server's honest answer to an unauthenticated client is `403`; hence the chart used to carry an
+ * `exec` probe — a `bash` fork every period inside a cgroup whose memory budget is counted almost
+ * to the edge. With this endpoint the probe becomes an `httpGet` and stops costing a process.
  *
- * Проверки здесь наполовину отрицательные, и это то же правило, что у прав и у замка: дыра в
- * проверке подписи ценна ровно тем, насколько она узкая. Один путь, два метода, только path-style.
+ * The assertions here are half negative, and that is the same rule as for permissions and for the
+ * lock: a hole in signature checking is worth exactly how narrow it is. One path, two methods,
+ * path-style only.
  */
 class HealthTest {
     private val s3 = S3Fixture()

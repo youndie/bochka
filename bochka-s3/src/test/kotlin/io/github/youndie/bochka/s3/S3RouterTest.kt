@@ -171,9 +171,10 @@ class S3RouterTest {
     }
 
     @Test
-    fun `а теги и CORS перехватываются до общего отказа`() {
-        // Эта строчка раньше стояла в тесте выше: `?tagging` отвергался по имени. Список отказов —
-        // это запись рамок, и когда рамки меняются, меняется он, а не поведение под него.
+    fun `tags and CORS are intercepted before the blanket refusal`() {
+        // This line used to stand in the test above: `?tagging` was refused by name. The list of
+        // refusals is a record of the boundaries, and when the boundaries move it is the list that
+        // changes, not the behaviour to fit it.
         assertIs<S3Router.Route.ObjectTagging>(pathStyle.route("PUT", "h", "/photos/a.txt", "tagging"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "tagging"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "cors"))
@@ -183,35 +184,36 @@ class S3RouterTest {
         // the same as a feature the server does not have.
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "versioning"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "versioning"))
-        // Третий переезд был M20: `?policy`, `?lifecycle` и `?acl` начали отвечать на `GET` —
-        // «настройки нет» это вопрос с определённым ответом, — но **только** на `GET`.
-        // Шестой — M-201а, и это конец той половинчатости: сервер начал политику **исполнять**,
-        // поэтому принимающая сторона перестала быть отказом. Направление то же, что у всех
-        // предыдущих переездов, и обратного здесь не бывает.
+        // The third move was M20: `?policy`, `?lifecycle` and `?acl` began answering `GET` — "there
+        // is no setting" is a question with a definite answer — but **only** `GET`. The sixth was
+        // M-201а, and that ended the half-measure: the server started **enforcing** the policy, so
+        // the accepting side stopped being a refusal. The direction is the same as in every earlier
+        // move, and there is no travelling back.
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "policy"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "policy"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("DELETE", "h", "/photos", "policy"))
-        // И пятый переезд, M27: `?acl` ушёл из отвечающих на `GET` к настройкам на обоих методах,
-        // и у объекта появился свой маршрут. Направление то же самое: сервер начал **делать** то,
-        // что этот подресурс описывает — владелец и canned ACL решают, кому что можно, — а до тех
-        // пор `PUT ?acl` был отказом по имени.
+        // And the fifth move, M27: `?acl` left the answer-on-`GET` group for settings on both
+        // methods, and the object got a route of its own. The direction is the same: the server
+        // began **doing** what this subresource describes — an owner and a canned ACL decide who
+        // may do what — and until then `PUT ?acl` was a refusal by name.
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "acl"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "acl"))
         assertIs<S3Router.Route.ObjectAcl>(pathStyle.route("GET", "h", "/photos/a.txt", "acl"))
         assertIs<S3Router.Route.ObjectAcl>(pathStyle.route("PUT", "h", "/photos/a.txt", "acl"))
-        // И четвёртый переезд, M23: `?lifecycle` был среди отвечающих на `GET` и отвергающих
-        // всё остальное — а стал настройкой на трёх методах. Направление у переездов одно:
-        // подресурс уходит из отвергающих тогда, когда сервер начинает **делать** то, что тот
-        // описывает, а не когда отвечать стало удобно.
+        // And the fourth move, M23: `?lifecycle` was among those answering `GET` and refusing
+        // everything else, and became a setting on three methods. The moves all run one way: a
+        // subresource leaves the refusing group when the server begins **doing** what it describes,
+        // not when answering has become convenient.
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("GET", "h", "/photos", "lifecycle"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("PUT", "h", "/photos", "lifecycle"))
         assertIs<S3Router.Route.BucketSubresource>(pathStyle.route("DELETE", "h", "/photos", "lifecycle"))
     }
 
     @Test
-    fun `preflight маршрутизируется одинаково от бакета и от объекта`() {
-        // Правила принадлежат бакету, а браузер шлёт `OPTIONS` на тот адрес, который собирается
-        // запросить, — то есть чаще на объект. Ключ здесь не нужен ни для чего.
+    fun `a preflight routes the same way from a bucket and from an object`() {
+        // The rules belong to the bucket, while a browser sends `OPTIONS` to the address it intends
+        // to request — that is, more often to an object. The key is needed here for nothing at
+        // all.
         assertIs<S3Router.Route.Preflight>(pathStyle.route("OPTIONS", "h", "/photos", ""))
         assertIs<S3Router.Route.Preflight>(pathStyle.route("OPTIONS", "h", "/photos/a.txt", ""))
     }

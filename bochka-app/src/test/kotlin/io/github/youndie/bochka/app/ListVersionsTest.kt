@@ -7,10 +7,10 @@ import kotlin.test.assertTrue
 /**
  * `GET /<bucket>?versions` (M-107).
  *
- * До этой вехи операция отвечала обычным листингом в другой обёртке — то есть говорила, что у
- * бакета по одной версии всего и ничего никогда не удалялось. Документ при этом был правильной
- * формы, и снаружи отличить его от правды было нельзя; поэтому тесты здесь считают **строки**,
- * а не проверяют статус.
+ * Until this milestone the operation answered with an ordinary listing in a different wrapper —
+ * that is, it said the bucket held one version of everything and that nothing had ever been
+ * deleted. The document was of the right shape, and from outside it was indistinguishable from the
+ * truth; which is why the tests here count **rows** rather than check a status.
  */
 class ListVersionsTest {
     private fun S3Fixture.enable(bucket: String) {
@@ -34,8 +34,8 @@ class ListVersionsTest {
 
             assertEquals(2, Regex("<Version>").findAll(body).count(), body)
             assertEquals(1, Regex("<IsLatest>true</IsLatest>").findAll(body).count(), body)
-            // Новая первой: этот порядок — определение операции, и он же определение того,
-            // какая версия текущая.
+            // The newest first: that order is the operation's definition, and also the definition
+            // of which version is the current one.
             assertTrue(
                 body.indexOf("<IsLatest>true</IsLatest>") < body.indexOf("<IsLatest>false</IsLatest>"),
                 body,
@@ -45,7 +45,8 @@ class ListVersionsTest {
 
     @Test
     fun `a tombstone is a DeleteMarker row, not a Version with zero bytes`() {
-        // Надгробие без ETag и Size — иначе клиент сравнит его с пустым объектом и найдёт равными.
+        // A tombstone carries no ETag and no Size — otherwise a client compares it with an empty
+        // object and finds them equal.
         S3Fixture().use { s3 ->
             s3.enable("photos")
             s3.put("photos", "a.txt", "первый")
@@ -62,8 +63,8 @@ class ListVersionsTest {
 
     @Test
     fun `a bucket without versioning lists its objects at version null`() {
-        // Это уже работало (M3) и должно продолжать: чужая уборка зовёт операцию перед каждым
-        // тестом, и отказ здесь стоил 837 кейсов.
+        // This already worked (M3) and has to keep working: the foreign cleanup calls the operation
+        // before every test, and a refusal here cost 837 cases.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             s3.put("photos", "a.txt", "первый")
@@ -77,9 +78,9 @@ class ListVersionsTest {
 
     @Test
     fun `a page can end inside a key, and the two markers resume it`() {
-        // Ради этого маркеров два: страница обрывается посреди версий одного ключа, и `key-marker`
-        // в одиночку смог бы продолжить только с границы ключа — то есть либо повторив версии,
-        // либо потеряв их.
+        // This is what the two markers are for: a page breaks off in the middle of one key's
+        // versions, and `key-marker` alone could only resume from a key boundary — that is, either
+        // repeating versions or losing them.
         S3Fixture().use { s3 ->
             s3.enable("photos")
             repeat(3) { s3.put("photos", "a.txt", "версия $it") }
@@ -100,7 +101,7 @@ class ListVersionsTest {
                     ).text
 
             assertEquals(1, Regex("<Version>").findAll(second).count(), second)
-            assertTrue("версия 0" !in second, "продолжение не должно повторять уже отданное")
+            assertTrue("версия 0" !in second, "the continuation must not repeat what was already handed out")
         }
     }
 }

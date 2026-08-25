@@ -56,23 +56,24 @@ sealed interface IndexRecord {
     ) : IndexRecord
 
     /**
-     * Настройка бакета под именем: теги, CORS, а завтра что-нибудь ещё.
+     * A bucket's setting under a name: tags, CORS, and tomorrow something else.
      *
-     * Документ хранится **непрозрачно**, байтами, и это граница слоёв: ядро знает, что у бакета
-     * есть именованные настройки, и не знает, что `tagging` — это `TagSet`. Разбирает их слой S3,
-     * которому и положено знать словарь S3. Побочно это значит, что следующая настройка не потребует
-     * ни нового вида записи, ни правки ядра.
+     * The document is stored **opaquely**, as bytes, and that is a boundary between layers: the core
+     * knows a bucket has named settings and does not know that `tagging` means a `TagSet`. The S3
+     * layer parses them, and it is the layer whose business the S3 vocabulary is. A side effect is
+     * that the next setting needs neither a new record kind nor a change to the core.
      *
-     * `document == null` — настройка снята. Отдельная запись, а не отсутствие: журнал переигрывается
-     * по порядку, и «снято» обязано быть событием, иначе снятие исчезнет при восстановлении.
+     * `document == null` means the setting was removed. A record of its own rather than an absence:
+     * the journal is replayed in order, and "removed" has to be an event, or the removal disappears
+     * during recovery.
      */
     data class BucketSubresource(
         override val bucket: String,
         val name: String,
         val document: ByteArray?,
     ) : IndexRecord {
-        // ByteArray в data class сравнивается по ссылке, а эта запись сравнивается в тестах
-        // round-trip. Написано руками ровно поэтому.
+        // A ByteArray in a data class compares by reference, and this record is compared in
+        // round-trip tests. Written by hand for exactly that reason.
         override fun equals(other: Any?): Boolean =
             this === other ||
                 (
@@ -299,14 +300,14 @@ sealed interface IndexRecord {
         /** A bucket that also remembers when it was created. Kind 1 decodes to "not recorded". */
         private const val KIND_BUCKET_CREATED_AT: Byte = 12
 
-        /** Именованная настройка бакета; документ непрозрачен для ядра. */
+        /** A bucket's named setting; the document is opaque to the core. */
         private const val KIND_BUCKET_SUBRESOURCE: Byte = 13
 
         /**
-         * Те же две записи, но метаданные в них несут теги объекта.
+         * The same two records, with the metadata in them carrying the object's tags.
          *
-         * Четвёртый раз то же правило: новое поле — новый байт вида, а прежние декодируются ровно
-         * в то, чем были. Объект, записанный до тегов, тегов и не имел.
+         * The same rule for the fourth time: a new field means a new kind byte, and the earlier ones
+         * decode into exactly what they were. An object written before tags existed had no tags.
          */
         private const val KIND_PUT_WITH_TAGS: Byte = 14
         private const val KIND_UPLOAD_STARTED_WITH_TAGS: Byte = 15
@@ -619,7 +620,8 @@ sealed interface IndexRecord {
                     val key = ObjectKey(buffer.bytes())
                     val uploadId = buffer.text()
                     val startedAt = buffer.long
-                    // Теги приехали с видом 15; виды 6 и 10 их не писали, и читать там нечего.
+                    // Tags arrived with kind 15; kinds 6 and 10 never wrote them, and there is
+                    // nothing to read there.
                     val withTags =
                         kind == KIND_UPLOAD_STARTED_WITH_TAGS ||
                             kind == KIND_UPLOAD_STARTED_LOCKED ||
@@ -627,8 +629,9 @@ sealed interface IndexRecord {
                             kind == KIND_UPLOAD_STARTED_OWNED
                     val metadata = buffer.metadata(withTags = withTags)
                     val carriesChecksum = kind != KIND_UPLOAD_STARTED
-                    // Замок приехал с видом 21. Загрузка, начатая до него, замка и не несла —
-                    // и это верное чтение старой записи, а не удобное.
+                    // The lock arrived with kind 21. An upload started before it carried no lock —
+                    // and that is the correct reading of an old record rather than a convenient
+                    // one.
                     val lockable =
                         kind == KIND_UPLOAD_STARTED_LOCKED ||
                             kind == KIND_UPLOAD_STARTED_ENCRYPTED ||
@@ -818,9 +821,9 @@ sealed interface IndexRecord {
          * given — `Hello WorldÃ©` for `Hello Worldé`, which is the shape of every mojibake anybody
          * has ever debugged.
          *
-         * Теги пишутся всегда, потому что оба вида записи, которые этот файл ещё **пишет**, —
-         * новые (14 и 15); прежние виды только читаются, и там тегов нет — см. `withTags`
-         * у декодера.
+         * Tags are always written, because both record kinds this file still **writes** are the new
+         * ones (14 and 15); the earlier kinds are only read, and there are no tags there — see
+         * `withTags` on the decoder.
          */
         private fun ByteArrayOutputStream.putMetadata(metadata: Metadata) {
             with(metadata) {

@@ -36,11 +36,11 @@ class S3Fixture(
     /** What the fixture's one key may do; unrestricted unless a test narrows it (M19). */
     scope: io.github.youndie.bochka.s3.sigv4.KeyScope? = null,
     /**
-     * Сколько длится «день» правила жизненного цикла.
+     * How long a lifecycle rule's "day" lasts.
      *
-     * Сутки, как в поставке. Тест про истечение срока ставит миллисекунду — и тогда обход,
-     * который зовут руками, делает всё, что должен, без единой паузы: `sleep` в тесте либо
-     * замедляет его, либо делает мигающим, обычно и то и другое.
+     * Twenty-four hours, as shipped. A test about expiry sets a millisecond, and then the sweep,
+     * called by hand, does everything it should without a single pause: a `sleep` in a test either
+     * slows it down or makes it flaky, usually both.
      */
     private val lifecycleDay: java.time.Duration = io.github.youndie.bochka.s3.Lifecycle.DAY,
     /** Layer two of the access model, off as it ships (M28). */
@@ -69,12 +69,13 @@ class S3Fixture(
         )
 
     /**
-     * Прогоняет правила жизненного цикла — тот же обход, что крутится в сервере фоном.
+     * Runs the lifecycle rules — the same sweep that turns in the background inside the server.
      *
-     * [now] существует затем, чтобы тест истечения не зависел от того, насколько быстра машина.
-     * «День» в тесте длится миллисекунду, и при часах по умолчанию вопрос «истёк ли срок» решает
-     * то, сколько прошло между записью объекта и обходом, — величина, которой у теста нет. Один
-     * прогон в CI на этом и упал: то же дерево, зелёное здесь пять раз подряд.
+     * [now] exists so that an expiry test does not depend on how fast the machine is. A "day" in a
+     * test lasts a millisecond, and under the default clock the question "has the term passed" is
+     * decided by how much time went by between writing the object and sweeping — a quantity the
+     * test does not have. One CI run failed on exactly that: the same tree, green here five times
+     * in a row.
      */
     fun sweepLifecycle(
         now: java.time.Instant = java.time.Instant.now(),
@@ -265,12 +266,12 @@ class S3Fixture(
     }
 
     /**
-     * Неподписанный запрос — то, чем является preflight.
+     * An unsigned request, which is what a preflight is.
      *
-     * Браузер шлёт `OPTIONS` до всякой авторизации и подписать его нечем: у клиентского кода
-     * в этот момент нет ни ключа, ни повода его показывать. Поэтому это отдельный метод, а не
-     * флаг у [send]: подписанный preflight не бывает, и возможность его отправить только сбивала
-     * бы с толку.
+     * The browser sends `OPTIONS` before any authorisation and there is nothing to sign it with: at
+     * that moment the client code has neither a key nor a reason to present one. Hence a method of
+     * its own rather than a flag on [send]: there is no such thing as a signed preflight, and being
+     * able to send one would only mislead.
      */
 
     fun options(

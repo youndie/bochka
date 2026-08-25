@@ -5,12 +5,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Уборка версионированного бакета — то, что чужой сьют делает **после каждого** теста.
+ * Clearing out a versioning bucket — what the foreign suite does **after every** test.
  *
- * `nuke_prefixed_buckets` листает версии, удаляет каждую по имени и сносит бакет; если после
- * этого что-то остаётся, удаление бакета отвечает `409`, и фикстура заходит на второй круг.
- * Такой цикл выглядит снаружи не как ошибка, а как зависший сервер — 24 кейса упёрлись
- * в шестидесятисекундный таймаут именно так.
+ * `nuke_prefixed_buckets` lists the versions, deletes each by name and removes the bucket; if
+ * anything is left after that, deleting the bucket answers `409` and the fixture goes round again.
+ * From outside, that loop does not look like an error but like a hung server — 24 cases ran into
+ * the sixty-second timeout exactly that way.
  */
 class NukeVersionedBucketTest {
     @Test
@@ -24,7 +24,7 @@ class NukeVersionedBucketTest {
                 body = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>".toByteArray(),
             )
             for (i in 0 until 3) s3.put("photos", "k$i.txt", "тело $i")
-            // Как это делает фикстура: сначала обычное удаление, которое кладёт надгробия.
+            // The way the fixture does it: an ordinary delete first, which lays tombstones.
             for (i in 0 until 3) s3.send("DELETE", "/photos/k$i.txt")
 
             var rounds = 0
@@ -40,18 +40,22 @@ class NukeVersionedBucketTest {
             }
 
             val left = s3.send("GET", "/photos", query = "versions").text
-            assertTrue("<Version>" !in left && "<DeleteMarker>" !in left, "осталось: $left")
-            assertEquals(204, s3.send("DELETE", "/photos").status, "бакет не сносится — фикстура пойдёт на второй круг")
+            assertTrue("<Version>" !in left && "<DeleteMarker>" !in left, "what is left: $left")
+            assertEquals(
+                204,
+                s3.send("DELETE", "/photos").status,
+                "the bucket does not go — the fixture will loop round again",
+            )
         }
     }
 
     @Test
     fun `more than one page of versions can be paged through and deleted`() {
-        // `test_bucket_list_delimiter_not_skip_special:683` кладёт 1004 ключа, и уборка после него
-        // листает версии страницами. Тест на трёх ключах этого не видит: разница ровно в том,
-        // что вторая страница резюмируется по паре маркеров, и ошибка там стоит целого сьюта —
-        // бакет не пустеет, `DeleteBucket` отвечает `BucketNotEmpty`, и каждый следующий кейс
-        // падает в своей фикстуре.
+        // `test_bucket_list_delimiter_not_skip_special:683` puts 1004 keys, and the cleanup after
+        // it lists versions in pages. A test on three keys does not see that: the difference is
+        // exactly that the second page resumes on a pair of markers, and a mistake there costs the
+        // whole suite — the bucket does not empty, `DeleteBucket` answers `BucketNotEmpty`, and
+        // every case after it fails in its own fixture.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             for (i in 0 until 1004) s3.put("photos", "k%04d.txt".format(i), "т")
@@ -82,17 +86,22 @@ class NukeVersionedBucketTest {
                 versionMarker = body.substringAfter("<NextVersionIdMarker>").substringBefore("</NextVersionIdMarker>")
             }
 
-            assertEquals(1004, deleted, "уборка обязана увидеть все версии, а не первую страницу")
-            assertEquals(204, s3.send("DELETE", "/photos").status, "бакет не пустеет — фикстура встанет")
+            assertEquals(1004, deleted, "the cleanup has to see every version rather than the first page")
+            assertEquals(
+                204,
+                s3.send("DELETE", "/photos").status,
+                "the bucket does not empty — the fixture will stall",
+            )
         }
     }
 
     @Test
     fun `one pass of the cleanup empties a versioned bucket`() {
-        // Уборка чужого сьюта листает версии **один раз** и удаляет каждую по имени. Мой первый
-        // тест ходил кругами до пяти раз и потому не увидел бы разницы: если после одного прохода
-        // что-то остаётся, `DeleteBucket` отвечает `BucketNotEmpty`, и следующий кейс падает
-        // в своей фикстуре — это и есть механизм, которым один тест валит весь прогон.
+        // The foreign suite's cleanup lists the versions **once** and deletes each by name. The
+        // first version of this test went round up to five times and so would not have seen the
+        // difference: if anything is left after one pass, `DeleteBucket` answers `BucketNotEmpty`
+        // and the next case fails in its fixture — which is the mechanism by which one test takes
+        // down a whole run.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             s3.send(
@@ -109,10 +118,10 @@ class NukeVersionedBucketTest {
                     .findAll(body)
                     .map { it.groupValues[1] to it.groupValues[2] }
                     .toList()
-            assertEquals(3, ids.size, "листинг версий обязан показать все три: $body")
+            assertEquals(3, ids.size, "the version listing has to show all three: $body")
             for ((key, version) in ids) s3.send("DELETE", "/photos/$key", query = "versionId=$version")
 
-            assertEquals(204, s3.send("DELETE", "/photos").status, "одного прохода должно хватить")
+            assertEquals(204, s3.send("DELETE", "/photos").status, "one pass has to be enough")
         }
     }
 }

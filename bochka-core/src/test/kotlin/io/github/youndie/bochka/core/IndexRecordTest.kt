@@ -35,9 +35,9 @@ class IndexRecordTest {
                     ),
             ),
         )
-        // Загрузка с замком (M-175). Поля новые, у них есть значения по умолчанию, и именно
-        // поэтому круговой ход надо проверять с непустыми: запись, где всё по умолчанию, проходит
-        // и тогда, когда её вовсе не пишут.
+        // An upload carrying a lock (M-175). The fields are new and have defaults, which is exactly
+        // why the round trip has to be checked with non-empty ones: a record where everything is a
+        // default passes even when it is never written at all.
         roundTrip(
             IndexRecord.UploadStarted(
                 bucket = "photos",
@@ -139,8 +139,8 @@ class IndexRecordTest {
 
     @Test
     fun `an encrypted version keeps its algorithm, its key md5 and its iv`() {
-        // M-186. Ключа среди них нет и быть не может: сервер, который его хранит, стирает всю
-        // разницу между шифрованием ключом клиента и своим собственным.
+        // M-186. The key is not among them and cannot be: a server that keeps it erases the whole
+        // difference between encrypting under the client's key and under its own.
         val record =
             IndexRecord.Put(
                 bucket = "photos",
@@ -164,8 +164,8 @@ class IndexRecordTest {
 
     @Test
     fun `a version written before encryption existed decodes as unencrypted`() {
-        // Правило этого файла: уже записанная запись обязана расшифровываться ровно в то, что она
-        // значила. «Не зашифрован» — это правда о ней, а не умолчание, которое кто-то подставил.
+        // The rule of this file: a record already written has to decode into exactly what it meant.
+        // "Not encrypted" is a truth about it rather than a default somebody supplied.
         val record =
             IndexRecord.Put(
                 bucket = "photos",

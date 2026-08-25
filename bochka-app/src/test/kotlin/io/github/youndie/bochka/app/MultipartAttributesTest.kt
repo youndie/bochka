@@ -326,10 +326,11 @@ class MultipartAttributesTest {
         )
 
     @Test
-    fun `GetObjectAttributes называет версию, на которую ответил`() {
-        // Операция принимает `?versionId` с M-164 и до сих пор не говорила, какая версия
-        // ответила: `GetObjectAttributesOutput.VersionId` — член-заголовок `x-amz-version-id`.
-        // Клиент узнаёт об этом как `KeyError: 'VersionId'`, то есть никак.
+    fun `GetObjectAttributes names the version it answered for`() {
+        // The operation has accepted `?versionId` since M-164 and until now never said which
+        // version answered: `GetObjectAttributesOutput.VersionId` is a header member,
+        // `x-amz-version-id`. A client learns of that as `KeyError: 'VersionId'` — that is, not at
+        // all.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             s3.send(

@@ -27,12 +27,14 @@ data class Metadata(
      */
     val checksum: Checksum? = null,
     /**
-     * Теги объекта — **не** то же, что [user], хотя оба выглядят как строки к строкам.
+     * An object's tags are **not** the same thing as [user], though both look like strings mapped
+     * to strings.
      *
-     * У них своя пара операций (`PutObjectTagging`/`GetObjectTagging`), свои пределы (десять тегов
-     * против двух килобайт метаданных) и своя жизнь: теги меняют у существующего объекта, не
-     * трогая его байты, а `x-amz-meta-*` приезжают вместе с телом и без него не меняются. Хранить
-     * их в одной карте значило бы, что `PutObjectTagging` умеет переписать `x-amz-meta-*`.
+     * They have a pair of operations of their own (`PutObjectTagging`/`GetObjectTagging`), bounds of
+     * their own (ten tags against two kilobytes of metadata) and a life of their own: tags are
+     * changed on an existing object without touching its bytes, while `x-amz-meta-*` arrive with
+     * the body and do not change without it. Keeping them in one map would mean that
+     * `PutObjectTagging` can rewrite `x-amz-meta-*`.
      */
     val tags: Map<String, String> = emptyMap(),
 ) {

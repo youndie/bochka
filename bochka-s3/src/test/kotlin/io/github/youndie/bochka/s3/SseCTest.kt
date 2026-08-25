@@ -8,12 +8,12 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Три заголовка SSE-C и то, чем они обязаны быть (M-185, M-187).
+ * The three SSE-C headers and what they have to be (M-185, M-187).
  *
- * Форма — `docs/spec/s3-service-2.json:11815`. Отдельно и подробно проверяется смещение: у
- * счётчикового режима любой байт расшифровывается без предыдущих, и **на этом держится `Range`**.
- * Ошибка здесь не видна ни на одном тесте, читающем объект целиком, — и это ровно тот случай,
- * когда «работает» и «верно» расходятся молча.
+ * The shape is in `docs/spec/s3-service-2.json:11815`. The offset is checked separately and in
+ * detail: in counter mode any byte decrypts without the ones before it, and **`Range` rests on
+ * that**. A mistake here is invisible to every test that reads an object whole — exactly the case
+ * where "it works" and "it is right" part company quietly.
  */
 class SseCTest {
     private val key = "pO3upElrwuEXSoFwCfnZPdSsmt/xWeFa0N9KgDijwVs="
@@ -47,7 +47,8 @@ class SseCTest {
 
     @Test
     fun `a partial set is refused rather than read as unencrypted`() {
-        // Алгоритм без ключа — это не «без шифрования», это клиент, который считает, что шифрует.
+        // An algorithm with no key is not "no encryption", it is a client that believes it is
+        // encrypting.
         val refused =
             assertFailsWith<SseC.Refused> {
                 SseC.of(headers(SseC.ALGORITHM_HEADER to "AES256"))
@@ -113,9 +114,9 @@ class SseCTest {
 
     @Test
     fun `decryption from an offset gives the same bytes as decryption from the start`() {
-        // Свойство, на котором держится `Range`: байт номер N расшифровывается без байтов до него.
-        // Проверяется на смещениях, которые не кратны блоку, потому что кратные работают и у
-        // неверной реализации — она просто пропускает целые блоки.
+        // The property `Range` rests on: byte number N decrypts without the bytes before it.
+        // Checked at offsets that are not multiples of the block, because multiples work for an
+        // incorrect implementation too — it simply skips whole blocks.
         val sse =
             SseC(
                 SseC.AES256,

@@ -7,7 +7,7 @@ import org.junit.jupiter.api.extension.BeforeAllCallback
 import org.junit.jupiter.api.extension.ExtensionContext
 
 /**
- * bochka на время тестового класса, со сбросом между тестами.
+ * A bochka for the lifetime of a test class, with a reset between tests.
  *
  * ```kotlin
  * class MyTest {
@@ -17,7 +17,7 @@ import org.junit.jupiter.api.extension.ExtensionContext
  *         val bochka = BochkaExtension()
  *     }
  *
- *     @Test fun `сохраняет отчёт`() {
+ *     @Test fun `stores the report`() {
  *         val s3 = S3Client.builder()
  *             .endpointOverride(URI.create(bochka.endpoint))
  *             .forcePathStyle(true)
@@ -27,20 +27,20 @@ import org.junit.jupiter.api.extension.ExtensionContext
  * }
  * ```
  *
- * ## Почему стор один на класс, а не один на тест
+ * ## Why one store per class rather than one per test
  *
- * Потому что дорого не состояние, а **старт**: новый стор — это новый журнал, новый сокет и новый
- * эндпоинт, который придётся куда-то передать. Состояние снимается [Bochka.reset], и это очистка
- * пары структур.
+ * Because what is expensive is not the state but the **start**: a new store means a new journal, a
+ * new socket and a new endpoint that has to be passed somewhere. The state is cleared by
+ * [Bochka.reset], and that is a couple of structures emptied.
  *
- * Изоляция при этом не хуже: после каждого теста не остаётся ни объектов, ни бакетов, ни
- * заготовленных отказов. Что остаётся — порт и ключи, то есть ровно то, что тесту удобно считать
- * постоянным.
+ * The isolation is no worse for it: after every test there are no objects, no buckets and no primed
+ * refusals left. What is left is the port and the keys — exactly what a test finds convenient to
+ * treat as constant.
  *
- * **Тестам, которые идут параллельно в одном классе, этого мало**, и здесь это сказано вслух,
- * а не оставлено на догадку: они делят один стор, и сброс между ними сотрёт чужое. Для таких
- * заводите по расширению на тест (`@RegisterExtension` на нестатическом поле) — тогда цена старта
- * платится за изоляцию сознательно.
+ * **For tests running in parallel inside one class this is not enough**, and that is said out loud
+ * here rather than left to be guessed: they share one store, and a reset between them wipes
+ * somebody else's work. For those, take one extension per test (`@RegisterExtension` on a
+ * non-static field) — then the cost of starting is paid for isolation knowingly.
  */
 class BochkaExtension
     @JvmOverloads
@@ -52,9 +52,10 @@ class BochkaExtension
         AfterAllCallback {
         private var running: Bochka? = null
 
-        /** Поднятый сервер. Обращение до старта — ошибка использования, а не `null`. */
+        /** The running server. Asking for it before the start is a usage error rather than a
+         *  `null`. */
         val bochka: Bochka
-            get() = running ?: error("bochka ещё не поднята: расширение зарегистрировано, но тест не начался")
+            get() = running ?: error("bochka is not up yet: the extension is registered but no test has started")
 
         val endpoint: String get() = bochka.endpoint
         val accessKeyId: String get() = bochka.accessKeyId

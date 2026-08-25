@@ -14,21 +14,21 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Правила жизненного цикла: `docs/spec/s3-service-2.json` — `BucketLifecycleConfiguration`
+ * Lifecycle rules: `docs/spec/s3-service-2.json` — `BucketLifecycleConfiguration`
  * (`:2127`), `LifecycleRule` (`:7896`), `LifecycleRuleFilter` (`:7960`),
  * `LifecycleRuleAndOperator` (`:7936`), `ExpirationStatus` (`:4881`).
  *
- * **Тела здесь — не сочинённые.** Каждое снято с botocore: тот же вызов, каким его делает сьют,
- * с перехватом `before-send`. Это важно ровно для трёх мест, где сочинённое тело было бы другим:
- * `<Filter />` и `<Prefix />` приезжают самозакрывающимися, `Date` приезжает моментом
- * (`2017-09-27T00:00:00Z`), а не датой, и заведомо неверная дата приезжает **исправной**, потому
- * что клиент понял её как секунды эпохи.
+ * **The bodies here are not invented.** Every one was taken off botocore: the same call the suite
+ * makes, captured with a `before-send` hook. That matters in exactly three places where an invented
+ * body would have been different: `<Filter />` and `<Prefix />` arrive self-closing, `Date` arrives
+ * as an instant (`2017-09-27T00:00:00Z`) rather than as a date, and a date that is meant to be
+ * invalid arrives **valid**, because the client read it as seconds since the epoch.
  */
 class LifecycleTest {
     @Test
-    fun `правило с префиксом самого правила разбирается и возвращается тем же документом`() {
-        // `test_lifecycle_get:8451` сравнивает правила целиком: то, чем правило приехало, — часть
-        // его содержания.
+    fun `a rule with a prefix of its own parses and comes back as the same document`() {
+        // `test_lifecycle_get:8451` compares whole rules: what the rule arrived as is part of what
+        // it says.
         val body =
             """
             <LifecycleConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Rule>
@@ -46,13 +46,13 @@ class LifecycleTest {
         assertEquals(1, rule.expiration?.days)
 
         val rendered = String(S3Documents.lifecycleResult(parsed))
-        // Префикс уехал там же, где приехал, и `<Filter>` не появился.
+        // The prefix left where it arrived, and no `<Filter>` appeared.
         assertTrue("<Prefix>test1/</Prefix>" in rendered, rendered)
         assertFalse("<Filter>" in rendered, rendered)
     }
 
     @Test
-    fun `выключенное правило хранится выключенным`() {
+    fun `a disabled rule is stored disabled`() {
         val body =
             "<LifecycleConfiguration><Rule><ID>rule2</ID><Expiration><Days>2</Days></Expiration>" +
                 "<Prefix>test2/</Prefix><Status>Disabled</Status></Rule></LifecycleConfiguration>"
@@ -65,9 +65,9 @@ class LifecycleTest {
     }
 
     @Test
-    fun `правилу без идентификатора его выдают`() {
-        // `test_lifecycle_get_no_id:8494` требует `ID` в ответе у правила, которое приехало без
-        // него. Придумать его больше некому, и придумывается он один раз — на записи.
+    fun `a rule without an identifier is given one`() {
+        // `test_lifecycle_get_no_id:8494` demands an `ID` in the answer for a rule that arrived
+        // without one. There is nobody else to invent it, and it is invented once, on the write.
         val body =
             "<LifecycleConfiguration><Rule><Expiration><Days>31</Days></Expiration>" +
                 "<Prefix>test1/</Prefix><Status>Enabled</Status></Rule></LifecycleConfiguration>"
@@ -83,10 +83,10 @@ class LifecycleTest {
     }
 
     @Test
-    fun `Status разбирается ровно двумя написаниями`() {
-        // `ExpirationStatus` — перечисление из двух значений (`:4881`), и `enabled` в нём нет.
-        // `test_lifecycle_invalid_status:9037` ждёт именно `MalformedXML`: документ не является
-        // документом, а не «число не то».
+    fun `Status parses in exactly two spellings`() {
+        // `ExpirationStatus` is an enumeration of two values (`:4881`), and `enabled` is not one of
+        // them. `test_lifecycle_invalid_status:9037` expects `MalformedXML` specifically: the
+        // document is not a document, rather than "the value is wrong".
         for (status in listOf("enabled", "disabled", "invalid", "")) {
             val body =
                 "<LifecycleConfiguration><Rule><ID>rule1</ID><Expiration><Days>2</Days></Expiration>" +
@@ -98,9 +98,10 @@ class LifecycleTest {
     }
 
     @Test
-    fun `слишком длинный идентификатор и повторённый идентификатор — InvalidArgument`() {
-        // `test_lifecycle_id_too_long:9012` и `test_lifecycle_same_id:9024`. Оба — про разборчивый
-        // документ, который нельзя исполнить, и код у них поэтому другой, чем у сломанного.
+    fun `an identifier that is too long, and a repeated one, are InvalidArgument`() {
+        // `test_lifecycle_id_too_long:9012` and `test_lifecycle_same_id:9024`. Both are about a
+        // document that parses and cannot be carried out, which is why their code differs from a
+        // malformed one's.
         val long =
             "<LifecycleConfiguration><Rule><ID>${"a".repeat(256)}</ID>" +
                 "<Expiration><Days>2</Days></Expiration><Prefix>test1/</Prefix>" +
@@ -116,7 +117,7 @@ class LifecycleTest {
                 "</LifecycleConfiguration>"
         assertFailsWith<S3Requests.InvalidArgument> { S3Requests.parseLifecycle(same.toByteArray()) }
 
-        // Ровно 255 — предел, а не запрет.
+        // Exactly 255 is the bound, not the refusal.
         val edge =
             "<LifecycleConfiguration><Rule><ID>${"a".repeat(255)}</ID>" +
                 "<Expiration><Days>2</Days></Expiration><Prefix>test1/</Prefix>" +
@@ -132,9 +133,10 @@ class LifecycleTest {
     }
 
     @Test
-    fun `ноль дней у истечения — InvalidArgument`() {
-        // `test_lifecycle_expiration_days0:9111`, и комментарий кейса объясняет, почему это не
-        // «просто отказ»: у перехода ноль дней законен, у истечения — нет.
+    fun `zero days on an expiration is InvalidArgument`() {
+        // `test_lifecycle_expiration_days0:9111`, and the case's own comment explains why this is
+        // not "a refusal like any other": zero days is legal on a transition and not on an
+        // expiration.
         val body =
             "<LifecycleConfiguration><Rule><ID>rule1</ID><Expiration><Days>0</Days></Expiration>" +
                 "<Prefix>days0/</Prefix><Status>Enabled</Status></Rule></LifecycleConfiguration>"
@@ -143,13 +145,13 @@ class LifecycleTest {
     }
 
     @Test
-    fun `дата истечения обязана быть полночью UTC`() {
-        // Оба тела сняты с botocore. Первое — `Date: '2017-09-27'`
-        // (`test_lifecycle_set_date:9065`), второе — `Date: '20200101'`
-        // (`test_lifecycle_set_invalid_date:9075`), которое клиент понял как секунды эпохи и
-        // превратил в исправную дату с временем 19:08:21. Отличить одно от другого можно только
-        // правилом «время всегда полночь»: без него второй кейс проходит, и правило со сроком
-        // посреди дня остаётся в бакете.
+    fun `an expiration date has to be midnight UTC`() {
+        // Both bodies were taken off botocore. The first is `Date: '2017-09-27'`
+        // (`test_lifecycle_set_date:9065`); the second is `Date: '20200101'`
+        // (`test_lifecycle_set_invalid_date:9075`), which the client read as seconds since the epoch
+        // and turned into a valid date at 19:08:21. The only thing that tells them apart is the
+        // rule "the time is always midnight": without it the second case passes and a rule expiring
+        // in the middle of a day stays in the bucket.
         val midnight =
             "<LifecycleConfiguration><Rule><ID>rule1</ID>" +
                 "<Expiration><Date>2017-09-27T00:00:00Z</Date></Expiration>" +
@@ -172,10 +174,11 @@ class LifecycleTest {
     }
 
     @Test
-    fun `правило с переходом отвергается по имени`() {
-        // Класс хранения один, потому что диск один. `test_lifecycle_transition_set_invalid_date:9476`
-        // ждёт от этого тела `400`, и получает его — но не за дату, а за сам переход, и это
-        // записано здесь, чтобы кейс не выглядел проходящим по той причине, по которой он писался.
+    fun `a rule with a transition is refused by name`() {
+        // There is one storage class because there is one disk.
+        // `test_lifecycle_transition_set_invalid_date:9476` expects `400` from this body and gets
+        // it — but for the transition rather than for the date, and that is written down here so
+        // the case does not look like it passes for the reason it was written for.
         val body =
             "<LifecycleConfiguration><Rule><ID>rule1</ID>" +
                 "<Expiration><Date>2023-09-27T00:00:00Z</Date></Expiration>" +
@@ -186,8 +189,8 @@ class LifecycleTest {
     }
 
     @Test
-    fun `пустой фильтр — это фильтр, который подходит всему`() {
-        // Тело botocore для `Filter: {}` (`test_lifecycle_set_empty_filter:9349`).
+    fun `an empty filter is a filter that matches everything`() {
+        // The botocore body for `Filter: {}` (`test_lifecycle_set_empty_filter:9349`).
         val body =
             "<LifecycleConfiguration><Rule><ID>rule1</ID>" +
                 "<Expiration><ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker></Expiration>" +
@@ -201,10 +204,10 @@ class LifecycleTest {
     }
 
     @Test
-    fun `условия фильтра складываются, сколько бы их ни назвали`() {
-        // Тело botocore для `setup_lifecycle_tags2:8667`: `Prefix`, `Tag` и `And` в одном фильтре.
-        // S3 такой документ отвергает — кейс помечен `fails_on_aws`, — а здесь он принимается и
-        // означает «и то, и другое, и третье».
+    fun `filter conditions add up, however many are named`() {
+        // The botocore body for `setup_lifecycle_tags2:8667`: `Prefix`, `Tag` and `And` in one
+        // filter. S3 refuses such a document — the case is marked `fails_on_aws` — while here it is
+        // accepted and means "all of them at once".
         val body =
             "<LifecycleConfiguration><Rule><Expiration><Days>1</Days></Expiration><ID>rule_tag1</ID>" +
                 "<Filter><Prefix>days1/</Prefix><Tag><Key>tom</Key><Value>sawyer</Value></Tag>" +
@@ -213,17 +216,17 @@ class LifecycleTest {
 
         val rule = S3Requests.parseLifecycle(body.toByteArray()).rules.single()
 
-        // У Тома только его собственный тег, у Гека — оба.
+        // Tom carries only his own tag; Huck carries both.
         assertFalse(rule.matches(ObjectKey.of("days1/tom"), 8, mapOf("tom" to "sawyer")))
         assertTrue(rule.matches(ObjectKey.of("days1/huck"), 9, mapOf("tom" to "sawyer", "huck" to "finn")))
-        // Префикс всё ещё обязателен, даже когда теги совпали.
+        // The prefix still has to match, even once the tags do.
         assertFalse(rule.matches(ObjectKey.of("elsewhere/huck"), 9, mapOf("tom" to "sawyer", "huck" to "finn")))
     }
 
     @Test
-    fun `размер сравнивается строго с обеих сторон`() {
-        // Тело botocore для `test_lifecycle_expiration_size_gt:8909`: пустой префикс приезжает
-        // самозакрывающимся элементом.
+    fun `size is compared strictly on both sides`() {
+        // The botocore body for `test_lifecycle_expiration_size_gt:8909`: an empty prefix arrives as
+        // a self-closing element.
         val body =
             "<LifecycleConfiguration><Rule><Expiration><Days>1</Days></Expiration><ID>object_gt1</ID>" +
                 "<Filter><Prefix /><ObjectSizeGreaterThan>2000</ObjectSizeGreaterThan></Filter>" +
@@ -238,7 +241,7 @@ class LifecycleTest {
     }
 
     @Test
-    fun `неактуальные версии и брошенные загрузки — свои члены правила`() {
+    fun `noncurrent versions and abandoned uploads are members of their own`() {
         val body =
             "<LifecycleConfiguration><Rule><ID>rule1</ID>" +
                 "<NoncurrentVersionExpiration><NoncurrentDays>2</NoncurrentDays>" +
@@ -259,10 +262,10 @@ class LifecycleTest {
     }
 
     @Test
-    fun `документ, прошедший через отрисовку, разбирается в то же самое`() {
-        // Круговой ход, а не сравнение с самим собой: разобранное отрисовывается, отрисованное
-        // разбирается снова, и две модели обязаны совпасть. Это то, что делает сервер между
-        // `PUT` и `GET`.
+    fun `a document that has been through the writer parses into the same thing`() {
+        // A round trip rather than a comparison with itself: what was parsed is written, what was
+        // written is parsed again, and the two models have to agree. That is what the server does
+        // between a `PUT` and a `GET`.
         val body =
             "<LifecycleConfiguration><Rule><Expiration><Days>1</Days></Expiration><ID>rule_tag1</ID>" +
                 "<Filter><Prefix>days1/</Prefix><Tag><Key>tom</Key><Value>sawyer</Value></Tag>" +
@@ -277,9 +280,10 @@ class LifecycleTest {
     }
 
     @Test
-    fun `срок в сутках округляется вверх до полуночи UTC`() {
-        // Правило S3: дата истечения — дата создания плюс `Days`, округлённая до ближайшей
-        // полуночи UTC. Объект, созданный в 14:30, живёт до полуночи через сутки с лишним.
+    fun `a term in days rounds up to midnight UTC`() {
+        // The S3 rule: the expiry date is the creation date plus `Days`, rounded up to the next
+        // midnight UTC. An object created at 14:30 lives until the midnight a little over a day
+        // later.
         val created = Instant.parse("2026-08-19T14:30:00Z")
         val expiration = Lifecycle.Expiration(days = 1)
 
@@ -287,7 +291,7 @@ class LifecycleTest {
             Instant.parse("2026-08-21T00:00:00Z"),
             Lifecycle.expiresAt(expiration, created, Lifecycle.DAY),
         )
-        // Уже полночь — округлять нечего, и лишние сутки не добавляются.
+        // Already midnight: nothing to round, and no extra day is added.
         assertEquals(
             Instant.parse("2026-08-21T00:00:00Z"),
             Lifecycle.expiresAt(expiration, Instant.parse("2026-08-20T00:00:00Z"), Lifecycle.DAY),
@@ -295,10 +299,10 @@ class LifecycleTest {
     }
 
     @Test
-    fun `укороченный день не округляется вовсе`() {
-        // Округление у S3 есть потому, что день там календарный. Пятисекундной единице календаря
-        // нет, и округление «до полуночи» отложило бы срок на сутки вперёд — то есть отменило бы
-        // укорачивание, ради которого единицу и укорачивают.
+    fun `a shortened day is not rounded at all`() {
+        // S3 rounds because its day is a calendar one. A five-second unit has no calendar, and
+        // rounding it "to midnight" would push the term a whole day out — which would undo the
+        // shortening the unit is shortened for.
         val created = Instant.parse("2026-08-19T14:30:03Z")
 
         assertEquals(
@@ -312,7 +316,7 @@ class LifecycleTest {
     }
 
     @Test
-    fun `срок датой берётся как есть, а надгробное правило срока не даёт вовсе`() {
+    fun `a term given as a date is taken as it is, and a tombstone rule gives no term at all`() {
         val date = Instant.parse("2015-01-01T00:00:00Z")
 
         assertEquals(
@@ -333,7 +337,7 @@ class LifecycleTest {
     }
 
     @Test
-    fun `срок объекта ищется по первому подошедшему правилу, а выключенные не смотрятся вовсе`() {
+    fun `an object's term comes from the first matching rule, and disabled ones are not looked at`() {
         val body =
             "<LifecycleConfiguration>" +
                 "<Rule><ID>off</ID><Expiration><Days>1</Days></Expiration>" +

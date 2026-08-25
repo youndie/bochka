@@ -201,16 +201,18 @@ object Measurements {
     }
 
     /**
-     * M-190: что стоит отдать объект, зашифрованный ключом клиента.
+     * M-190: what it costs to serve an object encrypted under a customer key.
      *
-     * Три варианта, и третий — единственное новое число. Первые два уже измерены как следует на
-     * сетевом стенде (M-61: чтение в кучу стоит 7.6–8.0× процессора zero-copy на байт), и здесь они
-     * стоят затем, чтобы третий было с чем сравнивать **на этой же машине**: у петли нет драйвера
-     * и прерываний, поэтому отношение zero-copy к остальным она занижает, а отношение двух
-     * пользовательских путей друг к другу — нет. Оно и спрашивается.
+     * Three variants, and the third is the only new number. The first two are already measured
+     * properly on the network stand (M-61: reading into the heap costs 7.6–8.0× the processor of
+     * zero-copy per byte), and they stand here so the third has something to be compared against
+     * **on this same machine**: loopback has no driver and no interrupts, so it understates the
+     * ratio of zero-copy to the rest, and does not understate the ratio of the two user-space paths
+     * to each other. That is what is being asked.
      *
-     * Вопрос, ради которого это меряется, записан в вехе как гипотеза: цена зашифрованной отдачи
-     * упрётся в AES, а не в копирование, то есть окажется **меньше**, чем «в восемь раз дороже».
+     * The question this is measured for is written in the milestone as a hypothesis: the cost of an
+     * encrypted read will be bounded by AES rather than by copying, and will therefore come out
+     * **lower** than "eight times more expensive".
      */
     private fun sse(
         dir: Path,
@@ -305,32 +307,33 @@ object Measurements {
     }
 
     /**
-     * Открытый вопрос 2: чего на самом деле стоит мелкий объект, если он — отдельный файл.
+     * Open question 2: what a small object actually costs when it is a file of its own.
      *
-     * Р2 объявляет «мелкие объекты не оптимизируются» и называет цену прозой: инода на объект
-     * и минимальный блок файловой системы. Это её половина вопроса, и она измерима точно —
-     * без всяких предположений о том, что люди хранят.
+     * Р2 states that small objects are not optimised and names the price in prose: an inode per
+     * object and the filesystem's minimum block. That is its half of the question, and it is
+     * measurable exactly — with no assumptions about what people store.
      *
-     * Меряется **занятое место, а не размер**: `st_blocks` из `unix:blocks`, умноженное на 512.
-     * Логический размер файла в 1 байт равен одному байту и не говорит ничего; занятое — целый
-     * блок. Разница между ними и есть предмет вопроса.
+     * What is measured is **space occupied, not size**: `st_blocks` from `unix:blocks`, times 512.
+     * The logical size of a one-byte file is one byte and says nothing; what it occupies is a whole
+     * block. The difference between the two is the subject of the question.
      *
-     * Объекты кладутся через настоящий [ObjectStore], а не `Files.write`: раскладка по двум
-     * уровням каталогов — часть цены, каталоги тоже занимают блоки.
+     * The objects are put through a real [ObjectStore] rather than with `Files.write`: the layout
+     * across two directory levels is part of the price, and directories occupy blocks too.
      */
     private fun small(dir: Path) {
-        println("== Открытый вопрос 2: что стоит мелкий объект ==")
+        println("== Open question 2: what a small object costs ==")
         val counts = System.getenv("BOCHKA_MEASURE_SMALL_COUNT")?.toIntOrNull() ?: 20_000
 
-        println("  %-12s %12s %12s %12s %10s".format("размер", "логически", "на диске", "накладные", "во сколько"))
+        println("  %-12s %12s %12s %12s %10s".format("size", "logical", "on disk", "overhead", "factor"))
         for (size in listOf(1, 512, 4 * KIB.toInt(), 64 * KIB.toInt())) {
             val home = Files.createDirectories(dir.resolve("small-$size"))
             ObjectStore(home, ObjectStore.Durability.NONE).use { store ->
                 store.createBucket("photos")
                 val payload = ByteArray(size)
-                // `runBlocking`, потому что путь записи suspend: он кормится из сокета там, где
-                // он настоящий. Здесь сокета нет, и это ровно тот случай, для которого `runBlocking`
-                // и существует — граница между измеряющим кодом и тем, что он измеряет.
+                // `runBlocking`, because the write path is suspending: it is fed from a socket
+                // where it is the real one. There is no socket here, and this is exactly the case
+                // `runBlocking` exists for — the boundary between measuring code and what it
+                // measures.
                 kotlinx.coroutines.runBlocking {
                     for (i in 0 until counts) {
                         val staged = store.stage { sink -> sink.write(payload, 0, payload.size) }
@@ -352,25 +355,26 @@ object Measurements {
             )
         }
 
-        // Потолок — вторая половина ответа, и он от распределения размеров не зависит вовсе.
+        // The ceiling is the other half of the answer, and it does not depend on the distribution
+        // of sizes at all.
         val ceiling = ObjectStore.ceilingForHeap()
         println()
-        println("  потолок этой кучи: $ceiling объектов")
-        println("  то есть вся мыслимая экономия от упаковки ограничена сверху этим числом,")
-        println("  сколько бы мелких объектов ни хранил потребитель")
+        println("  ceiling of this heap: $ceiling objects")
+        println("  so every conceivable saving from packing is bounded above by that number,")
+        println("  however many small objects a consumer stores")
     }
 
     /**
-     * Сколько **занято**, а не сколько записано.
+     * How much is **occupied**, not how much was written.
      *
-     * Файл в один байт имеет размер один байт и занимает целый блок; вопрос 2 ровно про эту
-     * разницу, и `Files.size` на неё не отвечает. Каталоги считаются тоже — раскладка по двум
-     * уровням это часть цены.
+     * A one-byte file has a size of one byte and occupies a whole block; question 2 is about
+     * exactly that difference, and `Files.size` does not answer it. Directories are counted too —
+     * the layout across two levels is part of the price.
      *
-     * Через `du`, а не через NIO: у JDK в наборе `unix:` **нет** атрибута `blocks`
-     * (`IllegalArgumentException: 'blocks' not recognized`), то есть занятое место из
-     * `Files.readAttributes` не достать вовсе. `du` считает именно это, а замер и так имеет смысл
-     * только на Linux с той файловой системой, про которую вопрос.
+     * Through `du` rather than through NIO: the JDK's `unix:` set has **no** `blocks` attribute
+     * (`IllegalArgumentException: 'blocks' not recognized`), so occupied space cannot be got out of
+     * `Files.readAttributes` at all. `du` counts precisely that, and the measurement is only
+     * meaningful on Linux with the filesystem the question is about anyway.
      */
     private fun allocatedBytes(root: Path): Long {
         val process =
@@ -382,7 +386,7 @@ object Measurements {
                 .bufferedReader()
                 .readText()
                 .trim()
-        check(process.waitFor() == 0) { "du отказался считать $root: $output" }
+        check(process.waitFor() == 0) { "du refused to measure $root: $output" }
         return output.split(Regex("\\s+")).first().toLong()
     }
 
