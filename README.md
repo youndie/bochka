@@ -5,7 +5,7 @@
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
 [![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-518%2F744-green)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![release](https://img.shields.io/badge/release-v0.3.1-blue)](https://github.com/youndie/bochka/releases/tag/v0.3.1)
+[![release](https://img.shields.io/badge/release-v0.4.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.4.0)
 
 An S3-compatible object store in Kotlin/JVM. One process, one node, one disk: no erasure coding,
 no replication, no quorum. On the outside, the protocol `aws s3`, `mc`, `boto3` and every S3

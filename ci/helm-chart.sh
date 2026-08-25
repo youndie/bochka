@@ -452,6 +452,34 @@ else
       kubectl describe pod -l app.kubernetes.io/instance="$RELEASE" 2>&1 | tail -30 | sed 's/^/          /'
     fi
 
+    # M33: the small profile is a different **entry point**, and rendering `command:` proves the
+    # template and nothing else. Two things can go wrong here and both look like the chart: an image
+    # without that script fails with "no such file or directory", and a limit sized for the other
+    # profile is an OOM kill at work. What settles it is the number the process prints — the ceiling
+    # is derived from the heap, so 99816 in the log is the only proof that the small profile is what
+    # actually started.
+    if helm upgrade "$RELEASE" "$chart" \
+         --set image.repository="${IMAGE%:*}" \
+         --set image.tag="${IMAGE##*:}" \
+         --set auth.keys[0].id=chartkey \
+         --set auth.keys[0].secret=chartsecret \
+         --set tests.image="$TESTS_IMAGE" \
+         --set persistence.size=1Gi \
+         --set heapProfile=small \
+         --set resources.limits.memory=320Mi \
+         --set resources.requests.memory=320Mi \
+         --wait --timeout 3m >"$work/small-profile.out" 2>&1; then
+      ceiling=$(kubectl logs "sts/$RELEASE" 2>/dev/null | grep -m1 "object ceiling")
+      case "$ceiling" in
+        *99816*) pass "heapProfile: small starts and prints its own ceiling ($ceiling)" ;;
+        *) fail "the pod started but printed '$ceiling' — that is the other profile's heap" ;;
+      esac
+    else
+      fail "heapProfile: small never became ready at the floor the chart asks for it"
+      sed 's/^/          /' "$work/small-profile.out" | tail -20
+      kubectl describe pod -l app.kubernetes.io/instance="$RELEASE" 2>&1 | tail -30 | sed 's/^/          /'
+    fi
+
     if helm test "$RELEASE" --logs >"$work/test.out" 2>&1; then
       pass "helm test: a round trip through aws-cli, and the built-in credentials refused"
     else
