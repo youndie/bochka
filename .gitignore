@@ -13,3 +13,6 @@ local.properties
 
 # Worktrees the agent tooling creates here are checkouts, not sources.
 .claude/worktrees/
+
+# Питон в `ci/` запускается как скрипты, а не импортируется, — кэш байткода тут мусор.
+__pycache__/
