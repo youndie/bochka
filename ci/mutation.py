@@ -39,6 +39,13 @@ NOISE_RULES: list[tuple[str, object]] = [
         and "Lkotlin/coroutines/Continuation;" in m["signature"],
     ),
     (
+        # Лямбда билдера возвращает Unit, и её значение выбрасывается вызывающим. Подмена на null
+        # ненаблюдаема по устройству, а не потому, что теста нет.
+        "значение Unit-лямбды, которое никто не читает",
+        lambda m: m["desc"].startswith("replaced return value with null")
+        and m["signature"].endswith("Lkotlin/Unit;"),
+    ),
+    (
         "сгенерированный член data class (equals/hashCode/toString/copy/componentN)",
         lambda m: m["method"] in ("equals", "hashCode", "toString", "copy", "copy$default")
         or re.fullmatch(r"component\d+", m["method"]) is not None,
