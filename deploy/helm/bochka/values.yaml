@@ -318,6 +318,22 @@ probes:
 # shipped profile and not a measured kill threshold; the measured one needs a cluster, a full index
 # and live traffic, and it is a task rather than a number here.
 #
+# What a hundred hours of live traffic added to that (docs/measurements.md, the soak section): the
+# limit is not filled by the process. It is filled by **reclaimable page cache** from the object
+# files, and the container therefore sits at its limit permanently — 767 MiB of 768, seventy-one
+# thousand reclaims, zero OOM kills. Of that, `anon` was 520 MiB and `file` 144; the same image on
+# an idle stand sits at 143 MiB total. So the floor above is real, and the reason for it is not
+# "the process needs 512": below that size the kernel cannot reclaim fast enough under load.
+#
+# Two things follow, and both cost somebody a day if they are not written down. An alert on memory
+# **usage** fires forever on a healthy server — build it on `workingSetBytes` or on `anon`. And the
+# heap and the page cache come out of the same limit: over those hundred hours the JVM committed
+# 448 MiB of its 512 to hold nine mebibytes of live data, and the cache gave up exactly that much,
+# 605 MiB down to 144. The read path is `transferTo` from a **hot** file, so that is a real trade —
+# `-Xmx512M` buys the published object ceiling, and a store far below the ceiling pays for the
+# headroom in cache. Raising `limits.memory` is the cheap end of it: `-Xmx` caps the JVM, so every
+# extra megabyte goes to the cache.
+#
 # Memory request == memory limit because a JVM with a fixed -Xmx does not shrink: a smaller request
 # would let the scheduler place this pod where the heap it will certainly reach does not fit, and
 # kubelet ranks eviction candidates by how far above their request they are — a pod whose usage
