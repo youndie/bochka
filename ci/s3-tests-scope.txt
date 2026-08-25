@@ -20,16 +20,17 @@
 # A case matching nothing is reported as `unclassified`, which is the point of the file: a
 # failure that nobody has looked at must not be able to hide inside a category.
 
-# Шифрование распалось надвое в M26, и одна широкая строка на всю семью стала враньём: ключом
-# клиента сервер теперь шифрует, ключом сервера — по-прежнему нет. Узкие правила стоят выше общего,
-# иначе они мертвы — этот файл уже ловил такое с другой стороны (`object_raw_response_headers`).
-# Две строки про SSE-C и политику **сняты** в M-189: политики появились в M29, и с ключом условия
-# `s3:x-amz-server-side-encryption-customer-algorithm` обоим кейсам больше нечего ждать. Прогон,
-# который это подтвердит, — M-204; если они всё-таки упадут, то придут сюда как `unclassified`,
-# то есть «никто не смотрел», а не под успокаивающей причиной, которая перестала быть верной.
-out-of-scope	_enc[	шифрование ключом сервера: сервер начинает хранить ключи, а это управление секретами (ресёрч покрытия)
-out-of-scope	sse	шифрование ключом сервера (SSE-S3, SSE-KMS): сервер начинает хранить ключи (ресёрч покрытия)
-out-of-scope	encryption	шифрование ключом сервера: сервер начинает хранить ключи (ресёрч покрытия)
+# Encryption split in two in M26, and one broad line for the whole family became a lie: the server
+# now encrypts under a customer key and still does not under one of its own. The narrow rules stand
+# above the broad one, or they are dead — this file has already caught that from the other side
+# (`object_raw_response_headers`). Two lines about SSE-C and policies were **removed** in M-189:
+# policies arrived in M29, and with the condition key
+# `s3:x-amz-server-side-encryption-customer-algorithm` neither case has anything left to wait for.
+# The run that confirms it is M-204; if they do fail they arrive here as `unclassified` — that is,
+# "nobody looked", rather than under a comforting reason that stopped being true.
+out-of-scope	_enc[	server-side encryption: the server starts keeping keys, which is secret management (coverage research)
+out-of-scope	sse	server-side encryption (SSE-S3, SSE-KMS): the server starts keeping keys (coverage research)
+out-of-scope	encryption	server-side encryption: the server starts keeping keys (coverage research)
 # Versioning arrived in M17, so "one version per key by design" stopped being true and stopped
 # being a reason. What is left of the family is three different things, and lumping them under one
 # stale line would hide all three.
@@ -47,7 +48,7 @@ out-of-scope	_version_if_match	a condition on a named version: the model allows 
 # from a server with no owner model is a fiction whichever version it is about. Routing
 # `?versionId` into an answer that cannot be true is worse than not answering. Decided in M-160,
 # and it returns with ACLs or not at all.
-out-of-scope	versioned_object_acl	ACL по версии: сама ACL с M27 есть, а `?versionId` у `GetObjectAcl`/`PutObjectAcl` — нет; операция отвечает про текущую версию (M-160)
+out-of-scope	versioned_object_acl	an ACL per version: the ACL itself exists since M27, `?versionId` on `GetObjectAcl`/`PutObjectAcl` does not; the operation answers about the current version (M-160)
 # Four rules stood here for M-161…M-163 and matched nothing at all: the cases they named have
 # passed since those tasks closed. A rule that cannot fire is the trap this file already learned
 # once from the other end — a narrow rule shadowed by a broad one — and it is worse in this
@@ -72,123 +73,130 @@ out-of-scope	delete_marker_expiration	same header as above; the marker does expi
 # debug clock — under which the server deletes an object **before** the date it advertised, and
 # that is the one guarantee the header gives.
 out-of-scope	lifecycle_expiration_header	the advertised expiry-date follows the same clock the sweep does; the case wants them to disagree
-# M27 сделал модель доступа: владелец у бакета и версии, шесть canned-имён, и всё это
-# **исполняется**. Одна широкая строка «ACL вне рамок» после этого стала враньём того же рода,
-# что и правило, которое не может сработать: она объясняла бы отсутствием того, что есть. Узкие
-# правила стоят выше общего и называют то, чего действительно нет, — гранты по имени, анонимный
-# доступ, блок публичного доступа, политики.
+# M27 built the access model: an owner per bucket and per version, six canned names, and all of it
+# **enforced**. One broad "ACL is out of scope" line became a lie of the same kind as a rule that
+# cannot fire: it would explain by absence something that exists. The narrow rules stand above the
+# broad one and name what is genuinely missing — grants by name, anonymous access, the public access
+# block, policies.
 #
-# Гранты — это решение, а не недоделка: грант называет **пользователя**, а у сервера есть ключи
-# доступа и нет таблицы пользователей. Принятый и неисполняемый грант обнаруживают утечкой.
-out-of-scope	acl_grant	гранты по имени пользователя или группы: у сервера ключи, а не пользователи (M27, решение)
-out-of-scope	header_acl_grants	то же самое заголовками `x-amz-grant-*`
-out-of-scope	acl_revoke	снятие всех грантов — это язык грантов, которого здесь нет
-out-of-scope	tags_acl_public	кейс раздаёт права группе грантом; группы — часть ACL, которой здесь нет
-# `GetBucketPolicyStatus` сделан в M-228, и широкая строка «операции нет» на всю семью снята:
-# пять кейсов из шести операция закрывает. Шестой падает **не на ней** — его политика несёт
-# `IpAddress` над `aws:SourceIp`, отвергаемые по имени с M-201в, так что кейс не доходит дальше
-# `put_bucket_policy`. Правило «условие делает утверждение непубличным» при этом исполняется,
-# на условиях, которые сервер умеет вычислять (§3.8).
+# Grants are a decision rather than an omission: a grant names a **user**, and this server has
+# access keys and no table of users. A grant accepted and not enforced is discovered as a leak.
+out-of-scope	acl_grant	grants naming a user or a group: this server has keys, not users (M27, a decision)
+out-of-scope	header_acl_grants	the same thing through `x-amz-grant-*` headers
+out-of-scope	acl_revoke	revoking every grant is the language of grants, which does not exist here
+out-of-scope	tags_acl_public	the case hands rights to a group with a grant; groups are the part of ACL that is missing here
+# `GetBucketPolicyStatus` was built in M-228, and the broad "the operation does not exist" line for
+# the family is gone: the operation covers five cases of six. The sixth fails **elsewhere** — its
+# policy carries `IpAddress` over `aws:SourceIp`, refused by name since M-201в, so the case never
+# gets past `put_bucket_policy`. The rule that a condition makes a statement non-public is enforced
+# meanwhile, on the conditions this server can evaluate (§3.8).
 #
-# **Вторая строка — сторож, а не утверждение о живом дефекте.** Она нужна из-за порядка: широкое
-# правило про `acl` ниже подбирает по подстроке `acl` три имени из этой семьи
-# (`…public_acl…`, `…authpublic_acl…`, `…publicpolicy_acl…`), и без неё их провал приехал бы
-# успокаивающей причиной «что осталось от ACL после M27 — гранты» вместо честного шума. Правило
-# читается условно, как и любое здесь: **если** кейс упал, это дефект в M-228, и адрес назван.
-# Пока пятёрка проходит, строка не подбирает ничего. Прогон, который это покажет, — M-204.
-out-of-scope	nonpublicpolicy_acl_bucket_policy_status	политика кейса ставит условие на `aws:SourceIp`; адрес пира до решения не доходит, и оператор с ключом отвергаются по имени (§3.8, решение M-201в)
-defect	bucket_policy_status	`GetBucketPolicyStatus` сделан (M-228) — провал здесь дефект в нём, а не в ACL; строка стоит выше широкого правила про `acl`, чтобы оно не съело три имени из шести
-out-of-scope	ignore_public_acls	блок публичного доступа — отдельная возможность, не ACL
+# **The second line is a sentinel rather than a claim about a live defect.** It is needed because of
+# the order: the broad `acl` rule below matches three names of this family on the substring `acl`
+# (`…public_acl…`, `…authpublic_acl…`, `…publicpolicy_acl…`), and without it their failure would
+# arrive under the comforting reason "what is left of ACL after M27 is grants" instead of as honest
+# noise. The rule reads conditionally, as every rule here does: **if** the case failed, it is a
+# defect in M-228, and the address is named. While the five pass, the line matches nothing. The run
+# that shows it is M-204.
+out-of-scope	nonpublicpolicy_acl_bucket_policy_status	the case's policy puts a condition on `aws:SourceIp`; the peer address never reaches the decision, and the operator and the key are refused by name (§3.8, decision M-201в)
+defect	bucket_policy_status	`GetBucketPolicyStatus` exists (M-228) — a failure here is a defect in it rather than in ACL; the line stands above the broad `acl` rule so that it does not swallow three names of the six
+out-of-scope	ignore_public_acls	the public access block is a feature of its own rather than ACL
 out-of-scope	cors_presigned_get_object_tenant_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_get_object_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_put_object_tenant_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_put_object_v2	the case presigns with SigV2, which this server does not verify
-out-of-scope	cors_presigned	кейс ходит по presign-ссылке с чужого origin без подписи; анонимный доступ — M28
-out-of-scope	object_acl	что осталось у объекта после M27 — гранты по имени: `READ_ACP`, `WRITE_ACP` и `FULL_CONTROL` конкретному ключу
-# Широкая строка, и с M-227 у неё есть три имени, про которые она врёт, если сработает:
-# `test_block_public_put_bucket_acls`, `test_block_public_object_canned_acls` и
-# `test_ignore_public_acls` — не про гранты, а про `PublicAccessBlock`, который есть
-# и исполняется. Они обязаны проходить; провал любого из них — дефект M-227, а не «вне рамок»,
-# и прочитать это придётся здесь, потому что подстрока `acl` подберёт их первой.
-out-of-scope	acl	что осталось от ACL после M27 — гранты: canned-имена и владелец есть и исполняются (§3.6 контракта)
-# M29 сделала политики, и одна широкая строка «политик нет» стала бы враньём — тем самым, которое
-# этот файл уже ловил дважды. Ниже узкие строки, каждая про один механизм, и ни одна не про
-# политику как таковую: она работает.
-out-of-scope	policy_different_tenant	кейс адресует бакет как tenant:bucket; тенантов здесь нет, имя отвергается как невалидное
-out-of-scope	policy_tenanted_bucket	то же самое: имя бакета с тенантом
-out-of-scope	policy_put_obj_grant	кейсу нужны гранты по имени (x-amz-grant-full-control) и передача владения; гранты отвергаются по имени (§3.6)
-out-of-scope	policy_put_obj_kms	шифрование ключом сервера: сервер начинает хранить ключи (ресёрч покрытия)
-out-of-scope	policy_put_obj_s3_kms	то же самое
-out-of-scope	policy_put_obj_s3_noenc	кейс ждёт заголовок x-amz-server-side-encryption в ответе; SSE-S3 здесь нет
-out-of-scope	policy_set_condition_operator_end_with_IfExists	кейс помечен fails_on_rgw и ждёт 403 у владельца, которому ACL разрешает: несработавшее условие Allow ничего не запрещает
-out-of-scope	policy_put_obj_request_obj_tag	помечен fails_on_rgw: кейс вешает x-amz-tagging на client, а шлёт alt_client, так что условие проверяется против запроса без тега
+out-of-scope	cors_presigned	the case follows a presigned link from another origin without a signature; anonymous access is M28
+out-of-scope	object_acl	what is left on an object after M27 is grants by name: `READ_ACP`, `WRITE_ACP` and `FULL_CONTROL` to a particular key
+# A broad line, and since M-227 there are three names it lies about if it ever fires:
+# `test_block_public_put_bucket_acls`, `test_block_public_object_canned_acls` and
+# `test_ignore_public_acls` are not about grants but about `PublicAccessBlock`, which exists and is
+# enforced. They have to pass; a failure of any of them is a defect in M-227 rather than "out of
+# scope", and it has to be read here, because the substring `acl` matches them first.
+out-of-scope	acl	what is left of ACL after M27 is grants: the canned names and the owner exist and are enforced (§3.6 of the contract)
+# M29 built policies, and one broad "there are no policies" line would be a lie — the same lie this
+# file has already caught twice. Below are narrow lines, each about one mechanism, and none of them
+# about policy as such: that works.
+out-of-scope	policy_different_tenant	the case addresses the bucket as tenant:bucket; there are no tenants here and the name is refused as invalid
+out-of-scope	policy_tenanted_bucket	the same thing: a bucket name carrying a tenant
+out-of-scope	policy_put_obj_grant	the case needs grants by name (x-amz-grant-full-control) and a transfer of ownership; grants are refused by name (§3.6)
+out-of-scope	policy_put_obj_kms	server-side encryption: the server starts keeping keys (coverage research)
+out-of-scope	policy_put_obj_s3_kms	the same thing
+out-of-scope	policy_put_obj_s3_noenc	the case expects an x-amz-server-side-encryption header in the answer; there is no SSE-S3 here
+out-of-scope	policy_set_condition_operator_end_with_IfExists	the case is marked fails_on_rgw and expects 403 for an owner the ACL allows: an Allow whose condition did not match forbids nothing
+out-of-scope	policy_put_obj_request_obj_tag	marked fails_on_rgw: the case puts x-amz-tagging on client and sends alt_client, so the condition is evaluated against a request with no tag
 out-of-scope	_iam	IAM is a different service; this store authenticates with static keys
 out-of-scope	_sts	STS is a different service; this store authenticates with static keys
-# M-227 сделал `PublicAccessBlock`, и три строки «этого API нет» ушли вместе с работой. Одна
-# из них — `public_access_block` — не подбирала **ни одного** кейса всё время, пока стояла: имени
-# с этой подстрокой в сьюте нет, кейсы называются `..._public_block` и `block_public_...`. Правило,
-# которое не может сработать, этот файл уже ловил дважды; здесь оно ещё и держало в бухгалтерии
-# отложенных строку, за которой ничего не стояло.
-# Осталась одна, и она про рубильник, а не про фичу: кейс читает объект **без подписи**, то есть
-# упирается в слой два до того, как дойдёт до флага.
-off-by-default	block_public_restrict_public_buckets	кейс проверяет флаг неподписанным чтением: `RestrictPublicBuckets` исполняется, а анонимный доступ включается BOCHKA_ANONYMOUS=1 (§3.7)
-# Слой 2 сделан (M28), поэтому строка «разрешения ещё нет» стала неправдой. Что осталось под этим
-# именем — один кейс, и он не про разрешение: `list_buckets_anonymous` ждёт пустой список
-# вместо отказа и **помечен `fails_on_aws`** (это поведение RGW, S3 отвергает — и bochka тоже).
-out-of-scope	list_buckets_anonymous	кейс ждёт пустой список вместо отказа и помечен fails_on_aws: так отвечает RGW, а S3 и bochka отвергают
-# Четыре формы без политики вовсе (M-225 закрыт). Все четыре — анонимная POST-форма в бакет
-# `public-read-write`, и две из них называются иначе: `set_success_code` и
-# `set_invalid_success_code` читаются как «про `success_action_status`», а это M16, работает
-# с тех пор. Падали они по той же одной причине — форма без политики. Разрешает по-прежнему ACL
-# бакета, поэтому под рубильником, как и всё остальное во втором слое.
-off-by-default	post_object_anonymous	анонимная POST-форма в бакет public-read-write: слой 2 её пропускает, поставка слой 2 не включает (BOCHKA_ANONYMOUS)
-off-by-default	post_object_tags_anonymous	то же самое, плюс поле tagging документом (BOCHKA_ANONYMOUS)
-# `…set_success_code` ждал **двух** вещей, и в этом была вся путаница. Как поставляется он падает
-# на рубильнике, как и три соседа, — строка ниже про это. Но падал он **и с включённым**, потому
-# что `<PostResponse>` уходил с пространством имён, а кейс читает `ET.fromstring(...).find('Key')`,
-# и неквалифицированный поиск в документе с `xmlns` не находит ничего. Дефект починен; общая
-# причина осталась верной только для одной из двух конфигураций, и правило теперь говорит обе.
-off-by-default	post_object_set_success_code	форма без политики: как поставляется ждёт рубильника (BOCHKA_ANONYMOUS); с ним проходит с тех пор, как PostResponse перестал нести пространство имён
-off-by-default	post_object_set_invalid_success_code	форма без политики вовсе; тот же случай (BOCHKA_ANONYMOUS)
-# Ниже — три строки про рубильник, а не про отсутствие функции. С `BOCHKA_ANONYMOUS=1` все четыре кейса
-# проходят — это измерено обоими прогонами в M28 (466 и 474 из 744), а не предположено.
-off-by-default	objects_anonymous	анонимный листинг бакета с public-read: слой 2 это умеет, поставка его не включает (BOCHKA_ANONYMOUS)
-off-by-default	anon_put_write_access	анонимная запись в бакет с public-read-write: то же самое (BOCHKA_ANONYMOUS)
-off-by-default	100_continue	кейс шлёт PUT без учётных данных сокетом и ждёт 100 после public-read-write (BOCHKA_ANONYMOUS)
-# Логирование бакета (M-202). Конфигурация сделана; доставки записей нет, и это решение, а не
-# долг: из 39 провалов семьи **33 помечены fails_on_aws**, 27 из них ещё и
-# fails_without_logging_rollover — они пинят журнал RGW с его ObjectRollTime, а не поведение S3.
-# Узкие строки идут первыми, общая — последней.
-out-of-scope	put_bucket_logging_errors	кейсу нужны PutBucketEncryption и PutBucketRequestPayment, которых здесь нет
-out-of-scope	test_put_bucket_logging	кейс шлёт TargetGrants и ждёт, что сервер их примет и не вернёт: принять неисполняемое — это ровно то, чего здесь не делают (§3.6)
-out-of-scope	bucket_logging	доставка записей журнала — это расширение ceph (fails_on_aws у 33 из 39, rollover у 27); конфигурация сделана в M-202
+# M-227 built `PublicAccessBlock`, and three "this API does not exist" lines left with the work. One
+# of them — `public_access_block` — matched **not a single** case the whole time it stood: no name
+# in the suite carries that substring, the cases are called `..._public_block` and
+# `block_public_...`. A rule that cannot fire is something this file has already caught twice; here
+# it also kept a line in the deferred accounting with nothing behind it.
+# One is left, and it is about the switch rather than about the feature: the case reads the object
+# **unsigned**, so it runs into layer two before it ever reaches the flag.
+off-by-default	block_public_restrict_public_buckets	the case checks the flag with an unsigned read: `RestrictPublicBuckets` is enforced, while anonymous access is turned on by BOCHKA_ANONYMOUS=1 (§3.7)
+# Layer 2 was built (M28), so the line "there is no permission yet" became untrue. What is left
+# under that name is one case, and it is not about permission: `list_buckets_anonymous` expects an
+# empty list instead of a refusal and is **marked `fails_on_aws`** (that is RGW's behaviour; S3
+# refuses, and so does bochka).
+out-of-scope	list_buckets_anonymous	the case expects an empty list instead of a refusal and is marked fails_on_aws: that is how RGW answers, while S3 and bochka refuse
+# Four forms with no policy at all (M-225 is closed). All four are an anonymous POST form into a
+# `public-read-write` bucket, and two of them are named otherwise: `set_success_code` and
+# `set_invalid_success_code` read as "about `success_action_status`", which is M16 and has worked
+# since. They failed for the same single reason — a form with no policy. What allows it is still the
+# bucket's ACL, so they sit behind the switch like everything else in the second layer.
+off-by-default	post_object_anonymous	an anonymous POST form into a public-read-write bucket: layer 2 lets it through, and a shipped build does not turn layer 2 on (BOCHKA_ANONYMOUS)
+off-by-default	post_object_tags_anonymous	the same thing, plus a tagging field as a document (BOCHKA_ANONYMOUS)
+# `…set_success_code` was waiting on **two** things, and that was the whole confusion. As shipped it
+# fails on the switch, like its three neighbours — the line below is about that. But it failed
+# **with the switch on** as well, because `<PostResponse>` went out carrying a namespace while the
+# case reads `ET.fromstring(...).find('Key')`, and an unqualified find matches nothing in a document
+# with an `xmlns`. The defect is fixed; the shared reason stayed true for only one of the two
+# configurations, and the rule now states both.
+off-by-default	post_object_set_success_code	a form with no policy: as shipped it waits on the switch (BOCHKA_ANONYMOUS); with it, it has passed ever since PostResponse stopped carrying a namespace
+off-by-default	post_object_set_invalid_success_code	a form with no policy at all; the same case (BOCHKA_ANONYMOUS)
+# Below are three lines about the switch rather than about a missing feature. With
+# `BOCHKA_ANONYMOUS=1` all four cases pass — measured by both runs in M28 (466 and 474 of 744)
+# rather than assumed.
+off-by-default	objects_anonymous	an anonymous listing of a public-read bucket: layer 2 can do it, a shipped build does not turn it on (BOCHKA_ANONYMOUS)
+off-by-default	anon_put_write_access	an anonymous write into a public-read-write bucket: the same thing (BOCHKA_ANONYMOUS)
+off-by-default	100_continue	the case sends a PUT with no credentials over a socket and expects a 100 after public-read-write (BOCHKA_ANONYMOUS)
+# Bucket logging (M-202). The configuration is built; delivery of the records is not, and that is a
+# decision rather than a debt: of the family's 39 failures **33 are marked fails_on_aws**, 27 of
+# those also fails_without_logging_rollover — they pin RGW's journal with its ObjectRollTime rather
+# than S3's behaviour. The narrow lines come first, the broad one last.
+out-of-scope	put_bucket_logging_errors	the case needs PutBucketEncryption and PutBucketRequestPayment, which do not exist here
+out-of-scope	test_put_bucket_logging	the case sends TargetGrants and expects the server to accept them and not return them: accepting what cannot be enforced is exactly what is not done here (§3.6)
+out-of-scope	bucket_logging	delivering journal records is a ceph extension (fails_on_aws on 33 of 39, rollover on 27); the configuration was built in M-202
 out-of-scope	website	static website hosting is out of the v1 scope
 # CORS is implemented (M14), and the eleven cases under this name fail for three different reasons,
 # none of them "we do not have CORS". Splitting them is the point of this file.
-# Семь кейсов стояли под «анонимному доступу нужны публичные ACL», и после M28 стало видно, что
-# причина была неверна для них с самого начала: они шлют **`OPTIONS`** на presign-ссылку и ждут
-# `400`, а bochka отвечает `403` — вопрос про preflight, а не про подпись (M-226). CORS-пара
-# отдельно: заголовков `Access-Control-*` в ответе нет вовсе.
-# Три строки M-226 сняты вместе с самой задачей: `OPTIONS` без `Access-Control-Request-Method`
-# отвечает `400`, а обычный ответ несёт `Access-Control-*`. Пять кейсов из них так и прошли.
+# Seven cases stood under "anonymous access needs public ACLs", and after M28 it became visible
+# that the reason had been wrong for them from the start: they send **`OPTIONS`** to a presigned
+# link and expect `400`, while bochka answers `403` — a question about the preflight rather than
+# about the signature (M-226). The CORS pair is separate: there are no `Access-Control-*` headers in
+# the answer at all.
+# Three M-226 lines went with the task itself: `OPTIONS` without `Access-Control-Request-Method`
+# answers `400`, and an ordinary answer carries `Access-Control-*`. Five of the cases passed on
+# that.
 #
-# **А три вернулись как `unclassified` — и это ровно то, ради чего строки снимали, а не
-# переписывали.** Причина оказалась не та, что стояла в старом правиле, и не та, что я
-# предполагал: `_cors_request_and_check` шлёт **голым `requests`**, без подписи, по бакету
-# `public-read`, сделанному для этого нарочно. Значит первый же `assert` упирается в слой два,
-# выключенный в поставке, и `403` приходит задолго до того, как кто-то посмотрит на
-# `Access-Control-*`. Отсутствие заголовка было **второй** причиной, а не первой.
+# **And three came back as `unclassified` — which is exactly what removing the lines rather than
+# rewriting them was for.** The reason turned out to be neither the one in the old rule nor the one
+# expected: `_cors_request_and_check` sends with **bare `requests`**, unsigned, against a
+# `public-read` bucket made for that on purpose. So the very first `assert` runs into layer two,
+# switched off in a shipped build, and the `403` arrives long before anybody looks at
+# `Access-Control-*`. The missing header was the **second** reason, not the first.
 #
-# Проверено тестом, а не рассуждением (`CorsTest`): с `BOCHKA_ANONYMOUS=1` неподписанный
-# кросс-доменный запрос получает и `200`, и заголовки; как поставляется — `403` до CORS.
+# Checked by a test rather than by reasoning (`CorsTest`): with `BOCHKA_ANONYMOUS=1` an unsigned
+# cross-origin request gets both a `200` and the headers; as shipped, a `403` before CORS.
 #
-# **Кейсов здесь два, а не три, и третий — самое ценное, что дал прогон** (M-204). Гипотеза
-# «все три упираются в рубильник» верна для двух: `cors_header_option` падал и **со включённым**
-# анонимом. Ждал он не флага, а починки — отказанный preflight получал `Access-Control-*` от
-# декоратора обычных ответов и отвечал `403`, сообщая, что запрос разрешён. Починено; кейс
-# проходит в обеих конфигурациях, поэтому правила под него нет.
-off-by-default	cors_origin_response	кейс шлёт неподписанные запросы по public-read бакету: слой два в поставке выключен (BOCHKA_ANONYMOUS)
-off-by-default	cors_origin_wildcard	то же самое, с правилом на любой источник (BOCHKA_ANONYMOUS)
+# **There are two cases here rather than three, and the third is the most valuable thing the run
+# produced** (M-204). The hypothesis that all three run into the switch holds for two:
+# `cors_header_option` failed **with anonymous access on** as well. What it was waiting for was not
+# a flag but a fix — a refused preflight was getting `Access-Control-*` from the ordinary-answer
+# decorator and answering `403` while announcing that the request was allowed. Fixed; the case
+# passes in both configurations, so there is no rule for it.
+off-by-default	cors_origin_response	the case sends unsigned requests against a public-read bucket: layer two is off in a shipped build (BOCHKA_ANONYMOUS)
+off-by-default	cors_origin_wildcard	the same thing, with a rule matching any origin (BOCHKA_ANONYMOUS)
 out-of-scope	notification	bucket notifications are out of the v1 scope
 out-of-scope	replication	replication needs more than one node, which is the whole niche this is not
 out-of-scope	logging	server access logging is out of the v1 scope
@@ -199,7 +207,7 @@ out-of-scope	usage	usage accounting is a ceph extension, not S3
 out-of-scope	post_object_success_redirect_action	the upload succeeds; the case then reads the redirect target unsigned, which needs public read
 out-of-scope	select	S3 Select is out of the v1 scope
 out-of-scope	restore	Glacier restore is out of the v1 scope
-out-of-scope	ownership	`ObjectOwnership` — отдельная возможность, а не ACL: она отключает ACL целиком, и здесь её нет
+out-of-scope	ownership	`ObjectOwnership` is a feature of its own rather than ACL: it switches ACL off entirely, and it does not exist here
 out-of-scope	tenant	multi-tenancy is a ceph extension, not S3
 out-of-scope	account	account-level operations are out of the v1 scope
 out-of-scope	user_policy	IAM user policies are a different service
@@ -227,13 +235,13 @@ out-of-scope	list_multipart_upload_owner	the fixture sets an ACL; the owner need
 deferred	object_read_unreadable	the premise of the original task was wrong and that was the finding: the key arrives as %C2%AE%C2%8A-, which is well-formed UTF-8, so this is not a malformed key but a key holding C1 control characters, and S3 refuses it at the URI with "Couldn't parse the specified URI." Refusing those here contradicts a documented decision (Р2: keys are not restricted, and encoding-type=url exists because a listing must carry bytes XML cannot). Settled by a source that says which bytes are invalid in a request line, not by one case
 deferred	unicode_metadata	measured rather than guessed, and the earlier reason here was wrong: botocore does send non-ASCII metadata, as UTF-8, and reads the response back as latin-1. Passing this case means decoding the value as UTF-8 on the way in and re-encoding it as latin-1 on the way out, which makes metadata lossy above U+00FF — today it round-trips byte for byte. Settled by a source on what S3 stores, not by one case that only pins the asymmetry of one client
 
-out-of-scope	not_owned	кейс раздаёт права грантом по имени; владелец с M27 есть, грантов нет
-out-of-scope	owner_enforced	`BucketOwnerEnforced` отключает ACL целиком; такой настройки здесь нет
-out-of-scope	owner_preferred	`BucketOwnerPreferred` меняет владельца записанного объекта; такой настройки здесь нет
-out-of-scope	object_writer	`ObjectWriter` — это `ObjectOwnership`, которого здесь нет
+out-of-scope	not_owned	the case hands out rights with a grant by name; the owner exists since M27, grants do not
+out-of-scope	owner_enforced	`BucketOwnerEnforced` switches ACL off entirely; there is no such setting here
+out-of-scope	owner_preferred	`BucketOwnerPreferred` changes the owner of a written object; there is no such setting here
+out-of-scope	object_writer	`ObjectWriter` is part of `ObjectOwnership`, which does not exist here
 out-of-scope	bucket_head_extended	x-rgw-object-count is a ceph extension, not S3
 out-of-scope	unordered	allow-unordered is a ceph extension, not S3
-out-of-scope	obj_public	публичный объект читают без подписи, а неподписанный запрос — это M28
+out-of-scope	obj_public	a public object is read unsigned, and an unsigned request is M28
 out-of-scope	multi_object_delete_key_limit	the case deletes more than a thousand keys in one request, which the protocol does not allow; bochka now answers MalformedXML instead of closing the connection, and the case expects it to succeed
 out-of-scope	get_location	the case compares the region against the suite's own api_name setting
 out-of-scope	bucket_list_return_data	the case reads an object ACL to compare owners

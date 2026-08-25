@@ -41,7 +41,7 @@ class CodeIsEnglishTest {
         val sources =
             Files.walk(root).use { walk ->
                 walk
-                    .filter { it.extension in setOf("kt", "kts", "py", "sh") }
+                    .filter { it.extension in setOf("kt", "kts", "py", "sh") || it.isScopeFile() }
                     .filter { path -> path.none { it.toString() == "build" || it.toString() == ".claude" } }
                     .sorted()
                     .toList()
@@ -51,8 +51,13 @@ class CodeIsEnglishTest {
         val offenders = ArrayList<String>()
         for (source in sources) {
             val body = Files.readString(source)
-            val kotlin = source.extension == "kt" || source.extension == "kts"
-            for ((line, text) in if (kotlin) prose(body) else scriptProse(body)) {
+            val found =
+                when {
+                    source.extension == "kt" || source.extension == "kts" -> prose(body)
+                    source.isScopeFile() -> body.lines().mapIndexed { at, line -> (at + 1) to line }
+                    else -> scriptProse(body)
+                }
+            for ((line, text) in found) {
                 if (!hasCyrillic(text)) continue
                 offenders += "${root.relativize(source)}:$line  ${text.trim().take(70)}"
             }
@@ -84,6 +89,16 @@ class CodeIsEnglishTest {
             )
         private val CYRILLIC = Regex("[А-яЁё]")
         private const val TRIPLE = "\"\"\""
+
+        /**
+         * The classification files of `ci/`, where a line is prose all the way across: a `#`
+         * comment, or a rule whose third column is the reason a run prints into the CI log.
+         *
+         * Whether those reasons had to be English was the one question M36 left open, and this is
+         * what the answer became. Scoped to `ci/` rather than to every `.txt`: a text file
+         * elsewhere in this repository is documentation, and documentation is Russian by rule.
+         */
+        fun Path.isScopeFile() = extension == "txt" && parent?.fileName?.toString() == "ci"
 
         fun hasCyrillic(text: String) =
             CYRILLIC.containsMatchIn(ANCHORS.fold(text) { rest, anchor -> anchor.replace(rest, "") })
