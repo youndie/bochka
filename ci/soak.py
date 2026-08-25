@@ -48,6 +48,19 @@ REPORT_EVERY = int(os.environ.get("BOCHKA_SOAK_REPORT_EVERY", "500"))
 # far more than any of the four questions needs and makes the generator a poor neighbour on a node
 # it shares, which is the only kind of node a soak ever gets.
 DELAY = float(os.environ.get("BOCHKA_SOAK_DELAY", "0.1"))
+# How reads are spread over the keys, and this is the parameter that decides whether a run can say
+# anything about caching at all.
+#
+# The first hundred hours ran uniform — every key equally likely — and that is the one shape under
+# which a page cache never helps: with a working set many times the cache, every read misses
+# whatever the cache size is, so squeezing it from 605 MiB to 144 changed nothing measurable.
+# `active_file` stayed at 4 MiB against 600 of inactive, which is what "nothing is hot" looks like.
+#
+# Real traffic is skewed, so the default is too: a tenth of the keys take nine reads in ten. Set
+# BOCHKA_SOAK_HOT_SHARE=0 to get the old uniform behaviour back — useful for measuring the disk,
+# useless for measuring the cache.
+HOT_FRACTION = float(os.environ.get("BOCHKA_SOAK_HOT_FRACTION", "0.1"))
+HOT_SHARE = float(os.environ.get("BOCHKA_SOAK_HOT_SHARE", "0.9"))
 BUCKET = "soak"
 CONTROL = "control"
 STOP_KEY = "stop"
@@ -95,6 +108,11 @@ def main() -> None:
 
     generations = [0] * KEYS
     big_generations = [0] * BIG_KEYS
+    # The hot set is the first slice of the key space rather than a random sample, so that two runs
+    # against two configurations read the **same** objects: a comparison whose arms disagree about
+    # which keys are hot compares two workloads, not two configurations.
+    hot = max(1, int(KEYS * HOT_FRACTION))
+    latency = {"hot": [], "cold": []}
     counts = {"put": 0, "get": 0, "multipart": 0, "deleted": 0, "listed": 0, "mismatch": 0, "error": 0}
     started = time.monotonic()
     cycle = 0
@@ -143,11 +161,15 @@ def main() -> None:
 
             # And a read of some **other** key, so the check is about what survived rather than
             # about what was written a millisecond ago.
-            other = random.randrange(KEYS)
+            warm = random.random() < HOT_SHARE
+            other = random.randrange(hot) if warm else random.randrange(KEYS)
             if generations[other] > 0:
                 name = f"k{other:06d}"
+                started_read = time.monotonic()
                 got = s3.get_object(Bucket=BUCKET, Key=name)["Body"].read()
+                elapsed = (time.monotonic() - started_read) * 1000
                 counts["get"] += 1
+                latency["hot" if other < hot else "cold"].append(elapsed)
                 if got != body(name, generations[other]):
                     counts["mismatch"] += 1
                     print(f"MISMATCH {name} at generation {generations[other]}", flush=True)
@@ -173,11 +195,23 @@ def main() -> None:
 
         if cycle % REPORT_EVERY == 0:
             hours = (time.monotonic() - started) / 3600
+            # Reported per report rather than cumulatively, and emptied afterwards: what the
+            # comparison needs is how reads behave **now**, and an average over a hundred hours
+            # hides the hour where they changed.
+            def spread(name: str) -> str:
+                got = sorted(latency[name])
+                if not got:
+                    return f"{name}=-"
+                return f"{name}={got[len(got) // 2]:.1f}/{got[int(len(got) * 0.9)]:.1f}ms"
+
             print(
                 f"soak {hours:.2f}h cycle {cycle} "
-                + " ".join(f"{k}={v}" for k, v in counts.items()),
+                + " ".join(f"{k}={v}" for k, v in counts.items())
+                + f" read {spread('hot')} {spread('cold')}",
                 flush=True,
             )
+            latency["hot"].clear()
+            latency["cold"].clear()
 
 
 if __name__ == "__main__":

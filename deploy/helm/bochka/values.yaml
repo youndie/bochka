@@ -331,8 +331,20 @@ probes:
 # 448 MiB of its 512 to hold nine mebibytes of live data, and the cache gave up exactly that much,
 # 605 MiB down to 144. The read path is `transferTo` from a **hot** file, so that is a real trade —
 # `-Xmx512M` buys the published object ceiling, and a store far below the ceiling pays for the
-# headroom in cache. Raising `limits.memory` is the cheap end of it: `-Xmx` caps the JVM, so every
-# extra megabyte goes to the cache.
+# headroom in cache.
+#
+# Both halves of that were then measured (M-233), and the lever that looked free came out the other
+# way round. The trade is real and large: one node, one build, differing only in heap size, reading
+# a 300 MiB object costs **455 ms at -Xmx512M and 132 ms at -Xmx128M** — 3.4x — because the smaller
+# heap leaves the page cache room to hold it. The price is arithmetic: 650 bytes an object over half
+# the heap, so -Xmx128M is about 99 800 objects instead of 399 215.
+#
+# What does **not** work is raising `limits.memory` so the JVM keeps its heap and the cache gets the
+# rest. Measured on the same arm at 2Gi instead of 768Mi: the same 455/374/393 ms, and a cache that
+# went from 160 MiB to 211 rather than to a gigabyte. A cgroup limit is a ceiling, not a
+# reservation, and on a node with 200 MiB free there is nothing for the ceiling to admit. Raise it
+# only where the machine genuinely has the memory; otherwise the smaller heap is the lever, because
+# it hands memory back to the **node** rather than to this cgroup.
 #
 # Memory request == memory limit because a JVM with a fixed -Xmx does not shrink: a smaller request
 # would let the scheduler place this pod where the heap it will certainly reach does not fit, and
