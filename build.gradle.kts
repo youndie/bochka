@@ -151,6 +151,27 @@ subprojects {
             // they cite a file and a line in it (project rule 2). The path is injected because a
             // test's working directory is its module, and `../docs/spec` in a dozen tests is a
             // dozen places to fix when a module moves.
+            // The repository root, for checks that read **sources** rather than compiled classes: a
+            // test's working directory is its own module, while the rule about the language of the
+            // code is one rule for the whole repository.
+            systemProperty("bochka.repoRoot", rootProject.layout.projectDirectory.asFile.absolutePath)
+
+            // And the tree those checks read is declared as an input, or Gradle keeps the task
+            // up to date exactly when the thing being guarded changed. Caught by positive control:
+            // Russian added to two `ci/` scripts left the run green, because a script is not an
+            // input of anything the compiler touched, and only `--rerun-tasks` saw it. A gate that
+            // stops running when its subject changes is worse than no gate — it reports success.
+            if (project.name == "bochka-app") {
+                inputs
+                    .files(
+                        rootProject.fileTree(rootProject.layout.projectDirectory) {
+                            include("**/*.kt", "**/*.kts", "ci/**/*.py", "ci/**/*.sh")
+                            exclude("**/build/**", "**/.gradle/**", "**/.claude/**")
+                        },
+                    ).withPropertyName("sourcesReadByRepositoryWideChecks")
+                    .withPathSensitivity(PathSensitivity.RELATIVE)
+            }
+
             systemProperty(
                 "bochka.specDir",
                 rootProject.layout.projectDirectory
@@ -174,16 +195,17 @@ subprojects {
             }
         }
 
-        // Мутационное тестирование: прогон, а не упражнение.
+        // Mutation testing as a run rather than an exercise.
         //
-        // В M28 семь мутаций делались руками и нашли двух сторожей, которых не ловило **ничто**,
-        // и два теста, проходивших не по той причине, что написана в их именах. Такой тест зелёный,
-        // выглядит покрытием и останется зелёным, если убрать проверку, ради которой он написан.
-        // Отсюда задача: тот же вопрос, заданный подряд, а не там, где хватило внимания.
+        // In M28 seven mutations were made by hand and found two guards **nothing** caught, and two
+        // tests that passed for a different reason than the one written in their names. Such a test
+        // is green, looks like coverage, and stays green if the check it was written for is
+        // removed. Hence the task: the same question asked in order, rather than wherever attention
+        // happened to reach.
         //
-        // Задача **не входит в `check`** и входить не должна. Она долгая, а её результат — не
-        // порог, а список выживших, каждого из которых читают отдельно: процент выживаемости —
-        // такое же число ни о чём, как процент покрытия (`docs/mutation.md`).
+        // The task is **not part of `check`** and must not be. It is slow, and its result is not a
+        // threshold but a list of survivors, each of which is read on its own: a survival percentage
+        // is as meaningless a number as a coverage percentage (`docs/mutation.md`).
         if (project.name != "bochka-benchmark") {
             val pitest = configurations.create("pitest")
             dependencies.add("pitest", rootProject.libs.pitest.cli)
@@ -191,10 +213,11 @@ subprojects {
 
             tasks.register<JavaExec>("mutationTest") {
                 group = "verification"
-                description = "Ломает этот модуль по одному месту и говорит, что тесты не заметили"
+                description = "Breaks this module one place at a time and says what the tests did not notice"
 
-                // Классы нужны собранные, а тесты — заведомо зелёные: pitest отказывается
-                // мутировать код, чей набор падает и без мутации, и это правильный отказ.
+                // The classes have to be compiled and the tests have to be green beforehand: pitest
+                // refuses to mutate code whose suite fails without a mutation, and that is the
+                // right refusal.
                 dependsOn(tasks.named("test"))
 
                 classpath = pitest
@@ -210,10 +233,11 @@ subprojects {
                 val test = sourceSets.getByName("test")
                 val reportDir = layout.buildDirectory.dir("reports/pitest")
 
-                // Профиль форкнутого теста едет и сюда. Миньоны pitest — отдельные JVM, и тест,
-                // сверяющий `bochka.expectedJvmArgs`, в них упадёт без мутации вовсе; прогон тогда
-                // не «нашёл дефект», а не начался. Разделитель у pitest — запятая, поэтому
-                // значения с пробелами внутри одного аргумента проходят, а с запятой — нет.
+                // The forked test's profile travels here too. A pitest minion is a JVM of its own,
+                // and the test comparing `bochka.expectedJvmArgs` fails inside one without any
+                // mutation at all — at which point the run has not "found a defect", it has not
+                // started. pitest separates these on commas, so a value with spaces inside one
+                // argument gets through and one with a comma does not.
                 @Suppress("UNCHECKED_CAST")
                 val profile = rootProject.extra["bochkaJvmArgs"] as List<String>
                 val specDir =
@@ -228,29 +252,40 @@ subprojects {
                             "-Djdk.httpclient.allowRestrictedHeaders=host",
                         )
 
-                // Только код этого модуля мутируется, но на путь кладётся всё, чем он живёт.
+                // Only this module's code is mutated, but everything it lives on goes on the path.
                 val mutable = main.output.classesDirs
                 val fullPath = test.runtimeClasspath
 
-                // Ограничить прогон одним классом или семейством: `-PmutationTarget=…S3Handler`.
-                // Полный прогон модуля идёт десятки минут, а сузить его — единственный способ
-                // задать вопрос про **одно** место и получить ответ сегодня.
+                // Narrow the run to one class or family: `-PmutationTarget=…S3Handler`. A whole
+                // module takes tens of minutes, and narrowing it is the only way to ask about
+                // **one** place and get the answer today.
                 val target = providers.gradleProperty("mutationTarget").getOrElse("io.github.youndie.bochka.*")
 
                 argumentProviders.add(
                     CommandLineArgumentProvider {
                         listOf(
-                            "--reportDir", reportDir.get().asFile.absolutePath,
-                            "--targetClasses", target,
-                            "--targetTests", "io.github.youndie.bochka.*",
-                            "--sourceDirs", main.allSource.srcDirs.joinToString(",") { it.absolutePath },
-                            "--mutableCodePaths", mutable.joinToString(",") { it.absolutePath },
-                            "--classPath", fullPath.joinToString(",") { it.absolutePath },
-                            "--testPlugin", "junit5",
-                            "--outputFormats", "HTML,XML",
-                            "--timestampedReports", "false",
-                            "--jvmArgs", forkArgs.joinToString(","),
-                            "--threads", Runtime.getRuntime().availableProcessors().toString(),
+                            "--reportDir",
+                            reportDir.get().asFile.absolutePath,
+                            "--targetClasses",
+                            target,
+                            "--targetTests",
+                            "io.github.youndie.bochka.*",
+                            "--sourceDirs",
+                            main.allSource.srcDirs.joinToString(",") { it.absolutePath },
+                            "--mutableCodePaths",
+                            mutable.joinToString(",") { it.absolutePath },
+                            "--classPath",
+                            fullPath.joinToString(",") { it.absolutePath },
+                            "--testPlugin",
+                            "junit5",
+                            "--outputFormats",
+                            "HTML,XML",
+                            "--timestampedReports",
+                            "false",
+                            "--jvmArgs",
+                            forkArgs.joinToString(","),
+                            "--threads",
+                            Runtime.getRuntime().availableProcessors().toString(),
                         )
                     },
                 )

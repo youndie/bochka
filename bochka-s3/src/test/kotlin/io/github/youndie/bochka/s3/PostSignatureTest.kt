@@ -6,21 +6,21 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
- * Подпись POST-формы, обе версии (M-102).
+ * The signature of a POST form, both versions (M-102).
  *
- * Ожидания посчитаны **независимой реализацией** — `hmac`/`hashlib` из питона, — а не нашим же
- * кодом: подпись, сверенная с собой, сходится при любой ошибке внутри. Разбор строки, из которой
- * они получены, — в комментарии у каждой константы.
+ * The expectations were computed by an **independent implementation** — Python's `hmac`/`hashlib` —
+ * rather than by this code: a signature compared against itself agrees whatever is wrong inside.
+ * The string each was derived from is in the comment beside every constant.
  *
- * Вторая версия — форма из `test_post_object_authenticated_request:1962`, четвёртая — то, что
- * шлют свежие клиенты.
+ * The second version is the form from `test_post_object_authenticated_request:1962`; the fourth is
+ * what recent clients send.
  */
 class PostSignatureTest {
     private val key = "AKIAIOSFODNN7EXAMPLE"
     private val secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
     private val credentials = Credentials(mapOf(key to secret))
 
-    /** base64 от `{"expiration":"2026-08-18T13:00:00Z","conditions":[{"bucket":"photos"}]}`. */
+    /** base64 of `{"expiration":"2026-08-18T13:00:00Z","conditions":[{"bucket":"photos"}]}`. */
     private val policy =
         "eyJleHBpcmF0aW9uIjoiMjAyNi0wOC0xOFQxMzowMDowMFoiLCJjb25kaXRpb25zIjpbeyJidWNrZXQiOiJwaG90b3MifV19"
 

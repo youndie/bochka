@@ -6,35 +6,38 @@ import java.time.Duration
 import java.time.Instant
 
 /**
- * То, ради чего правила вообще принимаются: обход, который удаляет.
+ * What the rules are accepted for in the first place: a sweep that deletes.
  *
- * Конфигурация, которую сервер хранит и отдаёт, но не применяет, — это `PutBucketPolicy` из
- * «чего не делать»: клиент считает правило поставленным, а узнаёт об обратном счётом за хранение,
- * а не ошибкой. Поэтому разбор правил и этот файл — одна веха, и порознь первое было бы вредно.
+ * A configuration the server stores and hands back but does not apply is the `PutBucketPolicy` of
+ * the "what not to do" list: the client believes the rule is in place and learns otherwise from a
+ * storage bill rather than from an error. So parsing the rules and this file are one milestone, and
+ * the first of them alone would have been harmful.
  *
- * ## Что здесь делается и чего не делается
+ * ## What happens here and what does not
  *
- * Четыре действия, и все четыре — удаление: текущая версия, неактуальные версии, одинокое
- * надгробие, брошенная многочастная загрузка. Переходов между классами хранения нет, потому что
- * класс один; правило с `<Transition>` до этого места не доходит — оно отвергается на записи.
+ * Four actions, and all four are deletions: the current version, noncurrent versions, an orphaned
+ * tombstone, an abandoned multipart upload. There are no transitions between storage classes
+ * because there is one class; a rule carrying `<Transition>` never reaches this file — it is
+ * refused on the write.
  *
- * Обход идёт **по публичному API хранилища**, а не по индексу. Не из чистоты: правила — это
- * протокол S3, а `ObjectStore` про S3 не знает и знать не должен, иначе теги, размеры и надгробия
- * придётся объяснять ядру. Цена — лишний проход `versions()` на ключ, и она платится фоновым
- * потоком раз в период.
+ * The sweep goes **through the store's public API** rather than through the index. Not for
+ * tidiness: rules are the S3 protocol, and `ObjectStore` knows nothing about S3 and must not, or
+ * tags, sizes and tombstones would have to be explained to the core. The cost is one extra
+ * `versions()` pass per key, and it is paid by a background thread once a period.
  */
 class LifecycleSweep(
     private val store: ObjectStore,
     private val lifecycles: Lifecycles,
     /**
-     * Сколько длится «день» правила.
+     * How long a rule's "day" lasts.
      *
-     * Сутки в поставке. Короче — во встроенном режиме и в прогоне чужого сьюта, где правило
-     * «через день» иначе непроверяемо вовсе: тест, ждущий сутки, никто не запустит.
+     * Twenty-four hours as shipped. Shorter in the embedded mode and in a run of the foreign suite,
+     * where a rule saying "after a day" is otherwise untestable: nobody runs a test that waits a
+     * day.
      */
     private val day: Duration = Lifecycle.DAY,
 ) {
-    /** Что обход сделал. Ноль по всем четырём — обычный результат, и печатать его не за чем. */
+    /** What the sweep did. Zero on all four is the ordinary outcome and not worth printing. */
     data class Report(
         val objects: Int = 0,
         val versions: Int = 0,
@@ -68,11 +71,11 @@ class LifecycleSweep(
         var report = Report()
         var marker: ByteArray? = null
         while (true) {
-            // Страница нужна только чтобы перечислить **ключи**: версии каждого берутся отдельно
-            // и целиком. Иначе продолжение пришлось бы делать внутри ключа — по паре маркеров, —
-            // а обход по ходу удаляет, и маркер на удалённую версию не находит ничего. Ту же
-            // грабли уже собрала чужая уборка (M-107); здесь она обходится тем, что продолжение
-            // всегда стоит на границе ключа.
+            // The page is only here to enumerate **keys**: the versions of each are fetched
+            // separately and in full. Otherwise continuation would have to happen inside a key, on
+            // a pair of markers — and the sweep deletes as it goes, so a marker pointing at a
+            // deleted version finds nothing. Another housekeeper already stepped on that (M-107);
+            // here it is avoided by keeping continuation always on a key boundary.
             val page = store.versionPage(bucket, keyMarker = marker)
             val keys = LinkedHashSet(page.versions.map { it.key })
             for (key in keys) report = report + sweepKey(bucket, lifecycle, rules, key, now)
@@ -90,10 +93,10 @@ class LifecycleSweep(
         now: Instant,
     ): Report {
         var versions = 0
-        // Неактуальные версии первыми, и порядок здесь содержательный: пока под надгробием есть
-        // хоть одна версия, оно не одиноко, и правило про одинокое надгробие к нему неприменимо.
-        // `test_lifecycle_deletemarker_expiration:9361` проверяет ровно эту последовательность —
-        // версия истекает, надгробие остаётся одно, и тогда уходит само.
+        // Noncurrent versions first, and the order carries meaning: while even one version remains
+        // under a tombstone it is not orphaned, and the rule about orphaned tombstones does not
+        // apply. `test_lifecycle_deletemarker_expiration:9361` checks exactly this sequence — the
+        // version expires, the tombstone is left alone, and only then goes itself.
         val stored = store.versions(bucket, key)
         for ((index, version) in stored.drop(1).withIndex()) {
             val rule =
@@ -101,8 +104,9 @@ class LifecycleSweep(
                     it.noncurrent != null && it.matches(key, version.size, version.metadata.tags)
                 } ?: continue
             val noncurrent = rule.noncurrent!!
-            // `NewerNoncurrentVersions`: столько самых свежих неактуальных версий переживают срок
-            // независимо от возраста. Счёт от текущей вниз, поэтому индекс в списке и есть номер.
+            // `NewerNoncurrentVersions`: that many of the newest noncurrent versions outlive the
+            // term regardless of age. Counted from the current one down, so the index in the list
+            // is the number.
             if (noncurrent.newerVersions != null && index < noncurrent.newerVersions) continue
             if (version.lastModified.plus(day.multipliedBy(noncurrent.days.toLong())).isAfter(now)) continue
             if (remove(bucket, key, version.versionId)) versions++
@@ -116,14 +120,15 @@ class LifecycleSweep(
                 lifecycle.expiryOf(key, current.size, current.metadata.tags, current.lastModified, day)
                     ?: return Report(versions = versions)
             if (due.first.isAfter(now)) return Report(versions = versions)
-            // `delete`, а не `deleteVersion`: в версионированном бакете истечение срока текущей
-            // версии кладёт надгробие и оставляет версию под ним, ровно как обычное удаление.
-            // Срок — это не «стереть», это «считать удалённым».
+            // `delete` rather than `deleteVersion`: in a versioning bucket the current version
+            // reaching its term lays a tombstone and leaves the version under it, exactly as an
+            // ordinary delete does. A term is not "erase", it is "treat as deleted".
             //
-            // И **под условием на ту самую версию**, которую обход посмотрел. Между чтением и
-            // удалением клиент успевает записать новую: без условия обход удалил бы свежий
-            // объект по сроку, вышедшему у прежнего, — тихо, редко и невоспроизводимо. Условие
-            // превращает гонку в пропущенный круг, а следующий круг через секунду.
+            // And **conditional on the very version** the sweep looked at. Between the read and the
+            // delete a client has time to write a new one: without the condition the sweep would
+            // delete a fresh object on a term that expired for its predecessor — quietly, rarely
+            // and unreproducibly. The condition turns the race into a skipped round, and the next
+            // round is a second away.
             return try {
                 store.delete(
                     bucket,
@@ -132,23 +137,24 @@ class LifecycleSweep(
                 )
                 Report(objects = 1, versions = versions)
             } catch (_: ObjectStore.PreconditionFailed) {
-                // **Ровно этот отказ, и никакой другой** (M-207). Здесь стояло
-                // `runCatching { … }.fold({ удалили }, { не удалили })`, и оно превращало любое
-                // исключение в «нечего было удалять»: обход, сломанный по-настоящему, отчитывался
-                // нулём так же, как обход, которому нечего делать, — тихо, каждый круг, пока
-                // объекты со сроком переставали исчезать.
+                // **This refusal and no other** (M-207). What stood here was
+                // `runCatching { … }.fold({ deleted }, { did not delete })`, and it turned any
+                // exception into "there was nothing to delete": a genuinely broken sweep reported a
+                // zero exactly as a sweep with no work does — quietly, every round, while objects
+                // with a term stopped disappearing.
                 //
-                // Непройденное предусловие ошибкой не является: между чтением и удалением клиент
-                // записал новую версию, обход пропускает круг, следующий — через секунду. Всё
-                // остальное — сломанный диск, испорченный индекс, ошибка в коде — уходит наружу,
-                // где фоновая петля его печатает и продолжает жить (`Main.startLifecycle`).
-                // `remove()` шестьюдесятью строками ниже ловит так же узко и по той же причине.
+                // A precondition that did not hold is not an error: between the read and the delete
+                // the client wrote a new version, the sweep skips a round, and the next one is a
+                // second away. Everything else — a broken disk, a damaged index, a mistake in the
+                // code — goes out, where the background loop prints it and carries on
+                // (`Main.startLifecycle`). `remove()` sixty lines below catches just as narrowly
+                // and for the same reason.
                 Report(versions = versions)
             }
         }
 
-        // Одинокое надгробие: под ним не осталось ничего, и оно само есть единственный след
-        // ключа. `ExpiredObjectDeleteMarker` снимает его сразу, `Days`/`Date` — по своему сроку.
+        // An orphaned tombstone: nothing is left under it, and it is itself the only trace of the
+        // key. `ExpiredObjectDeleteMarker` takes it away at once; `Days`/`Date` do so on their term.
         if (remaining.size != 1) return Report(versions = versions)
         val rule =
             rules.firstOrNull {
@@ -166,12 +172,13 @@ class LifecycleSweep(
     }
 
     /**
-     * Брошенные загрузки — и от фильтра им достаётся только префикс.
+     * Abandoned uploads, and of a filter only its prefix reaches them.
      *
-     * У начатой загрузки нет ни размера, ни тегов: объекта ещё нет. Правило, называющее тег или
-     * размер, до неё поэтому не применяется **вовсе** — а не применяется наполовину. Разница
-     * видна на `ObjectSizeLessThan`: незаписанная загрузка «весит» ноль, то есть подошла бы под
-     * любой такой порог и была бы отменена по условию, которого никто про неё не проверял.
+     * An upload that has begun has neither a size nor tags: there is no object yet. A rule naming a
+     * tag or a size therefore does not apply to it **at all** — rather than applying by halves. The
+     * difference shows on `ObjectSizeLessThan`: an upload that has written nothing "weighs" zero,
+     * so it would match any such threshold and be aborted on a condition nobody ever evaluated
+     * about it.
      */
     private fun sweepUploads(
         bucket: String,
@@ -194,11 +201,11 @@ class LifecycleSweep(
     }
 
     /**
-     * Удаление версии, которое молчит о защищённых.
+     * Deleting a version, quietly passing over the protected ones.
      *
-     * Версия под retention или под legal hold не удаляется ни этим обходом, ни чем-либо ещё, и
-     * правило жизненного цикла не исключение: замок — это обещание, которое сильнее срока.
-     * Отказ здесь не ошибка обхода, поэтому остальные версии он не останавливает.
+     * A version under retention or under a legal hold is not deleted by this sweep or by anything
+     * else, and a lifecycle rule is no exception: a lock is a promise that outranks a term. A
+     * refusal here is not an error of the sweep, so it does not stop the remaining versions.
      */
     private fun remove(
         bucket: String,
@@ -211,7 +218,7 @@ class LifecycleSweep(
             false
         }
 
-    /** Правило, отбирающее только по имени ключа: ни тегов, ни размеров ни на одном уровне. */
+    /** A rule that selects by key name alone: no tags and no sizes at any level. */
     private fun Lifecycle.Rule.aboutKeysOnly(): Boolean {
         val f = filter ?: return true
         if (f.tags.isNotEmpty() || f.sizeGreaterThan != null || f.sizeLessThan != null) return false

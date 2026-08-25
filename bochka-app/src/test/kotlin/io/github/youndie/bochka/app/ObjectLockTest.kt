@@ -7,11 +7,11 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
- * Object lock и retention (M-109…M-111).
+ * Object lock and retention (M-109…M-111).
  *
- * Отрицательное здесь важнее положительного: замок ценен ровно тем, чего он **не** даёт сделать,
- * а сьют куда чаще проверяет, что разрешённое разрешено. Поэтому большая часть тестов ниже —
- * про отказы, и каждый был увиден красным до того, как появился код.
+ * The negative matters more here than the positive: a lock is worth exactly what it **stops** you
+ * doing, while the suite far more often checks that what is allowed is allowed. So most of the
+ * tests below are about refusals, and every one of them was seen red before the code existed.
  */
 class ObjectLockTest {
     private fun versioning(status: String) =
@@ -37,8 +37,8 @@ class ObjectLockTest {
 
     @Test
     fun `a locked bucket versions whether it was asked to or not`() {
-        // Retention на том, что можно переписать на месте, не защищает ничего: версионирование
-        // приходит вместе с замком, а не отдельным вызовом.
+        // Retention on something that can be overwritten in place protects nothing: versioning
+        // comes with the lock rather than as a separate call.
         S3Fixture().use { s3 ->
             s3.locked("photos")
 
@@ -68,8 +68,8 @@ class ObjectLockTest {
 
     @Test
     fun `a versioning bucket may take the lock after creation`() {
-        // Создание — не единственная дверь: настоящее предусловие это версионирование, а
-        // `ObjectLockEnabledForBucket` был его частным случаем.
+        // Creation is not the only door: the real precondition is versioning, and
+        // `ObjectLockEnabledForBucket` was a special case of it.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             s3.send(
@@ -126,8 +126,8 @@ class ObjectLockTest {
 
     @Test
     fun `GOVERNANCE yields to a caller that says so, COMPLIANCE yields to nobody`() {
-        // Это и есть разница между режимами, и она не в силе, а в том, кто может её снять.
-        // Обещание, которое автор может отозвать, — не то обещание, ради которого замок заводят.
+        // This is the difference between the modes, and it is not about strength but about who can
+        // undo it. A promise its author can withdraw is not the promise a lock is put on for.
         S3Fixture().use { s3 ->
             s3.locked("photos")
             val governed = s3.put("photos", "g.txt", "тело").header("x-amz-version-id")!!
@@ -196,8 +196,9 @@ class ObjectLockTest {
 
     @Test
     fun `an object sub-resource on a bucket without the lock is a bad request, not a bad bucket`() {
-        // Одно и то же отсутствие с двух сторон, и коды разные: у бакета `409`, у объекта `400`.
-        // Клиент чинит разное — один пересоздаёт бакет, другой перестаёт спрашивать.
+        // The same absence seen from two sides, with different codes: `409` on the bucket, `400` on
+        // the object. The client fixes different things — one recreates the bucket, the other stops
+        // asking.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             s3.put("photos", "a.txt", "тело")
@@ -259,9 +260,9 @@ class ObjectLockTest {
 
     @Test
     fun `the sequence test_object_lock_get_obj_metadata runs leaves nothing behind`() {
-        // Кейс убирает за собой сам: снимает legal hold и удаляет версию с обходом GOVERNANCE.
-        // Если после этого в бакете что-то остаётся, чужая фикстура упирается в retention до
-        // 2030 года и валит все следующие кейсы — 92 штуки.
+        // The case cleans up after itself: it clears the legal hold and deletes the version with a
+        // GOVERNANCE bypass. If anything is left in the bucket after that, the foreign fixture runs
+        // into a retention lasting until 2030 and takes down every case after it — 92 of them.
         S3Fixture().use { s3 ->
             s3.locked("photos")
             s3.put("photos", "file1", "abc")
@@ -294,16 +295,16 @@ class ObjectLockTest {
 
             assertEquals(204, removed.status, removed.text)
             val left = s3.send("GET", "/photos", query = "versions").text
-            assertTrue("<Version>" !in left && "<DeleteMarker>" !in left, "осталось: $left")
+            assertTrue("<Version>" !in left && "<DeleteMarker>" !in left, "what is left: $left")
         }
     }
 
     @Test
     fun `the batch delete the cleanup uses steps over GOVERNANCE when it says so`() {
-        // `nuke_bucket` не удаляет по одному: оно шлёт `POST ?delete` пачками по 128 с
-        // `BypassGovernanceRetention=True`. Кейсы, которые ставят retention до 2030 и не убирают
-        // за собой, рассчитывают именно на этот путь — если обход не доезжает досюда, бакет
-        // остаётся запертым на годы, и это валит весь прогон.
+        // `nuke_bucket` does not delete one at a time: it sends `POST ?delete` in batches of 128
+        // with `BypassGovernanceRetention=True`. Cases that set a retention until 2030 and do not
+        // clean up after themselves rely on exactly that path — if the bypass does not reach this
+        // far, the bucket stays locked for years and the whole run goes down with it.
         S3Fixture().use { s3 ->
             s3.locked("photos")
             val version = s3.put("photos", "a.txt", "тело").header("x-amz-version-id")!!
@@ -314,9 +315,9 @@ class ObjectLockTest {
                     "<Delete><Quiet>true</Quiet><Object><Key>a.txt</Key>" +
                         "<VersionId>$version</VersionId></Object></Delete>"
                 ).toByteArray()
-            // `Content-MD5` пакетное удаление требует, и требует правильно: тело называет
-            // объекты, которые исчезнут, и обрыв на проводе не должен обернуться удалением
-            // не того.
+            // A batch delete demands `Content-MD5`, and demands it rightly: the body names the
+            // objects that will disappear, and a truncation on the wire must not turn into the
+            // wrong thing being deleted.
             val md5 =
                 java.util.Base64.getEncoder().encodeToString(
                     java.security.MessageDigest
@@ -339,15 +340,16 @@ class ObjectLockTest {
             assertEquals(200, answer.status, answer.text)
             assertTrue("<Error>" !in answer.text, answer.text)
             val left = s3.send("GET", "/photos", query = "versions").text
-            assertTrue("<Version>" !in left, "осталось: $left")
+            assertTrue("<Version>" !in left, "what is left: $left")
         }
     }
 
     @Test
     fun `the document botocore actually sends is accepted`() {
-        // Мои тесты писали документ руками и потому не видели того, что видит сьют: настоящий
-        // клиент шлёт корневой элемент с пространством имён и дату со смещением, а не с `Z`.
-        // Лог прогона показал `PUT ?retention -> 400` там, где отказа быть не должно.
+        // The tests here wrote the document by hand and so could not see what the suite sees: a
+        // real client sends the root element with a namespace and the date with an offset rather
+        // than with `Z`. The run's log showed `PUT ?retention -> 400` where there should have been
+        // no refusal at all.
         S3Fixture().use { s3 ->
             s3.locked("photos")
             s3.put("photos", "a.txt", "тело")
@@ -372,10 +374,10 @@ class ObjectLockTest {
 
     @Test
     fun `the retain-until header comes back in the form the client sent it`() {
-        // Единственная из трёх проверок `test_object_lock_get_obj_metadata:13955`, которую мои
-        // тесты не покрывали: режим и статус удержания сверялись, а дата — нет. Кейс обрывается
-        // на упавшей проверке, до своей уборки не доходит и оставляет legal hold, который снять
-        // уже нечем, — и следом триста кейсов падают в своих фикстурах.
+        // The one of the three assertions in `test_object_lock_get_obj_metadata:13955` the tests
+        // here did not cover: the mode and the hold status were compared and the date was not. The
+        // case aborts on the failed assertion, never reaches its own cleanup, and leaves behind a
+        // legal hold nothing can clear — and three hundred cases then fail in their fixtures.
         S3Fixture().use { s3 ->
             s3.locked("photos")
             s3.put("photos", "a.txt", "тело")
@@ -384,18 +386,19 @@ class ObjectLockTest {
             val head = s3.send("HEAD", "/photos/a.txt")
 
             assertEquals("2030-01-01T00:00:00Z", head.header("x-amz-object-lock-retain-until-date"))
-            // Кейс берёт версию из **этого** ответа, чтобы потом удалить её: без заголовка он
-            // падает на `KeyError` до своей уборки, и legal hold остаётся навсегда.
-            assertNotNull(head.header("x-amz-version-id"), "HEAD обязан назвать версию")
+            // The case takes the version out of **this** answer in order to delete it later:
+            // without the header it fails on a `KeyError` before its cleanup, and the legal hold
+            // stays forever.
+            assertNotNull(head.header("x-amz-version-id"), "a HEAD has to name the version")
         }
     }
 
     @Test
-    fun `режим retention нельзя сменить, оставив ту же дату`() {
-        // M-175. `test_object_lock_changing_mode_from_governance_without_bypass:13993` и
-        // `..._from_compliance:14010`. Проверка «ослабления» смотрела только на дату, а дата
-        // здесь не меняется — меняется режим, и это ровно то, чем один замок отличается от
-        // другого. `COMPLIANCE`, ставший `GOVERNANCE`, — это обещание, которое стало снимаемым.
+    fun `a retention mode cannot be changed while the date stays the same`() {
+        // M-175. `test_object_lock_changing_mode_from_governance_without_bypass:13993` and
+        // `..._from_compliance:14010`. The "weakening" check looked only at the date, and the date
+        // does not change here — the mode does, which is exactly what makes one lock different from
+        // the other. A `COMPLIANCE` that became `GOVERNANCE` is a promise that became withdrawable.
         S3Fixture().use { s3 ->
             s3.locked("photos")
             s3.put(
@@ -419,10 +422,10 @@ class ObjectLockTest {
     }
 
     @Test
-    fun `а с обходом GOVERNANCE режим сменить можно — и обратно уже нельзя`() {
-        // Вторая половина того же правила, и без неё первая доказывала бы только, что смена
-        // режима запрещена всем. `GOVERNANCE` уступает тому, кто сказал об этом вслух;
-        // `COMPLIANCE` не уступает никому, включая его же.
+    fun `with a GOVERNANCE bypass the mode can be changed, and not changed back`() {
+        // The second half of the same rule, and without it the first would only show that changing
+        // a mode is forbidden to everybody. `GOVERNANCE` yields to whoever says so out loud;
+        // `COMPLIANCE` yields to nobody, that same person included.
         S3Fixture().use { s3 ->
             s3.locked("photos")
             s3.put(
@@ -460,11 +463,11 @@ class ObjectLockTest {
     }
 
     @Test
-    fun `замок, названный при старте многочастной загрузки, доживает до объекта`() {
-        // M-175. `test_object_lock_delete_multipart_object_with_retention:13708`. Заголовки
-        // замка едут на `CreateMultipartUpload`, а объект появляется минутами позже — и до этой
-        // задачи они просто терялись: загрузка завершалась объектом без всякой защиты, а клиенту
-        // отвечали успехом, потому что загрузка и правда удалась.
+    fun `a lock named when a multipart upload starts survives to the object`() {
+        // M-175. `test_object_lock_delete_multipart_object_with_retention:13708`. The lock headers
+        // travel on `CreateMultipartUpload` while the object appears minutes later — and until this
+        // task they were simply lost: the upload completed into an object with no protection at
+        // all, and the client was told it succeeded, because the upload really had.
         S3Fixture().use { s3 ->
             s3.locked("photos")
             val started =
@@ -503,7 +506,8 @@ class ObjectLockTest {
             val refused = s3.send("DELETE", "/photos/big.bin", query = "versionId=$version")
             assertEquals(403, refused.status, refused.text)
 
-            // И тот же запрос с обходом — успех: замок настоящий, а не отказ на всё подряд.
+            // And the same request with a bypass succeeds: the lock is real rather than a refusal
+            // of everything.
             val allowed =
                 s3.send(
                     "DELETE",
@@ -516,7 +520,7 @@ class ObjectLockTest {
     }
 
     @Test
-    fun `legal hold, названный при старте многочастной загрузки, доживает тоже`() {
+    fun `a legal hold named when a multipart upload starts survives too`() {
         // `test_object_lock_delete_multipart_object_with_legal_hold_on:13909`.
         S3Fixture().use { s3 ->
             s3.locked("photos")
@@ -550,7 +554,8 @@ class ObjectLockTest {
             assertEquals("ON", s3.send("HEAD", "/photos/big.bin").header("x-amz-object-lock-legal-hold"))
             assertEquals(403, s3.send("DELETE", "/photos/big.bin", query = "versionId=$version").status)
 
-            // Удержание снимается — и тогда версия удаляется. Обход governance тут ни при чём.
+            // The hold is cleared, and then the version deletes. A governance bypass has nothing to
+            // do with it.
             s3.send(
                 "PUT",
                 "/photos/big.bin",

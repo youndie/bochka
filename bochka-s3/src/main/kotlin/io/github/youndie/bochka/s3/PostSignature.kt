@@ -9,23 +9,27 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Подпись POST-формы — единственное место сервера, где встречаются **две** версии подписи.
+ * The signature of a POST form — the one place in this server where **two** signature versions
+ * meet.
  *
- * `ceph/s3-tests` шлёт вторую (`test_post_object_authenticated_request:1962`): поля
- * `AWSAccessKeyId` и `signature`, где подпись — base64 от `HMAC-SHA1(секрет, политика)`. Свежие
- * клиенты шлют четвёртую: `x-amz-algorithm`, `x-amz-credential`, `x-amz-date`, `x-amz-signature`.
- * Поддерживать надо обе, и выбор — по наличию поля, а не по версии клиента.
+ * `ceph/s3-tests` sends the second (`test_post_object_authenticated_request:1962`): the fields
+ * `AWSAccessKeyId` and `signature`, where the signature is base64 of `HMAC-SHA1(secret, policy)`.
+ * Recent clients send the fourth: `x-amz-algorithm`, `x-amz-credential`, `x-amz-date`,
+ * `x-amz-signature`. Both have to be supported, and the choice is made by which field is present
+ * rather than by the client's version.
  *
- * Подписывается **та строка base64, что приехала**, а не пересобранная. Разбор политики
- * ([PostPolicy]) и её подпись — независимые операции над одним и тем же куском текста, и путать
- * их порядок нельзя: пересобранный JSON отличается пробелами, и подпись от него не сойдётся.
+ * What is signed is **the base64 string that arrived**, not one reassembled. Parsing the policy
+ * ([PostPolicy]) and verifying its signature are independent operations over the same piece of
+ * text, and their order must not be confused: reassembled JSON differs in whitespace, and a
+ * signature over it will not match.
  *
- * Формы подписи здесь только две, и третьей — анонимной формы без подписи вовсе — здесь нет
- * намеренно: у неё нечего проверять. Такая форма до этого объекта не доходит, её решает вызывающий
- * (`S3Handler.postObject`, M-225) теми же двумя воротами, что и всякий запрос без учётных данных:
- * рубильник `BOCHKA_ANONYMOUS` и ACL бакета. Раньше здесь было записано, что бакета, открытого
- * на запись всем, этот сервер не заводит; с M27 заводит (`public-read-write` хранится
- * и исполняется), а с M28 такой запрос вообще доходит до модели доступа.
+ * There are only two signature forms here, and the third — an anonymous form with no signature at
+ * all — is deliberately absent: there is nothing in it to verify. Such a form never reaches this
+ * object; the caller decides it (`S3Handler.postObject`, M-225) through the same two gates every
+ * request without credentials goes through: the `BOCHKA_ANONYMOUS` switch and the bucket's ACL.
+ * What used to be written here was that this server does not create a bucket open to writing by
+ * everybody; since M27 it does (`public-read-write` is stored and enforced), and since M28 such a
+ * request reaches the access model at all.
  */
 object PostSignature {
     class Refused(
@@ -34,10 +38,10 @@ object PostSignature {
     ) : RuntimeException(message)
 
     /**
-     * Проверяет подпись формы и возвращает идентификатор ключа, которым она подписана.
+     * Verifies a form's signature and returns the identifier of the key it was signed with.
      *
-     * @param fields поля формы, имена в нижнем регистре
-     * @param policy строка base64 ровно так, как она приехала в поле `policy`
+     * @param fields the form's fields, names lower-cased
+     * @param policy the base64 string exactly as it arrived in the `policy` field
      */
     fun verify(
         fields: Map<String, String>,

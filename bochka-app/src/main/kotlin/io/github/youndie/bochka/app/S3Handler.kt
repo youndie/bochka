@@ -74,12 +74,12 @@ class S3Handler(
      */
     private val accelRedirect: String? = null,
     /**
-     * Сколько длится «день» правила жизненного цикла.
+     * How long a lifecycle rule's "day" lasts.
      *
-     * Сутки, и другого значения в поставке не бывает. Короче — во встроенном режиме и в прогоне
-     * чужого сьюта: правило «удалить через день» иначе невозможно проверить вовсе, а «S3, который
-     * поднимают в тесте» — это ниша, названная в README. Здесь оно нужно ровно затем, чтобы
-     * `x-amz-expiration` обещал тот же срок, по которому потом удалит обход.
+     * Twenty-four hours, and nothing else in a shipped build. Shorter in the embedded mode and in a
+     * run of the foreign suite: a rule saying "delete after a day" is otherwise untestable, and "an
+     * S3 you start inside a test" is the niche the README names. It is needed here for exactly one
+     * thing — so that `x-amz-expiration` promises the same term the sweep will later delete on.
      */
     private val lifecycleDay: Duration = Lifecycle.DAY,
     /**
@@ -188,9 +188,9 @@ class S3Handler(
             return error(head, S3Error.NOT_IMPLEMENTED, detail = "not implemented: ${route.what}")
         }
 
-        // Preflight подписи не имеет и иметь не может: браузер шлёт `OPTIONS` до всякой
-        // авторизации. Исключение сделано **по маршруту**, а не по методу вообще, чтобы
-        // «неподписанный» не расползлось на что-нибудь ещё.
+        // A preflight carries no signature and cannot: the browser sends `OPTIONS` before any
+        // authorisation. The exemption is made **per route** rather than per method, so that
+        // "unsigned" does not spread to anything else.
         if (route !is S3Router.Route.Preflight &&
             route !is S3Router.Route.PostObject &&
             route !is S3Router.Route.Health
@@ -375,9 +375,8 @@ class S3Handler(
         body: HttpHandler.RequestBody,
     ): HttpResponse {
         val route = route(head)
-        // Preflight сюда доходит неподписанным (см. `screen`), так что верификация ленивая:
-        // приведение типа на неподписанном запросе упало бы на маршруте, которому подпись
-        // не нужна.
+        // A preflight reaches this point unsigned (see `screen`), so verification is lazy: a cast
+        // on an unsigned request would fail on a route that needs no signature.
         val verification by lazy { callerOf(head) }
 
         return when (route) {
@@ -453,9 +452,10 @@ class S3Handler(
                 preflight(head, route)
             }
 
-            // Отвечает `handle`, а не `screen`, хотя ответ известен заранее: проба обязана пройти
-            // тем же путём, что запрос, иначе она проверяет меньше, чем `tcpSocket` в других
-            // буквах. Тело — одно слово, чтобы ответ был читаем человеком, который зашёл руками.
+            // Answered by `handle` and not by `screen`, even though the answer is known in
+            // advance: a probe has to travel the same path a request does, or it checks less than a
+            // `tcpSocket` would. The body is one word so the answer reads for a human who came by
+            // hand.
             is S3Router.Route.Health -> {
                 HttpResponse(
                     200,
@@ -2009,8 +2009,9 @@ class S3Handler(
                     }
                     add("Accept-Ranges" to "bytes")
                     addAll(ObjectHeaders.write(stored.metadata))
-                    // Сколько тегов, а не какие: список отдаёт `?tagging`, а здесь клиенту нужно
-                    // знать, стоит ли за ним идти. S3 шлёт заголовок только когда теги есть.
+                    // How many tags rather than which: `?tagging` hands out the list, and here the
+                    // client only needs to know whether it is worth asking. S3 sends the header
+                    // only when there are tags.
                     if (stored.metadata.tags.isNotEmpty()) {
                         add(
                             "x-amz-tagging-count" to
@@ -2643,17 +2644,17 @@ class S3Handler(
         }
 
     /**
-     * `?lifecycle` — правила, которые сервер обязан **исполнять**, а не просто хранить.
+     * `?lifecycle` — the rules the server has to **carry out** rather than merely store.
      *
-     * Разбирается до записи и хранится отрисованным, как теги и CORS: то, что нельзя разобрать, не
-     * должно попасть в журнал и вернуться клиенту настройкой. Отрисовка при этом не приводит
-     * документ к канону — правило уезжает той же формой, какой приехало (см. [S3Documents]).
+     * Parsed before the write and stored re-rendered, like tags and CORS: what cannot be parsed
+     * must not reach the journal and come back to a client as a setting. Re-rendering does not
+     * canonicalise the document — a rule leaves in the shape it arrived in (see [S3Documents]).
      *
-     * Три отказа и три разных кода. `MalformedXML` — документ не является документом;
-     * `InvalidArgument` — документ разобран и исполнить его нельзя (ноль дней, повторённый `ID`,
-     * переход между классами хранения); `404 NoSuchLifecycleConfiguration` — правил просто нет.
-     * `DELETE` при этом отвечает `204` и когда снимать нечего: `test_lifecycle_delete:8462`
-     * пинит это дважды, до и после постановки правил.
+     * Three refusals and three different codes. `MalformedXML` — the document is not a document;
+     * `InvalidArgument` — the document parsed and cannot be carried out (zero days, a repeated
+     * `ID`, a transition between storage classes); `404 NoSuchLifecycleConfiguration` — there are
+     * simply no rules. `DELETE` answers `204` even when there is nothing to remove:
+     * `test_lifecycle_delete:8462` pins that twice, before and after the rules are put in place.
      */
     private suspend fun bucketLifecycle(
         head: HttpRequestParser.Head,
@@ -2689,15 +2690,16 @@ class S3Handler(
         }
 
     /**
-     * `x-amz-expiration: expiry-date="…", rule-id="…"` — когда объект под правилом со сроком.
+     * `x-amz-expiration: expiry-date="…", rule-id="…"` — when the object is under a rule with a
+     * term.
      *
-     * И **отсутствует**, когда не под ним: `test_lifecycle_expiration_header_tags_head:9192`
-     * ставит правило по одному тегу, читает заголовок, меняет правило на другой тег и требует,
-     * чтобы заголовка не стало. Половина, которую легко не сделать, — вторая.
+     * And **absent** when it is not: `test_lifecycle_expiration_header_tags_head:9192` puts a rule
+     * on one tag, reads the header, changes the rule to a different tag, and demands the header be
+     * gone. The half that is easy to leave undone is the second one.
      *
-     * Срок считается из тех же правил, по которым потом удалит обход, поэтому единица «дня»
-     * приходит сюда из конфигурации, а не берётся сутками: заголовок, обещающий одно, и обход,
-     * делающий другое, — хуже, чем отсутствие обоих.
+     * The term is computed from the same rules the sweep will later delete on, which is why the
+     * unit of a "day" comes here from the configuration rather than being taken as twenty-four
+     * hours: a header promising one thing and a sweep doing another is worse than neither.
      */
     private fun expirationHeader(
         bucket: String,
@@ -2715,11 +2717,11 @@ class S3Handler(
     }
 
     /**
-     * `?tagging` и `?cors` у бакета: положить, прочитать, снять.
+     * `?tagging` and `?cors` on a bucket: put, read, remove.
      *
-     * Документ разбирается **до** записи и хранится перерисованным, а не как пришёл: то, что
-     * нельзя разобрать, не должно попасть в журнал и вернуться клиенту как настройка, а
-     * перерисовка снимает вопрос, что делать с чужим форматированием.
+     * The document is parsed **before** the write and stored re-rendered rather than as it came:
+     * what cannot be parsed must not reach the journal and come back to a client as a setting, and
+     * re-rendering settles the question of what to do with somebody else's formatting.
      */
     private suspend fun bucketSubresource(
         head: HttpRequestParser.Head,
@@ -3126,11 +3128,12 @@ class S3Handler(
     }
 
     /**
-     * `?tagging` у объекта — и ответ на отсутствие здесь **другой**, чем у бакета.
+     * `?tagging` on an object — and the answer to "there are none" is **different** here than on a
+     * bucket.
      *
-     * У бакета без набора — `404 NoSuchTagSet`; у объекта без тегов — `200` с пустым `TagSet`,
-     * потому что сам объект есть, и `404` сказал бы неправду про него. Одно имя операции, два
-     * разных правильных ответа.
+     * A bucket with no set answers `404 NoSuchTagSet`; an object with no tags answers `200` with an
+     * empty `TagSet`, because the object itself exists and a `404` would tell an untruth about it.
+     * One operation name, two different correct answers.
      */
     private suspend fun objectTagging(
         head: HttpRequestParser.Head,
@@ -3160,9 +3163,10 @@ class S3Handler(
                     } catch (e: XmlReader.MalformedXmlException) {
                         return error(head, S3Error.MALFORMED_XML, detail = e.message, bucket = route.bucket)
                     }
-                // Проверка **до** записи, и это половина кейса: `test_put_excess_tags:12072`
-                // сначала ждёт отказа, а потом читает теги объекта и требует, чтобы их было ноль.
-                // Отказ, оставивший после себя набор, — это не отказ.
+                // Checked **before** the write, and that is half the case:
+                // `test_put_excess_tags:12072` first expects a refusal and then reads the object's
+                // tags and demands there be none. A refusal that leaves a set behind is not a
+                // refusal.
                 TagRules.check(tags)?.let {
                     return error(
                         head,
@@ -3179,11 +3183,11 @@ class S3Handler(
     }
 
     /**
-     * `OPTIONS` — preflight, единственный неподписанный ответ этого сервера.
+     * `OPTIONS` — the preflight, the one unsigned answer this server gives.
      *
-     * Отказ здесь — `403`, а не `200` без заголовков доступа. Браузер прочтёт оба одинаково,
-     * а человек, отлаживающий CORS, — по-разному: «правило не подошло» против «правило подошло
-     * и ничего не разрешило».
+     * A refusal here is `403` rather than a `200` without the access headers. A browser reads the
+     * two the same way; somebody debugging CORS does not: "no rule matched" against "a rule matched
+     * and allowed nothing".
      */
     private fun preflight(
         head: HttpRequestParser.Head,
@@ -3213,8 +3217,8 @@ class S3Handler(
                     detail = "an OPTIONS without Access-Control-Request-Method is not a preflight",
                     bucket = route.bucket,
                 )
-        // Список, а не строка: браузер перечисляет через запятую всё, что собирается послать,
-        // и разрешено должно быть каждое.
+        // A list rather than a string: the browser enumerates everything it intends to send,
+        // comma-separated, and every one of them has to be allowed.
         val asked =
             head
                 .header("access-control-request-headers")

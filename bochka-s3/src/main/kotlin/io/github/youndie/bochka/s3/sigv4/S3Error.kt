@@ -164,11 +164,11 @@ enum class S3Error(
     ),
 
     /**
-     * Набора тегов у бакета нет — и это **не** пустой набор.
+     * The bucket has no tag set — and that is **not** an empty set.
      *
-     * Клиент читает «нет настройки» и «настройка пустая» по-разному, и `test_set_bucket_tagging`
-     * проверяет именно код. У объекта, к слову, ответ обратный: там пустой `TagSet` и `200`,
-     * потому что объект-то есть.
+     * A client reads "there is no setting" and "the setting is empty" differently, and
+     * `test_set_bucket_tagging` checks the code specifically. On an object, incidentally, the answer
+     * is the other way round: an empty `TagSet` and a `200`, because the object does exist.
      */
     NO_SUCH_TAG_SET(
         "NoSuchTagSet",
@@ -176,7 +176,8 @@ enum class S3Error(
         404,
     ),
 
-    /** То же для CORS: конфигурации нет — это ответ, а не отсутствие ответа. */
+    /** The same for CORS: "there is no configuration" is an answer rather than the absence of
+     *  one. */
     NO_SUCH_CORS_CONFIGURATION(
         "NoSuchCORSConfiguration",
         "The CORS configuration does not exist",
@@ -249,14 +250,14 @@ enum class S3Error(
         400,
     ),
 
-    /** Политика формы, которую нельзя разобрать: не base64, не JSON, неизвестное условие. */
+    /** A form policy that cannot be parsed: not base64, not JSON, an unknown condition. */
     MALFORMED_POLICY_DOCUMENT(
         "MalformedPolicyDocument",
         "The policy document is not well-formed",
         400,
     ),
 
-    /** Файл формы вышел за `content-length-range` политики. */
+    /** The form's file fell outside the policy's `content-length-range`. */
     ENTITY_TOO_LARGE(
         "EntityTooLarge",
         "Your proposed upload exceeds the maximum allowed object size",
@@ -264,10 +265,11 @@ enum class S3Error(
     ),
 
     /**
-     * `:824` — форма `multipart/form-data`, которую нельзя разобрать.
+     * `:824` — a `multipart/form-data` form that cannot be parsed.
      *
-     * Отдельно от `MalformedXML`, потому что это другой формат и клиент чинит другое место:
-     * у формы разбирается тело браузерного запроса, а не документ, который клиент собрал сам.
+     * Separate from `MalformedXML`, because this is a different format and the client fixes a
+     * different place: what is parsed in a form is a browser request's body rather than a document
+     * the client assembled itself.
      */
     MALFORMED_POST_REQUEST(
         "MalformedPOSTRequest",

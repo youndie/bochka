@@ -7,11 +7,11 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 
 /**
- * Разбор `multipart/form-data` — на записанных байтах, без сокета (Р8).
+ * Parsing `multipart/form-data` on recorded bytes, with no socket (Р8).
  *
- * Форма собирается здесь руками, а не клиентом: смысл проверки в том, чтобы **байты были ровно
- * такие**, какие шлёт браузер, включая `\r\n` в разделителях. Библиотека, собравшая форму за нас,
- * проверяла бы согласие двух наших же представлений.
+ * The form is assembled by hand here rather than by a client: the point of the check is that the
+ * **bytes are exactly** what a browser sends, `\r\n` in the delimiters included. A library that
+ * assembled the form for us would be checking that two of our own representations agree.
  */
 class PostFormTest {
     private fun form(
@@ -33,7 +33,7 @@ class PostFormTest {
         }.toByteArray()
 
     @Test
-    fun `поля читаются, а содержимое файла не копируется`() {
+    fun `the fields are read and the file's contents are not copied`() {
         val body = form("XYZ", "key" to "foo.txt", "acl" to "private", "file" to "bar")
 
         val parsed = PostForm.parse(body, "XYZ")
@@ -48,8 +48,9 @@ class PostFormTest {
     }
 
     @Test
-    fun `всё после file игнорируется, как это делает S3`() {
-        // Клиенты на это рассчитывают: поля после файла в подпись не входят и смысла не имеют.
+    fun `everything after file is ignored, the way S3 does it`() {
+        // Clients rely on this: fields after the file are not covered by the signature and carry no
+        // meaning.
         val body = form("XYZ", "key" to "foo.txt", "file" to "bar", "ignored" to "мусор")
 
         val parsed = PostForm.parse(body, "XYZ")
@@ -59,37 +60,37 @@ class PostFormTest {
     }
 
     @Test
-    fun `имена полей нечувствительны к регистру`() {
+    fun `field names are case-insensitive`() {
         val body = form("XYZ", "Content-Type" to "text/plain", "file" to "bar")
 
         assertEquals("text/plain", PostForm.parse(body, "XYZ")["content-type"])
     }
 
     @Test
-    fun `перевод строки перед границей принадлежит разделителю, а не файлу`() {
-        // Классическая ошибка на единицу: `\r\n` перед `--boundary` — часть разделителя.
-        // Отдать его как содержимое значит записать объект на два байта длиннее присланного.
+    fun `the line break before a boundary belongs to the delimiter rather than to the file`() {
+        // The classic off-by-one: the `\r\n` before `--boundary` is part of the delimiter. Handing
+        // it over as content means storing an object two bytes longer than the one sent.
         val body = form("XYZ", "file" to "bar")
 
         assertEquals(3, PostForm.parse(body, "XYZ").fileLength)
     }
 
     @Test
-    fun `пустой файл — это ноль байтов, а не ошибка`() {
+    fun `an empty file is zero bytes rather than an error`() {
         val body = form("XYZ", "key" to "empty", "file" to "")
 
         assertEquals(0, PostForm.parse(body, "XYZ").fileLength)
     }
 
     @Test
-    fun `форма без файла отвергается`() {
+    fun `a form without a file is refused`() {
         val body = form("XYZ", "key" to "foo.txt")
 
         assertFailsWith<PostForm.Malformed> { PostForm.parse(body, "XYZ") }
     }
 
     @Test
-    fun `граница берётся из заголовка и только у multipart`() {
+    fun `the boundary comes from the header, and only for multipart`() {
         assertEquals("XYZ", PostForm.boundaryOf("multipart/form-data; boundary=XYZ"))
         assertEquals("XYZ", PostForm.boundaryOf("multipart/form-data; boundary=\"XYZ\""))
         assertNull(PostForm.boundaryOf("application/octet-stream"))

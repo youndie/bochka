@@ -16,7 +16,8 @@ include(":bochka-s3")
 include(":bochka-http")
 include(":bochka-app")
 include(":bochka-embedded")
-// Отдельным модулем, чтобы `bochka-embedded` не тащил JUnit тем, кто им не пользуется.
+// A module of its own, so that `bochka-embedded` does not drag JUnit along for those who do not
+// use it.
 include(":bochka-junit")
 include(":bochka-benchmark")
 

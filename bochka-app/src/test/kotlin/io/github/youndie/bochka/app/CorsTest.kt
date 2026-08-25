@@ -7,14 +7,14 @@ import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
 /**
- * CORS: конфигурация и preflight (M-93, M-94).
+ * CORS: the configuration and the preflight (M-93, M-94).
  *
- * Форма — `docs/spec/s3-service-2.json`: `CORSConfiguration` (`:2241`) содержит `CORSRule`
- * (`:2253`) с обязательными `AllowedMethods` и `AllowedOrigins`.
+ * The shape is in `docs/spec/s3-service-2.json`: `CORSConfiguration` (`:2241`) holds `CORSRule`
+ * (`:2253`), which requires `AllowedMethods` and `AllowedOrigins`.
  *
- * Хранение здесь такое же скучное, как у тегов; вся логика — в `OPTIONS`. Он единственный
- * отвечает **без подписи**, и это не послабление: preflight браузер шлёт до всякой авторизации,
- * по определению RFC, и подписать его нечем.
+ * Storage here is as dull as it is for tags; all of the reasoning lives in `OPTIONS`. It is the one
+ * thing this server answers **unsigned**, and that is not a leniency: a browser sends a preflight
+ * before any authorisation, by the RFC's definition, and there is nothing to sign it with.
  */
 class CorsTest {
     private val s3 = S3Fixture()
@@ -33,7 +33,7 @@ class CorsTest {
         ).toByteArray()
 
     @Test
-    fun `бакет без CORS отвечает NoSuchCORSConfiguration`() {
+    fun `a bucket with no CORS answers NoSuchCORSConfiguration`() {
         s3.createBucket("photos")
 
         val answer = s3.send("GET", "/photos", query = "cors")
@@ -43,7 +43,7 @@ class CorsTest {
     }
 
     @Test
-    fun `конфигурация кладётся, читается и снимается`() {
+    fun `the configuration is put, read and removed`() {
         s3.createBucket("photos")
 
         assertEquals(200, s3.send("PUT", "/photos", query = "cors", body = rules).status)
@@ -58,7 +58,7 @@ class CorsTest {
     }
 
     @Test
-    fun `preflight разрешённого источника и метода отвечает заголовками доступа`() {
+    fun `a preflight of an allowed origin and method answers with the access headers`() {
         s3.createBucket("photos")
         s3.send("PUT", "/photos", query = "cors", body = rules)
 
@@ -74,10 +74,10 @@ class CorsTest {
     }
 
     @Test
-    fun `preflight чужого источника отвергается, а не разрешается молча`() {
-        // Ответ `200` без заголовков доступа браузер прочтёт как запрет — но правильный ответ
-        // здесь `403`, и разница видна тому, кто отлаживает: «правило не подошло» против
-        // «правило подошло и ничего не разрешило».
+    fun `a preflight from another origin is refused rather than quietly allowed`() {
+        // A browser reads a `200` with no access headers as a refusal — but the right answer here
+        // is `403`, and the difference shows to whoever is debugging: "no rule matched" against "a
+        // rule matched and allowed nothing".
         s3.createBucket("photos")
         s3.send("PUT", "/photos", query = "cors", body = rules)
 
@@ -92,7 +92,7 @@ class CorsTest {
     }
 
     @Test
-    fun `preflight запрещённого метода отвергается, даже если источник разрешён`() {
+    fun `a preflight of a forbidden method is refused even when the origin is allowed`() {
         s3.createBucket("photos")
         s3.send("PUT", "/photos", query = "cors", body = rules)
 
@@ -106,7 +106,7 @@ class CorsTest {
     }
 
     @Test
-    fun `preflight к бакету без конфигурации отвергается`() {
+    fun `a preflight to a bucket with no configuration is refused`() {
         s3.createBucket("photos")
 
         val answer =
@@ -119,10 +119,10 @@ class CorsTest {
     }
 
     @Test
-    fun `подстановочный знак в источнике сопоставляется по правилу S3, а не регуляркой`() {
-        // S3 разрешает **одну** звёздочку в любом месте источника и сопоставляет буквально всё
-        // остальное. Регулярка на этом месте — это способ разрешить лишнее: точка в `example.com`
-        // в ней значит «любой символ».
+    fun `a wildcard in an origin matches by the S3 rule rather than as a regular expression`() {
+        // S3 allows **one** asterisk anywhere in the origin and matches everything else literally.
+        // A regular expression in this place is a way to allow more than was asked: in it, the dot
+        // of `example.com` means "any character".
         s3.createBucket("photos")
         val wildcard =
             (
@@ -137,17 +137,18 @@ class CorsTest {
             s3.options("/photos/a.txt", listOf("Origin" to origin, "Access-Control-Request-Method" to "GET")).status
 
         assertEquals(200, preflight("https://app.example.com"))
-        assertEquals(403, preflight("https://appXexample.com"), "точка — это точка, а не любой символ")
-        assertEquals(403, preflight("http://app.example.com"), "схема сопоставляется буквально")
+        assertEquals(403, preflight("https://appXexample.com"), "a dot is a dot rather than any character")
+        assertEquals(403, preflight("http://app.example.com"), "the scheme is matched literally")
     }
 
     @Test
-    fun `preflight сверяет и запрошенные заголовки, а не только метод с источником`() {
-        // M-177, `test_cors_header_option:7016`. Правило разрешает метод и источник и **не
-        // называет ни одного заголовка** — а браузер спрашивает про `x-amz-meta-header2`.
-        // `ExposeHeaders` тут не при чём: он про то, что браузеру дадут прочитать в ответе,
-        // а preflight спрашивает про `AllowedHeaders`. Не глядя на них, сервер разрешал
-        // запрос, который S3 отвергает, — то есть открывал чуть шире, чем просили.
+    fun `a preflight checks the requested headers too, not only the method and the origin`() {
+        // M-177, `test_cors_header_option:7016`. The rule allows the method and the origin and
+        // **names no header at all**, while the browser asks about `x-amz-meta-header2`.
+        // `ExposeHeaders` has nothing to do with it: that is about what the browser will be allowed
+        // to read in the answer, while a preflight asks about `AllowedHeaders`. Not looking at them,
+        // the server allowed a request S3 refuses — that is, opened a little wider than it was
+        // asked to.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             s3.send(
@@ -174,8 +175,8 @@ class CorsTest {
                 )
             assertEquals(403, refused.status, refused.text)
 
-            // Без спрошенных заголовков то же правило по-прежнему подходит: правило не стало
-            // строже, строже стал вопрос.
+            // With no headers asked about, the same rule still matches: the rule did not get
+            // stricter, the question did.
             val allowed =
                 s3.options(
                     "/photos/bar",
@@ -186,7 +187,7 @@ class CorsTest {
     }
 
     @Test
-    fun `названный заголовок и звёздочка разрешают preflight`() {
+    fun `a named header and an asterisk both allow a preflight`() {
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
 
@@ -214,9 +215,9 @@ class CorsTest {
                 )
 
             rules("<AllowedHeader>x-amz-meta-header2</AllowedHeader>")
-            // Имена заголовков сравниваются без учёта регистра — так их сравнивает HTTP.
+            // Header names are compared case-insensitively, the way HTTP compares them.
             assertEquals(200, ask("X-Amz-Meta-Header2").status)
-            // Спрошены два, разрешён один — этого мало.
+            // Two asked about, one allowed, and that is not enough.
             assertEquals(403, ask("x-amz-meta-header2, x-amz-meta-header3").status)
 
             rules("<AllowedHeader>*</AllowedHeader>")
@@ -448,18 +449,20 @@ class CorsTest {
     }
 
     /**
-     * Отказанный preflight не получает `Access-Control-*` — их дописал декоратор (найдено M-204).
+     * A refused preflight carries no `Access-Control-*` — a decorator was adding them (found in
+     * M-204).
      *
-     * `test_cors_header_option:7016` спрашивает `OPTIONS` с `Access-Control-Request-Headers`,
-     * которого правило не разрешает, и ждёт `403` **без** единого `Access-Control-*`. Заголовки
-     * обычного ответа (M-226) добавляются на всех трёх выходах, и на этот `403` они тоже поехали:
-     * сервер отказал и тут же сообщил, что запрос разрешён. Ни один локальный тест этого не
-     * увидел, потому что все они проверяли положительную сторону.
+     * `test_cors_header_option:7016` asks `OPTIONS` with an `Access-Control-Request-Headers` the
+     * rule does not allow, and expects a `403` with **no** `Access-Control-*` at all. The headers
+     * of an ordinary answer (M-226) are added on all three exits, and they went out on this `403`
+     * too: the server refused and in the same breath announced that the request was allowed. No
+     * local test saw it, because every one of them checked the positive side.
      *
-     * Preflight отвечает за свои заголовки сам, в обе стороны — и когда разрешает, и когда нет.
+     * A preflight answers for its own headers, in both directions — when it allows and when it does
+     * not.
      */
     @Test
-    fun `отказанный preflight не несёт cors-заголовков`() {
+    fun `a refused preflight carries no cors headers`() {
         s3.createBucket("photos")
         val exposeOnly =
             (
@@ -482,6 +485,6 @@ class CorsTest {
             )
 
         assertEquals(403, answer.status, answer.text)
-        assertNull(answer.header("Access-Control-Allow-Origin"), "отказ, который сообщает, что можно")
+        assertNull(answer.header("Access-Control-Allow-Origin"), "a refusal that announces permission")
     }
 }

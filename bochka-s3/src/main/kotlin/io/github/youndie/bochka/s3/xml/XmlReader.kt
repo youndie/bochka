@@ -21,12 +21,12 @@ class XmlReader(
     private var pos = 0
 
     /**
-     * Что последний прочитанный тег был `<x/>` — пустым элементом без содержимого.
+     * That the last tag read was `<x/>` — an empty element with no content.
      *
-     * Флагом, а не отдельным возвратом [openTag], потому что читает его не тот, кто открыл тег:
-     * [children] отдаёт имя обработчику, и содержимое элемента забирает уже он — через [textOf]
-     * или через вложенный [children]. Оба гасят флаг; если обработчик элемент не тронул,
-     * его гасит сам цикл.
+     * A flag rather than an extra return from [openTag], because whoever reads it is not whoever
+     * opened the tag: [children] hands the name to a handler, and the handler is what takes the
+     * element's content — through [textOf] or through a nested [children]. Both clear the flag; if
+     * the handler did not touch the element, the loop clears it itself.
      */
     private var empty = false
 

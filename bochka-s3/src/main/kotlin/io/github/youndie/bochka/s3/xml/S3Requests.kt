@@ -63,8 +63,9 @@ object S3Requests {
     /**
      * `<Tagging><TagSet><Tag><Key/><Value/>` — `s3-service-2.json:13301`, `:13294`, `:13272`.
      *
-     * Возвращается картой, а не списком: ключи тега уникальны, и карта не даёт положить два
-     * значения под одним ключом, о чём иначе пришлось бы помнить каждому, кто это читает.
+     * Returned as a map rather than a list: tag keys are unique, and a map makes it impossible to
+     * put two values under one key — something everybody reading this would otherwise have to
+     * remember.
      */
     fun parseTagging(body: ByteArray): Map<String, String> {
         val tags = LinkedHashMap<String, String>()
@@ -81,26 +82,27 @@ object S3Requests {
                         "Value" -> value = reader.textOf(field)
                     }
                 }
-                val k = key ?: throw XmlReader.MalformedXmlException("<Tag> без <Key>")
-                tags[k] = value ?: throw XmlReader.MalformedXmlException("<Tag> без <Value>")
+                val k = key ?: throw XmlReader.MalformedXmlException("a <Tag> with no <Key>")
+                tags[k] = value ?: throw XmlReader.MalformedXmlException("a <Tag> with no <Value>")
             }
         }
-        // Предел на число тегов здесь не проверяется, и это не упущение: одиннадцать тегов —
-        // документ разборчивый и по схеме верный, а неверен набор, который он описывает. Ответ
-        // на такое — `InvalidTag` от [TagRules], а не `MalformedXML`, посылающий клиента искать
-        // ошибку в своём сериализаторе (M-176).
+        // The bound on the number of tags is not checked here, and that is not an omission: eleven
+        // tags make a document that parses and matches the schema, while what is wrong is the set
+        // it describes. The answer to that is `InvalidTag` from [TagRules] rather than
+        // `MalformedXML`, which would send the client looking for a bug in its own serialiser
+        // (M-176).
         return tags
     }
 
     /**
-     * `x-amz-tagging: a=1&b=2` — те же теги, но формой запроса, а не документа
-     * (`s3-service-2.json:3158`). Значения процентно закодированы, как в query.
+     * `x-amz-tagging: a=1&b=2` — the same tags in the form of a request rather than a document
+     * (`s3-service-2.json:3158`). Values are percent-encoded, as in a query.
      *
-     * **Пара без `=` — это тег с пустым значением, а не поломка.** У тега значение необязательно,
-     * и `foo=bar&bar` (`test_put_obj_with_tags:12281`) означает два тега, у второго значение
-     * пустое. Отказ здесь стоил дороже, чем выглядел: [ObjectHeaders.read] зовётся из `screen`,
-     * а брошенное оттуда исключение уходило мимо цикла запроса — клиент получал закрытый сокет
-     * без единого байта ответа и диагностировал сеть.
+     * **A pair without `=` is a tag with an empty value, not a breakage.** A tag's value is
+     * optional, and `foo=bar&bar` (`test_put_obj_with_tags:12281`) means two tags, the second with
+     * an empty value. Refusing here cost more than it looked: [ObjectHeaders.read] is called from
+     * `screen`, and an exception thrown there escaped the request loop — the client got a closed
+     * socket without a single byte of answer and went off to diagnose the network.
      */
     fun parseTaggingHeader(value: String): Map<String, String> {
         val tags = LinkedHashMap<String, String>()
@@ -238,12 +240,12 @@ object S3Requests {
     /**
      * `<LifecycleConfiguration><Rule>…` — `s3-service-2.json:2127`, `:7896`.
      *
-     * Разбор и **проверки** вместе, потому что проверки здесь разными кодами, а код отказа — это
-     * то, что клиент чинит. Документ, который не является документом (`Status`, написанный
-     * `enabled`), — `MalformedXML`; документ разборчивый и бессмысленный (`Days: 0`, два правила
-     * с одним `ID`) — `InvalidArgument`. Сьют пинит обе стороны:
-     * `test_lifecycle_invalid_status:9037` ждёт первое, `test_lifecycle_id_too_long:9012` и
-     * `test_lifecycle_same_id:9024` — второе.
+     * Parsing and **validation** together, because the validations here differ by code, and the
+     * code of a refusal is what a client fixes. A document that is not a document (a `Status`
+     * spelled `enabled`) is `MalformedXML`; a document that parses and makes no sense (`Days: 0`,
+     * two rules with one `ID`) is `InvalidArgument`. The suite pins both sides:
+     * `test_lifecycle_invalid_status:9037` expects the first, `test_lifecycle_id_too_long:9012` and
+     * `test_lifecycle_same_id:9024` the second.
      */
     fun parseLifecycle(body: ByteArray): Lifecycle {
         val rules = ArrayList<Lifecycle.Rule>()
@@ -298,17 +300,18 @@ object S3Requests {
                     abortDays = parseAbortIncomplete(reader)
                 }
 
-                // Отвергается по имени, а не пропускается: класс хранения здесь один, потому что
-                // диск один, и правилу «через тридцать дней в GLACIER» некуда исполняться.
-                // Принятое и неисполняемое правило клиент обнаруживает счётом за хранение, а не
-                // ошибкой — то же соображение, по которому отвергается `PutBucketPolicy`.
+                // Refused by name rather than ignored: there is one storage class here because
+                // there is one disk, and a rule saying "to GLACIER after thirty days" has nowhere
+                // to be carried out. A rule accepted and not carried out is something the client
+                // discovers from a storage bill rather than from an error — the same reasoning by
+                // which `PutBucketPolicy` used to be refused.
                 "Transition", "NoncurrentVersionTransition" -> {
                     throw InvalidArgument("<$field>: this store has one storage class")
                 }
             }
         }
-        // Ровно два значения и с той же буквы: `ExpirationStatus` — перечисление
-        // (`s3-service-2.json:4881`), а `enabled` в нём нет.
+        // Exactly two values, and with the same first letter: `ExpirationStatus` is an enumeration
+        // (`s3-service-2.json:4881`), and `enabled` is not in it.
         if (status != "Enabled" && status != "Disabled") {
             throw XmlReader.MalformedXmlException("<Status> must be Enabled or Disabled, not '$status'")
         }
@@ -317,9 +320,10 @@ object S3Requests {
             throw InvalidArgument("<ID> is ${stated.length} characters, over ${Lifecycle.MAX_ID_LENGTH}")
         }
         return Lifecycle.Rule(
-            // Правило без `ID` его получает: `GetBucketLifecycleConfiguration` обязан ответить
-            // правилом с идентификатором (`test_lifecycle_get_no_id:8494`), а придумать его больше
-            // некому. Придуманный один раз — на записи, — и дальше живёт в сохранённом документе.
+            // A rule without an `ID` is given one: `GetBucketLifecycleConfiguration` has to answer
+            // with a rule that has an identifier (`test_lifecycle_get_no_id:8494`), and there is
+            // nobody else to invent it. Invented once, on the write, and it then lives in the
+            // stored document.
             id = if (stated.isNullOrEmpty()) mintRuleId() else stated,
             enabled = status == "Enabled",
             prefix = prefix,
@@ -400,21 +404,22 @@ object S3Requests {
                 "ExpiredObjectDeleteMarker" -> marker = reader.textOf(field).trim().equals("true", ignoreCase = true)
             }
         }
-        // Ноль дней законен у перехода и незаконен у истечения — сьют проверяет именно эту
-        // разницу (`test_lifecycle_expiration_days0:9111`), и ответ у неё `InvalidArgument`,
-        // а не «документ сломан».
+        // Zero days is legal on a transition and illegal on an expiration — the suite checks that
+        // very difference (`test_lifecycle_expiration_days0:9111`), and its answer is
+        // `InvalidArgument` rather than "the document is broken".
         days?.let { if (it <= 0) throw InvalidArgument("<Days> must be positive, not $it") }
         if (days != null && date != null) throw XmlReader.MalformedXmlException("both <Days> and <Date>")
         return Lifecycle.Expiration(days, date, marker)
     }
 
     /**
-     * Дата истечения — **всегда полночь UTC**, и это не придирка к формату.
+     * An expiration date is **always midnight UTC**, and that is not a quibble about format.
      *
-     * `test_lifecycle_set_invalid_date:9075` шлёт строку `'20200101'`, ожидая `400`. На провод
-     * приезжает `1970-08-22T19:08:21Z` — botocore понял это как секунды эпохи и выдал совершенно
-     * исправную дату. Отличить её от осмысленной нечем, кроме правила S3 «время всегда полночь
-     * UTC», и правило это заодно единственное, что делает `Date` датой, а не моментом.
+     * `test_lifecycle_set_invalid_date:9075` sends the string `'20200101'` expecting a `400`. What
+     * arrives on the wire is `1970-08-22T19:08:21Z` — botocore read it as seconds since the epoch
+     * and produced a perfectly valid date. Nothing tells it from a meaningful one except the S3
+     * rule that the time is always midnight UTC, and that rule is also the only thing that makes
+     * `Date` a date rather than an instant.
      */
     private fun lifecycleDate(stated: String): Instant {
         val instant =
@@ -481,7 +486,7 @@ object S3Requests {
             .toString()
             .replace("-", "")
 
-    /** Документ разобран, и то, что в нём написано, не может быть исполнено. `400 InvalidArgument`. */
+    /** The document parsed, and what it says cannot be carried out. `400 InvalidArgument`. */
     class InvalidArgument(
         override val message: String,
     ) : RuntimeException(message)
@@ -509,7 +514,7 @@ object S3Requests {
                 }
             }
             if (methods.isEmpty() || origins.isEmpty()) {
-                throw XmlReader.MalformedXmlException("<CORSRule> без <AllowedMethod> или <AllowedOrigin>")
+                throw XmlReader.MalformedXmlException("a <CORSRule> with no <AllowedMethod> or <AllowedOrigin>")
             }
             rules += CorsRules.Rule(id, methods, origins, allowedHeaders, exposeHeaders, maxAge)
         }

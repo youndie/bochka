@@ -7,13 +7,13 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 
 /**
- * Объявление сборщика и границы замеренного (M-156, M-157).
+ * Announcing the collector, and the bounds of what was measured (M-156, M-157).
  *
- * Веха M22 решила **форму ответа** раньше, чем получила числа, и проверяется здесь именно она.
- * Молчаливый порог по `-Xmx` означал бы, что 511 и 513 МиБ ведут себя по-разному и ни один лог
- * об этом не говорит; меню профилей — это N обещаний вместо одного, каждое из которых надо было
- * измерить. Остаётся одна поставка плюс два свойства: решение **объявляется**, а выход за конверт
- * **говорит о себе** — и говорит громко, но не отказом.
+ * Milestone M22 decided the **shape of the answer** before it had the numbers, and that is what is
+ * checked here. A silent threshold on `-Xmx` would mean that 511 and 513 MiB behave differently and
+ * no log says so; a menu of profiles would be N promises instead of one, each of which would have
+ * had to be measured. What is left is one shipped configuration plus two properties: the decision
+ * is **announced**, and going outside the envelope **says so** — loudly, but not by refusing.
  */
 class GcProfileTest {
     private val gib = 1024L * 1024 * 1024

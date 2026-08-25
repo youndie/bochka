@@ -8,19 +8,19 @@ import kotlin.test.assertFails
 import kotlin.test.assertTrue
 
 /**
- * Обход, который действительно удаляет.
+ * The sweep that actually deletes.
  *
- * Ради этого файла и заводились правила: конфигурация, которую сервер хранит и отдаёт, но не
- * применяет, — это `PutBucketPolicy` из «чего не делать», и клиент узнаёт о ней счётом за
- * хранение, а не ошибкой.
+ * This file is what the rules were written for: a configuration the server stores and hands back
+ * but does not apply is the `PutBucketPolicy` of the "what not to do" list, and the client finds
+ * out about it from a storage bill rather than from an error.
  *
- * **Ни одного `sleep`.** «День» правила — настройка, тест ставит её в миллисекунду и зовёт обход
- * руками; сервер зовёт тот же обход фоновым потоком. Тест, ждущий времени, либо медленный, либо
- * мигающий, обычно и то и другое.
+ * **Not one `sleep`.** A rule's "day" is a setting; the test sets it to a millisecond and calls the
+ * sweep by hand, while the server calls the same sweep from a background thread. A test that waits
+ * for time is either slow or flaky, and usually both.
  */
 class LifecycleSweepTest {
     @Test
-    fun `истекает то, что под правилом, и только оно`() {
+    fun `what the rule covers expires, and nothing else does`() {
         instant { s3 ->
             s3.createBucket("photos")
             for (key in listOf("expire1/foo", "expire1/bar", "keep2/foo", "expire3/foo")) {
@@ -39,7 +39,7 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `выключенное правило не делает ничего`() {
+    fun `a disabled rule does nothing`() {
         instant { s3 ->
             s3.createBucket("photos")
             s3.put("photos", "expire1/foo", "x")
@@ -51,9 +51,10 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `срок, который ещё не вышел, не наступает от одного вызова обхода`() {
-        // Обратная сторона: с «днём» в час правило «через сутки» не срабатывает, сколько обход
-        // ни зови. Без этого теста предыдущий доказывал бы только то, что обход что-то удаляет.
+    fun `a term that has not come does not arrive because the sweep was called`() {
+        // The other side of it: with a "day" of an hour, a rule saying "after one day" does not fire
+        // however often the sweep runs. Without this test the previous one would only have shown
+        // that the sweep deletes something.
         S3Fixture(lifecycleDay = Duration.ofHours(1)).use { s3 ->
             s3.createBucket("photos")
             s3.put("photos", "expire1/foo", "x")
@@ -65,9 +66,9 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `в версионированном бакете срок кладёт надгробие, а не стирает версию`() {
-        // Срок — это «считать удалённым», а не «стереть». Версия остаётся под надгробием и
-        // достаётся по имени, ровно как после обычного `DELETE`.
+    fun `in a versioning bucket a term lays a tombstone rather than erasing the version`() {
+        // A term means "treat as deleted", not "erase". The version stays under the tombstone and
+        // is reachable by name, exactly as after an ordinary `DELETE`.
         instant { s3 ->
             s3.createBucket("photos")
             s3.versioned("photos")
@@ -86,7 +87,7 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `неактуальные версии истекают, а текущая остаётся`() {
+    fun `noncurrent versions expire and the current one stays`() {
         instant { s3 ->
             s3.createBucket("photos")
             s3.versioned("photos")
@@ -110,9 +111,10 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `NewerNoncurrentVersions оставляет названное число свежих`() {
-        // Считается от текущей вниз: при десяти версиях и `NewerNoncurrentVersions: 5` остаются
-        // текущая и пять следующих, а четыре нижние уходят — `test_lifecycle_expiration_newer_noncurrent:8854`.
+    fun `NewerNoncurrentVersions keeps the number of recent ones it names`() {
+        // Counted from the current one down: with ten versions and `NewerNoncurrentVersions: 5` the
+        // current one and the five below it stay while the bottom four go —
+        // `test_lifecycle_expiration_newer_noncurrent:8854`.
         instant { s3 ->
             s3.createBucket("photos")
             s3.versioned("photos")
@@ -134,10 +136,10 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `надгробие уходит только когда под ним ничего не осталось`() {
-        // Порядок внутри одного обхода: сначала неактуальные версии, потом надгробие. Пока под
-        // ним есть версия, оно не одиноко, и правило про одинокое надгробие к нему неприменимо —
-        // `test_lifecycle_deletemarker_expiration:9361` проверяет именно эту последовательность.
+    fun `a tombstone goes only once nothing is left under it`() {
+        // The order within one sweep: noncurrent versions first, the tombstone after. While a
+        // version remains under it, it is not orphaned, and the rule about orphaned tombstones does
+        // not apply — `test_lifecycle_deletemarker_expiration:9361` checks this very sequence.
         instant { s3 ->
             s3.createBucket("photos")
             s3.versioned("photos")
@@ -151,12 +153,12 @@ class LifecycleSweepTest {
                     "<Expiration><ExpiredObjectDeleteMarker>true</ExpiredObjectDeleteMarker></Expiration>",
                 ),
             )
-            // Под надгробием ещё лежит версия — трогать нечего.
+            // A version still lies under the tombstone, so there is nothing to touch.
             assertTrue(s3.sweepLifecycle(later()).empty)
             assertEquals(2, Regex("<(Version|DeleteMarker)>").findAll(versions(s3)).count(), versions(s3))
 
-            // Появилось правило про неактуальные версии — и в одном обходе уходят обе: сначала
-            // версия, потом осиротевшее надгробие.
+            // A rule about noncurrent versions appears, and one sweep takes both: the version
+            // first, then the tombstone it orphaned.
             s3.rules(
                 rule(
                     "rule1",
@@ -176,7 +178,7 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `размер сравнивается, и правило по размеру не трогает соседа`() {
+    fun `size is compared, and a rule about size leaves its neighbour alone`() {
         instant { s3 ->
             s3.createBucket("photos")
             s3.put("photos", "myobject_small", "a".repeat(1000))
@@ -195,7 +197,7 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `брошенная многочастная загрузка отменяется по префиксу`() {
+    fun `an abandoned multipart upload is aborted by prefix`() {
         instant { s3 ->
             s3.createBucket("photos")
             s3.send("POST", "/photos/test1/a", query = "uploads")
@@ -218,11 +220,11 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `правило с условием по размеру не отменяет незаписанную загрузку`() {
-        // У начатой загрузки нет ни байтов, ни тегов. `ObjectSizeLessThan: 2000` подошёл бы ей
-        // как «ноль меньше двух тысяч» — то есть загрузка была бы отменена по условию, которого
-        // про неё никто не проверял. Правило, называющее размер или тег, к загрузкам не
-        // применяется вовсе.
+    fun `a rule with a size condition does not abort an upload that has written nothing`() {
+        // An upload that has begun has neither bytes nor tags. `ObjectSizeLessThan: 2000` would
+        // match it as "zero is less than two thousand" — that is, the upload would be aborted on a
+        // condition nobody ever evaluated about it. A rule naming a size or a tag does not apply to
+        // uploads at all.
         instant { s3 ->
             s3.createBucket("photos")
             s3.send("POST", "/photos/test1/a", query = "uploads")
@@ -240,10 +242,10 @@ class LifecycleSweepTest {
     }
 
     @Test
-    fun `версия под legal hold переживает свой срок`() {
-        // Отрицательный тест, и он здесь главный: замок — обещание, которое сильнее срока.
-        // Правило, снимающее удержанную версию, было бы худшим способом потерять данные —
-        // тихим, отложенным и записанным в конфигурации как «хотели сами».
+    fun `a version under a legal hold outlives its term`() {
+        // A negative test, and the important one here: a lock is a promise that outranks a term. A
+        // rule that took a held version away would be the worst way to lose data — quiet, delayed,
+        // and recorded in the configuration as something the owner asked for.
         instant { s3 ->
             s3.send("PUT", "/photos", headers = listOf("x-amz-bucket-object-lock-enabled" to "true"))
             s3.send(
@@ -256,8 +258,9 @@ class LifecycleSweepTest {
                             "</ObjectLockConfiguration>"
                     ).toByteArray(),
             )
-            // Удержание ставится на **старую** версию, по имени: без `versionId` оно легло бы на
-            // текущую, а её это правило и не трогает — тест был бы зелёным, ничего не проверив.
+            // The hold goes on the **old** version, by name: without a `versionId` it would land on
+            // the current one, which this rule does not touch anyway — the test would have been
+            // green having checked nothing.
             val held = s3.put("photos", "held/a", "first").header("x-amz-version-id")
             s3.put("photos", "held/a", "second")
             val hold =
@@ -277,8 +280,8 @@ class LifecycleSweepTest {
                 ),
             )
 
-            // Обход прошёл, старая версия — под удержанием и осталась. Заодно: отказ по одной
-            // версии не останавливает обход, он просто её не трогает.
+            // The sweep ran and the old version, being held, stayed. And with it: a refusal on one
+            // version does not stop the sweep, it simply leaves that one alone.
             s3.sweepLifecycle(later())
 
             assertEquals(200, s3.get("photos", "held/a").status)
@@ -289,18 +292,19 @@ class LifecycleSweepTest {
     private fun versions(s3: S3Fixture) = s3.send("GET", "/photos", query = "versions").text
 
     /**
-     * Обход, который сломался, обязан сказать это, а не отчитаться нулём (M-207).
+     * A sweep that broke has to say so rather than report a zero (M-207).
      *
-     * `runCatching { … }.fold({ удалили }, { не удалили })` превращал **любое** исключение
-     * в «нечего было удалять» — и обход, сломанный по-настоящему, был неотличим от обхода,
-     * которому нечего делать. Разница видна только снаружи: объекты со сроком перестают исчезать,
-     * а лог каждый круг сообщает, что всё в порядке.
+     * `runCatching { … }.fold({ deleted }, { did not delete })` turned **any** exception into
+     * "there was nothing to delete", and a genuinely broken sweep became indistinguishable from one
+     * with no work to do. The difference is visible only from outside: objects with a term stop
+     * disappearing while the log reports every round that all is well.
      *
-     * Отказ здесь устроен хирургически: у стора закрывается журнал. Чтение индекса живёт в памяти
-     * и продолжает работать, поэтому падает ровно запись — то самое место, где стояло `runCatching`.
+     * The failure here is arranged surgically: the store's journal is closed. Reading the index
+     * lives in memory and keeps working, so what fails is exactly the write — the place
+     * `runCatching` stood.
      */
     @Test
-    fun `сломанный обход падает, а не отчитывается нулём`() {
+    fun `a broken sweep fails rather than reporting a zero`() {
         instant { s3 ->
             s3.createBucket("photos")
             s3.put("photos", "expire/foo", "x")
@@ -309,27 +313,27 @@ class LifecycleSweepTest {
 
             val thrown = assertFails { s3.sweepLifecycle(later()) }
 
-            assertTrue(thrown !is AssertionError, "обход отчитался вместо того, чтобы упасть: $thrown")
+            assertTrue(thrown !is AssertionError, "the sweep reported instead of failing: $thrown")
         }
     }
 
     /**
-     * Фикстура, у которой «день» длится миллисекунду: всё, что имеет срок, наступает сразу.
+     * A fixture whose "day" lasts a millisecond: everything with a term reaches it at once.
      *
-     * Не `Duration.ZERO`: ноль означал бы «истекло в момент записи», и тест перестал бы отличать
-     * сработавшее правило от правила, применённого к чему угодно.
+     * Not `Duration.ZERO`: a zero would mean "expired at the moment it was written", and the test
+     * would stop telling a rule that fired from a rule applied to anything at all.
      */
     private fun instant(body: (S3Fixture) -> Unit) = S3Fixture(lifecycleDay = Duration.ofMillis(1)).use(body)
 
     /**
-     * Момент, в который обход смотрит на срок, — явный, а не «сейчас».
+     * The instant the sweep judges a term against is stated rather than "now".
      *
-     * «День» здесь длится миллисекунду, поэтому при часах по умолчанию истечение решается тем,
-     * сколько времени прошло между записью объекта и обходом. Это свойство машины, а не кода:
-     * `LifecycleSweepTest` упал в CI на дереве, зелёном пять прогонов подряд здесь. Секунда вперёд
-     * — это тысяча «дней», то есть срок заведомо вышел у всего, у чего он вообще есть, и ни одна
-     * проверка «правило не сработало» от этого не ослабевает: там срабатывает или не срабатывает
-     * **правило**, а не часы.
+     * A "day" here lasts a millisecond, so under the default clock expiry is decided by how much
+     * time passed between writing the object and sweeping. That is a property of the machine rather
+     * than of the code: `LifecycleSweepTest` failed in CI on a tree that had been green five runs
+     * in a row here. One second forward is a thousand "days", so the term has certainly passed for
+     * everything that has one, and no "the rule did not fire" assertion is weakened by it: what
+     * fires or does not fire there is the **rule**, not the clock.
      */
     private fun later(): Instant = Instant.now().plusSeconds(1)
 

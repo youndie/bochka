@@ -48,16 +48,17 @@ object ObjectHeaders {
             }
         }
 
-        // `x-amz-tagging: a=1&b=2` — теги формой запроса, а не документом
-        // (`s3-service-2.json:3158`). Клиент, положивший объект одним запросом, иначе вынужден
-        // делать второй только ради тегов.
+        // `x-amz-tagging: a=1&b=2` — tags in the form of a request rather than a document
+        // (`s3-service-2.json:3158`). A client that put the object in one request would otherwise
+        // have to make a second one just for the tags.
         val tags =
             one("x-amz-tagging")
                 ?.takeIf { it.isNotEmpty() }
                 ?.let { stated ->
-                    // Процентная раскодировка бросает на испорченной последовательности, и бросает
-                    // отсюда — из `screen`, до чтения тела. Своего типа у отказа не было, поэтому он
-                    // улетал мимо цикла запроса и клиент получал закрытый сокет вместо `400`.
+                    // Percent-decoding throws on a malformed sequence, and it throws from here —
+                    // from `screen`, before the body is read. The refusal had no type of its own, so
+                    // it escaped the request loop and the client got a closed socket instead of a
+                    // `400`.
                     try {
                         S3Requests.parseTaggingHeader(stated)
                     } catch (e: IllegalArgumentException) {

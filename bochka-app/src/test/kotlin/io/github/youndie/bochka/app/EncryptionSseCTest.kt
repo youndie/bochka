@@ -8,21 +8,21 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * SSE-C: шифрование ключом, который приносит клиент (M26).
+ * SSE-C: encryption under a key the client brings (M26).
  *
- * Форма — `docs/spec/s3-service-2.json`: `PutObjectRequest` (`:11815`) принимает три заголовка,
- * `x-amz-server-side-encryption-customer-algorithm`, `-key` и `-key-MD5`, а `GetObjectOutput`
- * (`:6385`) возвращает **два** из трёх: алгоритм и MD5. Ключа в ответе нет ни у одной операции —
- * это модель говорит прямо, и это же первое утверждение, которое здесь проверяется.
+ * The shape is in `docs/spec/s3-service-2.json`: `PutObjectRequest` (`:11815`) takes three headers,
+ * `x-amz-server-side-encryption-customer-algorithm`, `-key` and `-key-MD5`, while `GetObjectOutput`
+ * (`:6385`) returns **two** of the three: the algorithm and the MD5. No operation returns the key —
+ * the model says so outright, and that is also the first thing asserted here.
  *
- * **Зачем сервер вообще хранит MD5.** Ключ он не хранит и хранить не должен, иначе шифрование
- * ключом клиента не отличается от шифрования ключом сервера. Но отличить правильный ключ
- * от неправильного на чтении надо — иначе неверный ключ выдаёт мусор вместо отказа. MD5 ровно
- * для этого: сверяется он, а не результат расшифровки.
+ * **Why the server keeps the MD5 at all.** It does not keep the key and must not, or encryption
+ * under the client's key is no different from encryption under the server's. But a read has to be
+ * able to tell a right key from a wrong one, or a wrong key hands back rubbish instead of a
+ * refusal. The MD5 is exactly for that: it is what is compared, not the result of decrypting.
  *
- * Цена этой вехи названа в ресёрче покрытия и не прячется: у зашифрованного объекта нет пути
- * `transferTo`. Платит за неё тот, кто прислал ключ; обычный объект по-прежнему уходит `sendfile`,
- * и на это есть отдельный тест на предусловие.
+ * What this milestone costs is named in the coverage research and not hidden: an encrypted object
+ * has no `transferTo` path. Whoever sent the key pays for it; an ordinary object still goes out
+ * with `sendfile`, and there is a separate precondition test saying so.
  */
 class EncryptionSseCTest {
     private val s3 = S3Fixture()
@@ -62,8 +62,9 @@ class EncryptionSseCTest {
 
     @Test
     fun `the key itself never appears in an answer`() {
-        // `GetObjectOutput` называет два члена из трёх, и отсутствие третьего — не забывчивость
-        // модели. Сервер, отдающий ключ обратно, сводит на нет всю разницу между SSE-C и SSE-S3.
+        // `GetObjectOutput` names two members of the three, and the missing third is not the model
+        // being forgetful. A server that hands the key back undoes the whole difference between
+        // SSE-C and SSE-S3.
         s3.createBucket("photos")
         s3.put("photos", "secret.txt", "hello", sseC())
 
@@ -75,9 +76,10 @@ class EncryptionSseCTest {
 
     @Test
     fun `reading an encrypted object without a key is refused, and with 400`() {
-        // `test_encryption_sse_c_method_head` ждёт именно `400`, а не `403`: отсутствие ключа —
-        // это неполный запрос, а не отказ в доступе. Разница видна клиенту и она не косметическая:
-        // на `403` клиент идёт перевыпускать подпись, на `400` — смотреть, что он не дослал.
+        // `test_encryption_sse_c_method_head` expects `400` and not `403`: a missing key is an
+        // incomplete request rather than a refusal of access. The client sees the difference and it
+        // is not cosmetic — a `403` sends it off to reissue a signature, a `400` to look at what it
+        // failed to send.
         s3.createBucket("photos")
         s3.put("photos", "secret.txt", "hello", sseC())
 
@@ -87,15 +89,15 @@ class EncryptionSseCTest {
 
     @Test
     fun `reading an encrypted object with the wrong key is refused, and with 400`() {
-        // **Здесь стояло 403, и это было рассуждение, а не факт.** Рассуждение звучало так: ключ,
-        // который не открывает объект, — это отказ в доступе. Сьют говорит `400`
-        // (`test_encryption_sse_c_other_key`, без пометки `fails_on_aws`), модель про код молчит,
-        // и значит решает сьют.
+        // **This said 403, and that was reasoning rather than a fact.** The reasoning went: a key
+        // that does not open the object is a refusal of access. The suite says `400`
+        // (`test_encryption_sse_c_other_key`, with no `fails_on_aws` marker), the model says
+        // nothing about the status, and so the suite decides.
         //
-        // На второй взгляд он и прав: доступ здесь решает **подпись**, а она у этого запроса
-        // верная. Ключ — параметр запроса, и параметр, который не может сделать свою работу, —
-        // это плохой запрос, тот же ответ, что у неверной контрольной суммы. `403` отправил бы
-        // клиента перевыпускать подпись, с которой всё в порядке.
+        // On second look it is right, too: access here is decided by the **signature**, and this
+        // request's signature is good. The key is a request parameter, and a parameter that cannot
+        // do its job is a bad request — the same answer a wrong checksum gets. A `403` would send
+        // the client off to reissue a signature that was never the problem.
         s3.createBucket("photos")
         s3.put("photos", "secret.txt", "hello", sseC())
 
@@ -104,9 +106,9 @@ class EncryptionSseCTest {
 
     @Test
     fun `a key whose md5 does not match it is refused before anything is stored`() {
-        // Проверяется до записи: MD5, не сходящийся с ключом, означает, что клиент ошибся сейчас,
-        // а не что объект испорчен. Записать его и обнаружить это на чтении — значит превратить
-        // опечатку в потерянный объект.
+        // Checked before the write: an MD5 that does not match the key means the client made a
+        // mistake now, not that the object is damaged. Storing it and finding out on a read turns a
+        // typo into a lost object.
         s3.createBucket("photos")
 
         assertEquals(400, s3.put("photos", "secret.txt", "hello", sseC(key, otherMd5)).status)
@@ -115,9 +117,10 @@ class EncryptionSseCTest {
 
     @Test
     fun `the object on the disk is not the object`() {
-        // Иначе всё вышесказанное — театр. Проверяется не «сервер вернул те же байты» (он вернул бы
-        // их и не шифруя вовсе), а то, что **на диске лежит другое**. Тест лезет в файл мимо
-        // сервера ровно затем, что снаружи эти два случая неотличимы.
+        // Without this the rest is theatre. What is asserted is not "the server gave the same bytes
+        // back" — it would do that without encrypting at all — but that **what is on the disk is
+        // different**. The test reaches into the file behind the server's back precisely because
+        // from the outside those two cases look identical.
         s3.createBucket("photos")
         val plain = "the quick brown fox".repeat(10)
         s3.put("photos", "secret.txt", plain, sseC())
@@ -140,9 +143,10 @@ class EncryptionSseCTest {
 
     @Test
     fun `an ordinary object still goes out the fast way`() {
-        // M-188, тест на предусловие. Второй путь чтения существует ровно для зашифрованных
-        // объектов, и цена его измерена; объект, которого никто не шифровал, обязан по-прежнему
-        // уходить `transferTo`. Признак — `through` у среза: он и **есть** медленный путь.
+        // M-188, a precondition test. The second read path exists for encrypted objects and for
+        // nothing else, and what it costs has been measured; an object nobody encrypted must still
+        // go out with `transferTo`. The marker is the slice's `through`: its presence **is** the
+        // slow path.
         s3.createBucket("photos")
         s3.put("photos", "plain.txt", "hello")
 
@@ -155,9 +159,9 @@ class EncryptionSseCTest {
 
     @Test
     fun `a multipart object is encrypted part by part and reads back whole`() {
-        // M-189. У каждой части свой IV, и объект из них собирается конкатенацией шифротекстов —
-        // значит на чтении шифр обязан переключаться на швах. Части здесь разного размера
-        // специально: при одинаковых ошибка в арифметике границ не видна.
+        // M-189. Every part has its own IV and the object is assembled by concatenating the
+        // ciphertexts, so a read has to switch cipher at the seams. The parts here are deliberately
+        // of different sizes: with equal ones a mistake in the boundary arithmetic does not show.
         s3.createBucket("photos")
         val first = "A".repeat(5 * 1024 * 1024)
         val second = "B".repeat(1024)
@@ -200,10 +204,10 @@ class EncryptionSseCTest {
 
     @Test
     fun `a part that does not carry the upload's key is refused`() {
-        // И отказ приходит **из screen**, до чтения тела: ответ после того, как часть уже поехала,
-        // означает, что сервер закрывает соединение, пока клиент ещё пишет пять мебибайт. Обе
-        // стороны ждут, и сьют показывает это таймаутом, а не отказом. Так и было, пока проверка
-        // стояла в обработчике.
+        // And the refusal comes **from screen**, before the body is read: an answer sent after the
+        // part has started moving means the server closes the connection while the client is still
+        // writing five mebibytes. Both sides then wait, and the suite reports that as a timeout
+        // rather than as a refusal — which is what happened while the check lived in the handler.
         s3.createBucket("photos")
         val started = s3.send("POST", "/photos/big.bin", query = "uploads", headers = sseC())
         val uploadId = Regex("<UploadId>([^<]+)</UploadId>").find(started.text)!!.groupValues[1]
@@ -230,9 +234,9 @@ class EncryptionSseCTest {
 
     @Test
     fun `an unencrypted object refuses a key rather than pretending`() {
-        // Обратная сторона: ключ на объекте, который никто не шифровал. S3 отвечает `400` —
-        // и это то же правило, по которому здесь отвергается всё, чего сервер не исполняет:
-        // принять ключ и молча отдать незашифрованные байты значит соврать про шифрование.
+        // The other side of it: a key on an object nobody encrypted. S3 answers `400`, and that is
+        // the same rule by which everything the server does not enforce is refused here — taking
+        // the key and quietly handing back unencrypted bytes would be a lie about encryption.
         s3.createBucket("photos")
         s3.put("photos", "plain.txt", "hello")
 
@@ -240,14 +244,15 @@ class EncryptionSseCTest {
     }
 
     @Test
-    fun `отправленная дважды часть получает тот же ETag`() {
-        // M-190а. IV у каждой отправки свой, поэтому ETag по шифротексту у одних и тех же байтов
-        // выходил разный — а `ceph/s3-tests` (`test_multipart_sse_c_get_part`) записывает ETag
-        // **первой** отправки, посылает часть повторно и завершает загрузку старым значением.
-        // Кейс не помечен как падающий на AWS, то есть там повторная отправка детерминирована.
+    fun `a part uploaded twice gets the same ETag`() {
+        // M-190а. Every upload has its own IV, so an ETag taken over the ciphertext came out
+        // different for the same bytes — while `ceph/s3-tests` (`test_multipart_sse_c_get_part`)
+        // records the ETag of the **first** upload, sends the part again, and completes with the
+        // old value. The case is not marked as failing on AWS, so re-upload is deterministic there.
         //
-        // Это не про один кейс сьюта: клиент, повторивший успешную отправку части, иначе получает
-        // отказ на завершении, а причина — случайное число внутри сервера.
+        // This is not about one case of the suite: a client that retries a part upload which
+        // already succeeded would otherwise be refused at completion, and the cause would be a
+        // random number inside the server.
         val b = "photos"
         s3.createBucket(b)
         val upload = s3.send("POST", "/$b/big.bin", query = "uploads", headers = sseC())
@@ -259,14 +264,14 @@ class EncryptionSseCTest {
 
         assertEquals(200, first.status, first.text)
         assertEquals(200, again.status, again.text)
-        assertEquals(first.header("ETag"), again.header("ETag"), "те же байты под тем же ключом — тот же ETag")
+        assertEquals(first.header("ETag"), again.header("ETag"), "the same bytes under the same key give the same ETag")
     }
 
     @Test
-    fun `ETag зашифрованного объекта не выдаёт его содержимого`() {
-        // Листинг отдаёт ETag и ключа не требует, поэтому ETag, равный MD5 открытого текста, дал бы
-        // любому, кто может листать бакет, способ подтвердить догадку о содержимом. Отсюда HMAC
-        // ключом клиента: детерминированный для того, у кого ключ, и непрозрачный для всех прочих.
+    fun `the ETag of an encrypted object does not give its contents away`() {
+        // A listing hands out ETags and asks for no key, so an ETag equal to the plaintext MD5 would
+        // give anybody who can list the bucket a way to confirm a guess about the contents. Hence a
+        // MAC under the client's key: deterministic for whoever holds it, opaque to everyone else.
         val b = "photos"
         s3.createBucket(b)
         val body = "содержимое, о котором можно догадаться".toByteArray()
@@ -280,18 +285,20 @@ class EncryptionSseCTest {
         val listed = s3.send("GET", "/$b", query = "list-type=2")
 
         assertTrue("secret.txt" in listed.text, listed.text)
-        assertTrue(plainMd5 !in listed.text, "листинг не должен раздавать MD5 открытого текста")
+        assertTrue(plainMd5 !in listed.text, "a listing must not hand out the plaintext MD5")
 
-        // И тот же объект без шифра — обычный MD5, потому что там его и ждут.
+        // And the same object unencrypted keeps the ordinary MD5, because that is what is expected
+        // there.
         s3.put(b, "open.txt", String(body))
         assertEquals("\"$plainMd5\"", s3.get(b, "open.txt").header("ETag"))
     }
 
     @Test
-    fun `POST-форма шифрует и даёт тот же ETag, что обычная запись`() {
-        // Третий путь, который шифрует, и до M-190а у него не было ни одного теста вовсе — то есть
-        // правку ETag там никто бы не проверил. Равенство с обычной записью проверяет сразу две
-        // вещи: что форма прошла через тот же MAC, и что MAC зависит только от байтов и ключа.
+    fun `a POST form encrypts and gives the same ETag as an ordinary write`() {
+        // The third path that encrypts, and until M-190а it had no test at all — so nobody would
+        // have checked the ETag change there. Equality with an ordinary write asserts two things at
+        // once: that the form went through the same MAC, and that the MAC depends on nothing but
+        // the bytes and the key.
         val b = "photos"
         s3.createBucket(b)
         val body = "то же самое, двумя дорогами".toByteArray()
@@ -319,7 +326,7 @@ class EncryptionSseCTest {
     }
 
     @Test
-    fun `часть вне диапазона у зашифрованного объекта — InvalidPart`() {
+    fun `a part outside the range of an encrypted object is InvalidPart`() {
         val b = "photos"
         s3.createBucket(b)
         val upload = s3.send("POST", "/$b/big.bin", query = "uploads", headers = sseC())
@@ -339,13 +346,14 @@ class EncryptionSseCTest {
                 "<Part><PartNumber>1</PartNumber><ETag>${one.header("ETag")}</ETag></Part>" +
                 "<Part><PartNumber>2</PartNumber><ETag>${two.header("ETag")}</ETag></Part>" +
                 "</CompleteMultipartUpload>"
-        // Заголовки ключа и на завершении — так их шлёт сьют (`**get_args`), и это единственное,
-        // чем его запрос отличается от очевидного.
+        // The key headers on the completion too — that is how the suite sends them (`**get_args`),
+        // and it is the only way its request differs from the obvious one.
         val done =
             s3.send("POST", "/$b/big.bin", query = "uploadId=$id", headers = sseC(), body = completion.toByteArray())
         assertEquals(200, done.status, done.text)
 
-        // **Без ключа**, как это делает сьют: номер части проверяется раньше, чем требуется ключ.
+        // **With no key**, the way the suite does it: the part number is checked before the key is
+        // required.
         val outOfRange = s3.send("GET", "/$b/big.bin", query = "partNumber=5")
 
         assertEquals(400, outOfRange.status, outOfRange.text)

@@ -7,11 +7,12 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
- * Политика POST-формы (M-101), по форме из `test_post_object_authenticated_request:1970`.
+ * The policy of a POST form (M-101), in the shape from
+ * `test_post_object_authenticated_request:1970`.
  *
- * Документ здесь пишется руками ровно так, как его пишет сьют, — с теми же пробелами и порядком.
- * Собрать его сериализатором значило бы проверять согласие двух наших представлений вместо
- * согласия с тем, что приезжает от клиента.
+ * The document is written by hand here exactly as the suite writes it — same whitespace, same
+ * order. Building it with a serialiser would check that two of our own representations agree,
+ * instead of checking agreement with what arrives from a client.
  */
 class PostPolicyTest {
     private fun encode(json: String) = Base64.getEncoder().encodeToString(json.toByteArray())
@@ -40,7 +41,7 @@ class PostPolicyTest {
         ) + extra
 
     @Test
-    fun `условия всех четырёх форм разбираются`() {
+    fun `conditions of all four forms parse`() {
         val policy = PostPolicy.decode(encode(document))
 
         assertEquals(Instant.parse("2026-08-18T13:00:00Z"), policy.expiration)
@@ -51,14 +52,14 @@ class PostPolicyTest {
     }
 
     @Test
-    fun `форма, подходящая под все условия, проходит`() {
+    fun `a form matching every condition passes`() {
         val policy = PostPolicy.decode(encode(document))
 
         PostPolicy.check(policy, fields(), fileLength = 3, now = now)
     }
 
     @Test
-    fun `истёкшая политика отвергается прежде всего остального`() {
+    fun `an expired policy is refused before anything else`() {
         val policy = PostPolicy.decode(encode(document))
 
         val refused =
@@ -69,7 +70,7 @@ class PostPolicyTest {
     }
 
     @Test
-    fun `ключ, не начинающийся с разрешённого префикса, отвергается`() {
+    fun `a key that does not start with the allowed prefix is refused`() {
         val policy = PostPolicy.decode(encode(document))
 
         assertFailsWith<PostPolicy.Refused> {
@@ -78,9 +79,9 @@ class PostPolicyTest {
     }
 
     @Test
-    fun `файл за границами диапазона — EntityTooLarge, а не отказ в доступе`() {
-        // Разные коды, потому что клиент чинит разное: превышение длины — это его файл,
-        // а отказ в доступе — его подпись.
+    fun `a file outside the range is EntityTooLarge rather than a refusal of access`() {
+        // Different codes because the client fixes different things: exceeding the length is about
+        // its file, a refusal of access is about its signature.
         val policy = PostPolicy.decode(encode(document))
 
         val refused = assertFailsWith<PostPolicy.Refused> { PostPolicy.check(policy, fields(), 2000, now) }
@@ -88,10 +89,10 @@ class PostPolicyTest {
     }
 
     @Test
-    fun `поле, которого политика не покрыла, отвергается`() {
-        // Главная проверка файла. Подписавший разрешил конкретный набор; поле сверх него — это
-        // то, чего он не разрешал, и пропустить его значит дать загружающему подставить
-        // что угодно к чужой подписи.
+    fun `a field the policy did not cover is refused`() {
+        // The important assertion in this file. The signer allowed a particular set; a field beyond
+        // it is something they did not allow, and letting it through means letting an uploader
+        // attach anything at all to somebody else's signature.
         val policy = PostPolicy.decode(encode(document))
 
         assertFailsWith<PostPolicy.Refused> {
@@ -100,8 +101,9 @@ class PostPolicyTest {
     }
 
     @Test
-    fun `подпись и её спутники условия не требуют`() {
-        // Требовать условие на `signature` значило бы требовать от клиента подписать свою подпись.
+    fun `the signature and its companions need no condition`() {
+        // Demanding a condition on `signature` would mean demanding that the client sign its own
+        // signature.
         val policy = PostPolicy.decode(encode(document))
 
         PostPolicy.check(
@@ -113,15 +115,16 @@ class PostPolicyTest {
     }
 
     @Test
-    fun `политика не в base64 отвергается как малформед, а не как отказ в доступе`() {
+    fun `a policy that is not base64 is refused as malformed rather than as denied`() {
         val refused = assertFailsWith<PostPolicy.Refused> { PostPolicy.decode("не base64!!") }
         assertEquals("MalformedPolicyDocument", refused.error.code)
     }
 
     @Test
-    fun `политика без expiration отвергается`() {
-        // `test_post_object_missing_expires_condition:2814` ждёт 400. Политика без срока — это
-        // бессрочный пропуск, и выдавать его молча тому, кто про срок забыл, нельзя.
+    fun `a policy without an expiration is refused`() {
+        // `test_post_object_missing_expires_condition:2814` expects a 400. A policy with no expiry
+        // is an unlimited pass, and it must not be handed out silently to somebody who forgot to
+        // set one.
         val refused =
             assertFailsWith<PostPolicy.Refused> {
                 PostPolicy.decode(encode("""{"conditions": [{"bucket": "photos"}]}"""))
@@ -130,31 +133,33 @@ class PostPolicyTest {
     }
 
     @Test
-    fun `expiration читается с учётом регистра`() {
-        // `test_post_object_expires_is_case_sensitive:2654`. `EXPIRATION` — это не срок,
-        // а опечатка, и молчаливо превратить её в «без срока» значит снять ограничение.
+    fun `expiration is read case-sensitively`() {
+        // `test_post_object_expires_is_case_sensitive:2654`. `EXPIRATION` is not an expiry but a
+        // typo, and quietly turning it into "no expiry" means lifting the limit.
         assertFailsWith<PostPolicy.Refused> {
             PostPolicy.decode(encode("""{"EXPIRATION": "2099-01-01T00:00:00Z", "conditions": []}"""))
         }
     }
 
     @Test
-    fun `политика без conditions отвергается`() {
-        // `test_post_object_missing_conditions_list:2814`. Пустой список условий разрешал бы
-        // положить что угодно куда угодно — это не «политика без ограничений», это не политика.
+    fun `a policy without conditions is refused`() {
+        // `test_post_object_missing_conditions_list:2814`. An empty list of conditions would allow
+        // anything to be put anywhere — that is not "a policy without limits", it is not a policy.
         assertFailsWith<PostPolicy.Refused> {
             PostPolicy.decode(encode("""{"expiration": "2099-01-01T00:00:00Z"}"""))
         }
     }
 
     @Test
-    fun `экранирование JSON снимается до сравнения`() {
-        // `test_post_object_escaped_field_values:2257`: условие подписано на префикс из обратного
-        // слэша и доллара, а в документе слэш удвоен. Сравнение байт в байт потребовало бы от
-        // клиента лишний слэш и отвергло бы форму, которую политика разрешает.
+    fun `JSON escaping is removed before comparison`() {
+        // `test_post_object_escaped_field_values:2257`: the condition is signed on a prefix made of
+        // a backslash and a dollar, and in the document the backslash is doubled. A byte-for-byte
+        // comparison would demand an extra backslash from the client and refuse the very form the
+        // policy allows.
         //
-        // Строки здесь склеены из символов, а не написаны литералом: доллар и слэш экранируются
-        // и в Kotlin, и в JSON, и литерал, читающийся правильно, обычно означает не то.
+        // The strings here are assembled from characters rather than written as literals: the
+        // dollar and the backslash are escaped in both Kotlin and JSON, and a literal that reads
+        // correctly usually means something else.
         val prefix = "" + '\\' + '$' + "foo"
         val json =
             """{"expiration": "2099-01-01T00:00:00Z", "conditions": """ +

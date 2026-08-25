@@ -6,8 +6,9 @@ apply(from = rootProject.file("publishing.gradle.kts"))
 
 dependencies {
     api(project(":bochka-embedded"))
-    // `compileOnly`, а не `api`: расширение подключают в тестовый набор, где JUnit уже есть,
-    // и своя копия его версии там только мешает — чужой проект выбирает её сам.
+    // `compileOnly` rather than `api`: the extension is added to a test source set where JUnit is
+    // already present, and a copy of its version there only gets in the way — somebody else's
+    // project picks that version itself.
     compileOnly(libs.junit.api)
 
     testImplementation(kotlin("test"))

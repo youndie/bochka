@@ -9,11 +9,11 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Расширение проверяется тем единственным способом, каким его вообще можно проверить: **двумя
- * тестами подряд**.
+ * The extension is checked the one way it can be checked at all: **by two tests in a row**.
  *
- * Одиночный тест не отличит «сбросили между тестами» от «ничего и не было»; порядок здесь задан
- * явно, потому что утверждение первого теста — про то, что видит второй.
+ * A single test cannot tell "it was reset between tests" from "there was never anything there"; the
+ * order here is stated explicitly, because the first test's assertion is about what the second
+ * sees.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class BochkaExtensionTest {
@@ -22,13 +22,13 @@ class BochkaExtensionTest {
         @RegisterExtension
         val bochka = BochkaExtension()
 
-        /** Порт, увиденный первым тестом: утверждение второго — про то, что он не менялся. */
+        /** The port the first test saw: the second's assertion is that it did not change. */
         private var port = 0
     }
 
     @Test
     @Order(1)
-    fun `первый тест оставляет объект и порт`() {
+    fun `the first test leaves an object and a port behind`() {
         bochka.bochka.put("photos", "a.txt", "первый".toByteArray())
 
         assertEquals(1, bochka.bochka.objectCount)
@@ -38,9 +38,9 @@ class BochkaExtensionTest {
 
     @Test
     @Order(2)
-    fun `второй видит чистый стор, но тот же сервер`() {
-        assertEquals(0, bochka.bochka.objectCount, "объект первого теста должен был исчезнуть")
+    fun `the second sees a clean store and the same server`() {
+        assertEquals(0, bochka.bochka.objectCount, "the first test's object should have disappeared")
         assertEquals(emptyList(), bochka.bochka.bucketNames)
-        assertEquals(port, bochka.bochka.port, "сервер тот же: платим за старт один раз на класс")
+        assertEquals(port, bochka.bochka.port, "the same server: the start is paid for once per class")
     }
 }

@@ -7,33 +7,33 @@ import java.time.Instant
 import java.time.temporal.ChronoUnit
 
 /**
- * Правила жизненного цикла бакета и два вопроса, которые к ним задают: подходит ли объект и когда
- * ему срок.
+ * A bucket's lifecycle rules, and the two questions asked of them: does the object match, and when
+ * is its term.
  *
- * Форма — `docs/spec/s3-service-2.json`: `BucketLifecycleConfiguration` (`:2127`) содержит
- * `LifecycleRule` (`:7896`), у которого обязателен один `Status` (`ExpirationStatus`, `:4881` —
- * ровно `Enabled` или `Disabled`), а всё остальное необязательно.
+ * The shape is in `docs/spec/s3-service-2.json`: `BucketLifecycleConfiguration` (`:2127`) holds
+ * `LifecycleRule` (`:7896`), which requires one `Status` (`ExpirationStatus`, `:4881` — exactly
+ * `Enabled` or `Disabled`) and nothing else.
  *
- * ## Почему правило хранится в той форме, в какой приехало
+ * ## Why a rule is kept in the shape it arrived in
  *
- * Префикс у правила бывает в двух местах: `<Prefix>` прямо в правиле (в модели помечен
- * `deprecated`) и `<Prefix>` внутри `<Filter>`. Это два разных документа, и `GetBucketLifecycle`
- * обязан вернуть тот, который прислали: `test_lifecycle_get:8451` сравнивает правила целиком, и
- * правило, приехавшее со старым префиксом и уехавшее с фильтром, — уже другое правило. Поэтому
- * [Rule.prefix] и [Filter.prefix] — разные поля, а не одно нормализованное.
+ * A rule's prefix lives in two places: `<Prefix>` in the rule itself (marked `deprecated` in the
+ * model) and `<Prefix>` inside `<Filter>`. Those are two different documents, and
+ * `GetBucketLifecycle` has to return the one that was sent: `test_lifecycle_get:8451` compares
+ * whole rules, and a rule that arrived with the old prefix and left with a filter is a different
+ * rule. Hence [Rule.prefix] and [Filter.prefix] are separate fields rather than one normalised one.
  *
- * ## Условия фильтра складываются, все
+ * ## Filter conditions add up, all of them
  *
- * S3 требует, чтобы у `<Filter>` был **ровно один** член: префикс, тег или `<And>` со списком.
- * Сьют шлёт документы, которые этому не подчиняются — `Prefix` вместе с `Tag`
- * (`test_lifecycle_expiration_tags1:8620`), а то и `Prefix`, `Tag` и `And` втроём
- * (`setup_lifecycle_tags2:8667`); оба кейса помечены `fails_on_aws`, то есть настоящий S3 их
- * отвергает. Здесь они принимаются, и объект обязан удовлетворять **всем** названным условиям.
+ * S3 requires a `<Filter>` to hold **exactly one** member: a prefix, a tag, or an `<And>` with a
+ * list. The suite sends documents that disobey that — `Prefix` together with `Tag`
+ * (`test_lifecycle_expiration_tags1:8620`), or even `Prefix`, `Tag` and `And` all three
+ * (`setup_lifecycle_tags2:8667`); both cases are marked `fails_on_aws`, so the real S3 refuses
+ * them. Here they are accepted, and the object has to satisfy **every** condition named.
  *
- * Это выбор в пользу единственного разумного чтения, а не поблажка: фильтр перечисляет признаки
- * объекта, и объект либо обладает всеми, либо не подходит. Отвергать документ было бы тоже
- * защитимо — но тогда правило, которое клиент считает поставленным, не поставлено, и узнает он
- * об этом по невыполненному удалению.
+ * That is a choice in favour of the only sensible reading rather than a leniency: a filter
+ * enumerates properties of an object, and an object either has all of them or does not match.
+ * Refusing the document would also have been defensible — but then a rule the client believes is in
+ * place is not in place, and it finds out from a deletion that never happened.
  */
 data class Lifecycle(
     val rules: List<Rule>,
@@ -41,7 +41,7 @@ data class Lifecycle(
     data class Rule(
         val id: String,
         val enabled: Boolean,
-        /** `<Prefix>` самого правила — старая форма, в модели помечена `deprecated`. */
+        /** The rule's own `<Prefix>` — the old form, marked `deprecated` in the model. */
         val prefix: String? = null,
         val filter: Filter? = null,
         val expiration: Expiration? = null,
@@ -50,11 +50,11 @@ data class Lifecycle(
         val abortIncompleteUploadDays: Int? = null,
     ) {
         /**
-         * Подходит ли объект под правило.
+         * Whether an object matches the rule.
          *
-         * Теги — карта, а не список: у объекта они уникальны по ключу, и условие «`tom=sawyer`»
-         * означает «есть тег с таким ключом и таким значением», а не «есть такая пара где-то
-         * среди повторов».
+         * Tags are a map rather than a list: on an object they are unique by key, and a condition
+         * `tom=sawyer` means "there is a tag with this key and this value" rather than "such a pair
+         * exists somewhere among the duplicates".
          */
         fun matches(
             key: ObjectKey,
@@ -77,9 +77,8 @@ data class Lifecycle(
         }
 
         /**
-         * Какой префикс правило называет, чем бы он ни был назван. Для брошенных загрузок: у
-         * многочастной загрузки нет ни размера, ни тегов, поэтому от фильтра ей достаётся только
-         * это.
+         * Which prefix the rule names, whichever place it names it in. For abandoned uploads: a
+         * multipart upload has neither a size nor tags, so this is all of a filter that reaches it.
          */
         fun statedPrefix(): String? = prefix ?: filter?.prefix ?: filter?.and?.prefix
     }
@@ -93,7 +92,7 @@ data class Lifecycle(
         val and: And? = null,
     )
 
-    /** `LifecycleRuleAndOperator` (`:7936`) — то же самое, но списком тегов. */
+    /** `LifecycleRuleAndOperator` (`:7936`) — the same thing, with a list of tags. */
     data class And(
         val prefix: String? = null,
         val tags: List<Tag> = emptyList(),
@@ -107,11 +106,12 @@ data class Lifecycle(
     )
 
     /**
-     * `LifecycleExpiration` (`:7878`): срок днями, срок датой или снятие одинокого надгробия.
+     * `LifecycleExpiration` (`:7878`): a term in days, a term as a date, or the removal of an
+     * orphaned tombstone.
      *
-     * Три необязательных члена и ни одного обязательного, потому что правило бывает про разное:
-     * `Days`/`Date` — про сам объект, `ExpiredObjectDeleteMarker` — про надгробие, под которым
-     * не осталось версий.
+     * Three optional members and no required one, because the rule is about different things:
+     * `Days`/`Date` are about the object itself, `ExpiredObjectDeleteMarker` about a tombstone with
+     * no versions left under it.
      */
     data class Expiration(
         val days: Int? = null,
@@ -122,25 +122,26 @@ data class Lifecycle(
     /**
      * `NoncurrentVersionExpiration` (`:9378`).
      *
-     * [newerVersions] — сколько **свежих** неактуальных версий пережидают срок независимо от
-     * возраста: `NewerNoncurrentVersions: 5` при десяти версиях оставляет текущую и пять
-     * следующих за ней, а четыре нижние удаляет.
+     * [newerVersions] is how many of the **newest** noncurrent versions sit the term out regardless
+     * of age: `NewerNoncurrentVersions: 5` with ten versions keeps the current one and the five
+     * below it, and deletes the bottom four.
      */
     data class Noncurrent(
         val days: Int,
         val newerVersions: Int? = null,
     )
 
-    /** Правила, которые сейчас что-то делают. Выключенное правило хранится и не исполняется. */
+    /** The rules that currently do anything. A disabled rule is stored and not carried out. */
     val enabled: List<Rule> get() = rules.filter { it.enabled }
 
     /**
-     * Когда истекает срок объекта и по какому правилу — или `null`, если ни по какому.
+     * When an object's term expires and under which rule — or `null` if under none.
      *
-     * Это ответ и для заголовка `x-amz-expiration`, и для обхода: одно место, потому что заголовок,
-     * обещающий один срок, и обход, удаляющий в другой, — худший из возможных вариантов. Первое
-     * подошедшее правило, а не самое раннее: S3 запрещает перекрывающиеся правила, и выбирать
-     * между ними значило бы делать вид, что документ, который не должен был приехать, осмыслен.
+     * This answers both the `x-amz-expiration` header and the sweep: one place, because a header
+     * promising one term and a sweep deleting at another is the worst of the available outcomes.
+     * The first matching rule rather than the earliest one: S3 forbids overlapping rules, and
+     * choosing between them would be pretending that a document which should never have arrived
+     * means something.
      */
     fun expiryOf(
         key: ObjectKey,
@@ -160,23 +161,23 @@ data class Lifecycle(
 
     companion object {
         /**
-         * Сколько длится «день» по умолчанию — сутки, и это единственное значение, при котором
-         * округление до полуночи что-то значит.
+         * How long a "day" lasts by default — twenty-four hours, the only value at which rounding
+         * to midnight means anything.
          */
         val DAY: Duration = Duration.ofDays(1)
 
-        /** Предел длины `ID` (`shapes.ID`, документация `PutBucketLifecycleConfiguration`). */
+        /** The `ID` length bound (`shapes.ID`, the `PutBucketLifecycleConfiguration` docs). */
         const val MAX_ID_LENGTH: Int = 255
 
         /**
-         * Момент истечения срока по правилу, или `null`, если правило про надгробие, а не про срок.
+         * The instant a rule's term expires, or `null` if the rule is about a tombstone rather than
+         * about a term.
          *
-         * **Округление вверх до полуночи UTC делается только тогда, когда «день» — настоящие
-         * сутки.** У S3 округление есть потому, что день там календарный: «дата истечения
-         * получается прибавлением `Days` к дате создания и округлением до ближайшей полуночи UTC».
-         * Когда единицу укорачивают ради теста (см. `BOCHKA_LIFECYCLE_DAY_SECONDS`), календаря
-         * нет вовсе, и округление к полуночи отложило бы срок на сутки вперёд — то есть отменило
-         * бы укорачивание.
+         * **Rounding up to midnight UTC happens only when a "day" is a real twenty-four hours.** S3
+         * rounds because its day is a calendar one: the expiry date is the creation date plus
+         * `Days`, rounded up to the next midnight UTC. When the unit is shortened for a test (see
+         * `BOCHKA_LIFECYCLE_DAY_SECONDS`) there is no calendar at all, and rounding to midnight
+         * would push the term a whole day out — which would undo the shortening.
          */
         fun expiresAt(
             expiration: Expiration,

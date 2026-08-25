@@ -8,17 +8,17 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Отказы по заказу — единственное, в чём мок структурно сильнее настоящего сервера.
+ * Refusals to order — the one thing a mock is structurally better at than a real server.
  *
- * Настоящее хранилище нельзя попросить ответить `503`: оно отвечает правду. А клиентский код,
- * который никто не может уронить, **не проверен на повторах** — и узнают об этом в проде, когда
- * повтор впервые понадобится. Мок это умеет от рождения, и это его единственное настоящее
- * преимущество; здесь оно берётся себе, ничего не отдавая взамен.
+ * A real store cannot be asked to answer `503`: it answers the truth. And client code nobody can
+ * knock over is **untested on retries** — which is learned in production, the first time a retry is
+ * actually needed. A mock can do this from birth, and it is its one genuine advantage; here it is
+ * taken and nothing is given up for it.
  *
- * Обёртка вокруг обработчика, а не правка сервера: путь запроса остаётся тем же самым, который
- * работает в проде, и выключенная обёртка — это одно чтение поля. Отказ вводится **до** разбора
- * и подписи, потому что клиент, проверяющий повторы, обычно проверяет их на пятисотых, а не
- * на отказе в доступе.
+ * A wrapper around the handler rather than a change to the server: the request travels the same
+ * path it travels in production, and a disabled wrapper is one field read. The refusal is injected
+ * **before** parsing and the signature, because a client checking its retries usually checks them
+ * on a five-hundred rather than on a refusal of access.
  */
 internal class InjectedFailures(
     private val next: HttpHandler,
@@ -27,11 +27,12 @@ internal class InjectedFailures(
     private val status = AtomicReference(503)
 
     /**
-     * Ответить [status] на следующие [times] запросов, каких бы то ни было.
+     * Answer [status] to the next [times] requests, whatever they are.
      *
-     * Статус, которому эта обёртка не может назвать код ошибки, **отвергается** (M-231). Клиент
-     * переключается по коду, а не по числу, и заказанный `403`, приехавший как `InternalError`,
-     * делает тест про отказ в доступе тестом про сбой сервера — причём зелёным.
+     * A status this wrapper cannot name an error code for is **refused** (M-231). A client branches
+     * on the code rather than on the number, and an ordered `403` that arrives as `InternalError`
+     * turns a test about a refusal of access into a test about a server failure — a green one at
+     * that.
      */
     fun failNext(
         status: Int,
@@ -48,9 +49,9 @@ internal class InjectedFailures(
     fun clear() = remaining.set(0)
 
     override fun screen(head: HttpRequestParser.Head): HttpResponse? {
-        // `getAndUpdate`, а не «прочитать и уменьшить»: два запроса сразу иначе оба увидят
-        // единицу, и заказанный один отказ случится дважды. Тест, который так плавает, хуже
-        // отсутствующего.
+        // `getAndUpdate` rather than "read and decrement": otherwise two simultaneous requests both
+        // see a one, and a single ordered refusal happens twice. A test that drifts like that is
+        // worse than no test.
         val before = remaining.getAndUpdate { if (it > 0) it - 1 else 0 }
         if (before <= 0) return next.screen(head)
 
@@ -77,14 +78,15 @@ internal class InjectedFailures(
     private fun reasonFor(code: Int) = INJECTABLE.getValue(code).reason
 
     /**
-     * Тело ошибки настоящей формы, а не пустой ответ.
+     * An error body of the real shape rather than an empty answer.
      *
-     * Клиент, который проверяет свои повторы, разбирает ответ — и на пустом теле падает внутри
-     * своего парсера вместо того, чтобы сделать повтор. Ровно это уже случалось здесь с `412`
-     * без тела: статус ошибки без документа ошибки — другая поломка, а не более короткая.
+     * A client checking its retries parses the answer — and on an empty body it fails inside its
+     * own parser instead of retrying. That already happened here with a `412` and no body: an error
+     * status without an error document is a different breakage rather than a shorter one.
      *
-     * Тело — единственное место, где код виден на проводе, и оттого единственное, по которому
-     * его вообще можно проверить: у `HEAD` тела нет, и клиент там называет код **сам** по статусу.
+     * The body is the only place the code is visible on the wire, and therefore the only thing it
+     * can be checked against at all: a `HEAD` has no body, and there the client names the code
+     * **itself**, from the status.
      */
     private fun document(code: Int): ByteArray =
         (
@@ -101,27 +103,28 @@ internal class InjectedFailures(
 
     companion object {
         /**
-         * Статусы, которые заказать можно, и код ошибки для каждого.
+         * The statuses that can be ordered, and the error code for each.
          *
-         * Список короткий не по недоделке: отказ вводится **до** разбора запроса, поэтому обёртка
-         * не знает, про бакет он был или про ключ. У статусов, где код из самого статуса
-         * не следует, — `404` (`NoSuchBucket`, `NoSuchKey`, `NoSuchUpload`) и `409`
-         * (`BucketAlreadyExists`, `OperationAborted`) — выбор был бы выдумкой, и тест, различающий
-         * эти случаи, писался бы на выдуманном ответе. Такой отказ спрашивают у сервера, заводя
-         * состояние, а не у двойника.
+         * The list is short by design rather than by omission: the refusal is injected **before** the
+         * request is parsed, so the wrapper does not know whether it was about a bucket or a key.
+         * For the statuses whose code does not follow from the status — `404` (`NoSuchBucket`,
+         * `NoSuchKey`, `NoSuchUpload`) and `409` (`BucketAlreadyExists`, `OperationAborted`) — the
+         * choice would be an invention, and a test telling those cases apart would be written
+         * against an invented answer. A refusal like that is asked of the server by setting up
+         * state, not of the double.
          *
-         * Имена берутся из [S3Error] там, где они там есть: у кода один дом, и переименование
-         * в сервере не оставляет двойник отвечать прошлым именем.
+         * The names come from [S3Error] wherever they exist there: a code has one home, and a
+         * rename in the server does not leave the double answering with the old name.
          */
         private val INJECTABLE =
             mapOf(
                 400 to Injected(S3Error.INVALID_REQUEST.code, "Bad Request"),
                 403 to Injected(S3Error.ACCESS_DENIED.code, "Forbidden"),
                 405 to Injected(S3Error.METHOD_NOT_ALLOWED.code, "Method Not Allowed"),
-                // `408`, `429`, `502`, `503` и `504` — те, которые клиент повторяет сам, то есть
-                // ровно то, ради чего заготовленный отказ и заводят. У `502` и `504` кода своего
-                // нет: так отвечает не S3, а то, что стоит перед ним, — но клиент, ловящий их
-                // как сбой, ловит их и здесь.
+                // `408`, `429`, `502`, `503` and `504` are the ones a client retries by itself,
+                // which is exactly what a primed refusal is set up for. `502` and `504` have no
+                // code of their own: those are answered not by S3 but by whatever stands in front
+                // of it — but a client that treats them as a failure treats them so here too.
                 408 to Injected("RequestTimeout", "Request Timeout"),
                 412 to Injected(S3Error.PRECONDITION_FAILED.code, "Precondition Failed"),
                 429 to Injected("SlowDown", "Too Many Requests"),

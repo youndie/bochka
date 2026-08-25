@@ -5,13 +5,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * `?versioning` — конфигурация версионирования бакета (M-103).
+ * `?versioning` — a bucket's versioning configuration (M-103).
  *
- * Главный тест здесь — про бакет, которого никто не настраивал. `s3-service-2.json` описывает
- * `GetBucketVersioningOutput.Status` как необязательное поле, то есть пустой
- * `VersioningConfiguration` — это ответ, а не отказ. Этот репозиторий уже платил за обратное:
- * `NotImplemented` на `?versions` инструмент прочитал как «сервер сломан» и увёл за собой
- * 837 кейсов в чужой уборке (M3).
+ * The important test here is about a bucket nobody configured. `s3-service-2.json` describes
+ * `GetBucketVersioningOutput.Status` as an optional member, so an empty `VersioningConfiguration`
+ * is an answer rather than a refusal. This repository has already paid for the opposite: a tool
+ * read `NotImplemented` on `?versions` as "the server is broken" and took 837 cases down with it in
+ * the foreign cleanup (M3).
  */
 class VersioningConfigTest {
     @Test
@@ -23,7 +23,7 @@ class VersioningConfigTest {
 
             assertEquals(200, answer.status, answer.text)
             assertTrue("VersioningConfiguration" in answer.text, answer.text)
-            assertTrue("Status" !in answer.text, "нет статуса, а не статус «выключено»: ${answer.text}")
+            assertTrue("Status" !in answer.text, "no status, rather than a status of \"off\": ${answer.text}")
         }
     }
 
@@ -47,8 +47,8 @@ class VersioningConfigTest {
 
     @Test
     fun `Suspended is not the same as never configured`() {
-        // Два разных ответа, и разница не косметическая: приостановленный бакет может держать
-        // версии, сделанные пока он был включён.
+        // Two different answers, and the difference is not cosmetic: a suspended bucket can hold
+        // versions made while it was enabled.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
             s3.send(
@@ -71,8 +71,8 @@ class VersioningConfigTest {
 
     @Test
     fun `Disabled is refused rather than accepted and ignored`() {
-        // Обратно в «не настроен» S3 не умеет, и мы тоже. Принять `Disabled` значило бы оставить
-        // клиента в уверенности, что версии перестали храниться.
+        // S3 cannot go back to "not configured" and neither can this. Accepting `Disabled` would
+        // leave the client believing that versions had stopped being kept.
         S3Fixture().use { s3 ->
             s3.createBucket("photos")
 
