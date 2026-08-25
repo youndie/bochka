@@ -17,7 +17,7 @@ jobs:
   gate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: gradle/actions/setup-gradle@v4
       - run: ./gradlew check
       - run: ./ci/docker-smoke.sh
@@ -29,7 +29,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: gradle/actions/setup-gradle@v4
       - name: Build the distribution the image is made of
         run: ./gradlew -PVERSION=${GITHUB_REF_NAME#v} :bochka-app:installDist
@@ -60,7 +60,7 @@ jobs:
     needs: gate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: gradle/actions/setup-gradle@v4
       # Every module, not just `:bochka-embedded:`. Its POM names the other four, and a publish
       # that pushes one of five is indistinguishable from a good one on this side — the artefact
@@ -93,7 +93,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # The one thing a chart can be wrong about that nothing else would notice: `appVersion` is the
       # default image tag, so a chart published with last release's appVersion installs last
       # release's server while calling itself this one. The chart's own `version` is deliberately
@@ -121,7 +121,7 @@ jobs:
     needs: [image, maven, chart]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Pull the image and resolve the jar, the way a consumer would
         env:
           BOCHKA_IMAGE: ghcr.io/youndie/bochka:${{ github.ref_name }}
