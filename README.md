@@ -84,6 +84,15 @@ date. A sweep over a million versions takes 4.5 seconds against a period of an h
 number was visible end-to-end across a network, and that is recorded too: a request costing
 hundreds of microseconds cannot be asked about nanoseconds.
 
+A hundred hours under load then said something the short runs could not: **the heap and the page
+cache are one budget.** The container sits at its memory limit permanently and that is healthy —
+the limit is filled by reclaimable cache, seventy-one thousand reclaims and no OOM kill — but every
+megabyte the JVM commits is one the kernel cannot keep a file page in. Over those hours the heap
+grew to 448 MiB to hold nine of live data, and the cache gave up exactly that. The consequence is
+measurable and is above: a smaller heap reads a hot object 3.4× faster. The lever that looked free
+— raising the memory limit and keeping the heap — does nothing on a node that has no memory to
+spare, because a cgroup limit is a ceiling and not a reservation.
+
 The measurements that came out against the plan are the more useful half, and there have been
 several. The buffer the upload path uses turns out not to matter — size and kind are both inside
 the noise, so nothing was changed. `splice(2)` through FFM is not being introduced, because the
@@ -100,7 +109,8 @@ hundred-byte one — the larger is what the code uses), with half the heap allow
 | `-Xmx` | `Runtime.maxMemory()` | Versions | A full collection costs |
 |---|---|---|---|
 | 64 MiB, the development profile | 61.9 MiB | 49 908 | — |
-| **512 MiB, what ships** | **494.9 MiB** | **399 215** | **0.93 s** |
+| **128 MiB, the small profile** | **123 MiB** | **99 816** | — |
+| **512 MiB, what ships by default** | **494.9 MiB** | **399 215** | **0.93 s** |
 | 2 GiB | 1979 MiB | 1 596 860 | 3.84 s |
 | 4 GiB | 3959 MiB | 3 193 720 | 7.56 s, and 27 s to open |
 
@@ -109,6 +119,15 @@ The middle column is there because it is the one being divided, and it is **not*
 allocated in both at once — so a 512 MiB heap reports 494.9 MiB. These numbers were `-Xmx / 2 / 650`
 for a year, which is about 3.4 % more objects than the process would ever accept; the ceiling it
 prints as `object ceiling` on its first line has always been the smaller one.
+
+**Two of those rows ship, and the chart picks between them by name.** The distribution carries two
+start scripts, and `heapProfile: default|small` in the chart chooses one — not a heap size, because
+the heap is what the ceiling above is derived from, so the two are two promises about how many
+objects fit rather than a tuning knob. The small one exists because the heap and the page cache
+come out of the same cgroup and this read path is `transferTo` from a **hot** file: measured, a
+300 MiB object is served in 132 ms under `-Xmx128M` against 455 under `-Xmx512M`, and the whole
+thing fits in a 320 MiB limit instead of 768. What it costs is in the table — a quarter of the
+objects.
 
 **The last column is why the table is not an invitation.** The live set is the index, so a full
 collection grows with it, and every row above the shipped one describes a configuration this
@@ -313,7 +332,9 @@ There is a Helm chart in [deploy/helm/bochka](deploy/helm/bochka) with a harness
 into a real kubelet, and from the next release it is published as an OCI package beside the image.
 What it is for is stated rather than left to be inferred: production on one machine. Helm is not
 how anybody runs a store in a test — that is the section below — so there is no mode in which the
-volume is optional.
+volume is optional. `heapProfile: small` there asks for the smaller of the two shipped profiles,
+and the chart's memory floor follows it: 320Mi instead of 768Mi, both measured under load with the
+index at that profile's own ceiling rather than added up.
 
 **`GET /-/healthy` answers `200` to anyone who can reach the port, with no signature.** It is the
 one handle of this kind, it exists for an orchestrator, and the path is `-` because no bucket may
