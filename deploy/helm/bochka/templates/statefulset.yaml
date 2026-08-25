@@ -165,6 +165,19 @@ spec:
         - name: bochka
           image: "{{ .Values.image.repository }}:{{ include "bochka.imageTag" . }}"
           imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
+          {{- if eq .Values.heapProfile "small" }}
+          {{- /*
+          M33. The profile is chosen by which entry point runs, because that is where it lives: the
+          flags are baked into the start script and there are two of them in the distribution. Not
+          an environment variable — `JAVA_OPTS` is refused for the reason this whole design exists,
+          that a half-overridden profile is a third configuration nobody described.
+
+          An image that predates M33 has no such script, and the pod then fails to start with
+          "no such file or directory" — which is honest and immediate, unlike a heap that silently
+          stayed at 512M while the values said otherwise.
+          */}}
+          command: ["/opt/bochka/bin/bochka-app-small"]
+          {{- end }}
           {{- /*
           readOnlyRootFilesystem is a verified claim rather than a block copied from another chart:
           the image ran under `--read-only` and a 20 MB file made the round trip through aws-cli,

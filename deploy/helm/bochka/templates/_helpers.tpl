@@ -169,7 +169,7 @@ known one overwrites a setting this chart already renders from values.
 {{- end -}}
 
 {{/*
-A memory limit below the shipped runtime profile is refused, and it is the same refusal as JAVA_OPTS
+A memory limit below the runtime profile is refused, and it is the same refusal as JAVA_OPTS
 seen from the other side. That one is rejected because it replaces the heap the published object
 ceiling is derived from; a limit under the profile's own footprint destroys the same property from
 outside — the OOM kill arrives before the ceiling does, and an OOM kill is a CrashLoopBackOff with no
@@ -197,8 +197,14 @@ guessed at, because a guard that refuses what it failed to parse is worse than o
 {{- $factor := index (dict "" 1 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "k" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000) $unit | default 0 -}}
 {{- if and $digits (gt (int64 $factor) (int64 0)) -}}
 {{- $bytes := mul (atoi $digits) $factor -}}
-{{- if lt $bytes (int64 805306368) -}}
-{{- fail (printf "resources.limits.memory is %s, and the shipped runtime profile needs about 700 MiB before it holds a single object: -Xmx512M plus 80M metaspace, 32M code cache, 32M direct memory and thread stacks, all baked into the start script (build.gradle.kts:26-48). Below 768Mi the pod is OOM-killed while it is working rather than refused at startup, which is exactly the property the object ceiling exists to provide. Raise the limit, or rebuild the distribution with a smaller -Pbochka.jvmArgs heap." $raw) -}}
+{{- $floor := int64 805306368 -}}
+{{- $floorName := "768Mi" -}}
+{{- if eq .Values.heapProfile "small" -}}
+{{- $floor = int64 335544320 -}}
+{{- $floorName = "320Mi" -}}
+{{- end -}}
+{{- if lt $bytes $floor -}}
+{{- fail (printf "resources.limits.memory is %s, and the %s runtime profile needs more than that before it holds a single object. Both floors are measured under load with the index at that profile's ceiling, not added up: the default profile survives 576Mi and is OOM-killed at 512Mi (M-148), and the small one survives 224Mi and is OOM-killed at 192Mi (M-237); each chart floor is the measured one plus a third, because a floor found under one traffic shape is one traffic shape's floor. Below it the pod is OOM-killed while it is working rather than refused at startup, which is exactly the property the object ceiling exists to provide. Raise the limit to at least %s, or pick the other heapProfile." $raw .Values.heapProfile $floorName) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -232,4 +238,15 @@ tcpSocket:
 {{- else -}}
 {{- fail (printf "probes.type: %q has no probe shape, and a probe block that renders empty is a pod the kubelet cannot judge" .Values.probes.type) -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+The object ceiling the chosen profile derives, which is the number the process itself prints.
+
+Two profiles, two ceilings, and the number is not arithmetic from -Xmx: it comes from
+`Runtime.maxMemory()`, and under SerialGC one survivor space is not counted, so 512 MiB reports
+494.9. Both figures here are what the shipped images actually print on their first line.
+*/}}
+{{- define "bochka.derivedCeiling" -}}
+{{- if eq .Values.heapProfile "small" }}99816{{ else }}399215{{ end -}}
 {{- end -}}

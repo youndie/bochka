@@ -227,6 +227,7 @@ refuses bad-ingress-class      "readTimeout"           "traefik, whose fourth re
 refuses bad-ingress-class-unknown "requirementsExpressedFor" "a controller nobody has measured, which lands in the general branch"
 refuses bad-access-mode        "accessModes"           "ReadWriteMany, which promises a second writer"
 refuses bad-small-memory       "runtime profile needs" "a memory limit under the profile, where the OOM kill beats the object ceiling"
+refuses bad-small-profile-memory "small runtime profile" "the small profile under its own floor, which is not the default one"
 refuses bad-probe-timing       "initialDelaySeconds"   "a probe field the template renders nowhere"
 refuses bad-unknown-value      "replicaCount"          "a values key nobody reads"
 # `boolean` alone, because the rest of that sentence belongs to helm rather than to us: it says

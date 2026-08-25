@@ -52,22 +52,26 @@ HOW MANY OBJECTS FIT
 
 Because maxObjects says so, and it is the number the process will print as `object ceiling`. It is a
 ceiling *below* the one the heap derives, which is what this knob is for — the derived one on the
-shipped profile is 399215, and setting maxObjects above it buys index entries the heap cannot hold.
+{{ .Values.heapProfile }} profile is {{ include "bochka.derivedCeiling" . }}, and setting maxObjects
+above it buys index entries the heap cannot hold.
 {{- else if .Values.image.tag }}
 This release runs the tag you pinned, {{ .Values.image.tag }}, so the number this chart could quote —
-399215, for the appVersion it installs by default — is not necessarily this image's: a different
-build has a different runtime profile, and the ceiling is derived from the heap. The process prints
-its own on the first line of its log:
+{{ include "bochka.derivedCeiling" . }}, for the appVersion it installs by default on the
+{{ .Values.heapProfile }} profile — is not necessarily this image's: a different build has a
+different runtime profile, and the ceiling is derived from the heap. The process prints its own on
+the first line of its log:
 
   kubectl -n {{ .Release.Namespace }} logs sts/{{ include "bochka.fullname" . }} | head -1
 {{- else }}
-  399215
+  {{ include "bochka.derivedCeiling" . }}
 
-That is what this appVersion prints on its first line as `object ceiling`, on the shipped heap. It
-is not a value you can raise: the runtime profile is baked into the start script (-Xmx512M) and the
-ceiling is derived from the heap, so raising resources.limits.memory changes nothing about it, and
-raising maxObjects past it buys index entries the heap cannot hold. A larger ceiling means
-rebuilding the distribution with -Pbochka.jvmArgs.
+That is what this appVersion prints on its first line as `object ceiling`, on the
+{{ .Values.heapProfile }} profile. It is not a value you can raise from here: the runtime profile is
+baked into the start script and the ceiling is derived from the heap, so raising
+resources.limits.memory changes nothing about it, and raising maxObjects past it buys index entries
+the heap cannot hold. What does change it is heapProfile, which picks between the two profiles the
+distribution carries — and the other one is a different promise about how many objects fit, not a
+tuning knob.
 {{- end }}
 
 Reaching the ceiling is not a crash and not a restart. A PUT that would add a NEW key answers

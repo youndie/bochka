@@ -394,7 +394,9 @@ disagreeing — which reads like a bug in your project and is a missing line.
   on day one rather than discovered later.
 - **Not unbounded in object count.** The index keeps every key in memory, so the ceiling is memory,
   and it is a published number rather than a surprise: `Runtime.maxMemory() * 0.5 / 650`, which on
-  the shipped `-Xmx512M` profile is **399 215 objects**, printed as `object ceiling` on the first
+  the shipped `-Xmx512M` profile is **399 215 objects**, and the distribution carries a second
+  profile at `-Xmx128M` with **99 816** — a different promise, chosen by `heapProfile` in the chart,
+  not a tuning knob. Whichever runs prints its own as `object ceiling` on the first
   line of the log. A store at its ceiling refuses new keys with `507 InsufficientStorage` and goes
   on serving everything it already holds; a store whose index no longer fits the heap it was given
   refuses to open at all, instead of degrading into swap.

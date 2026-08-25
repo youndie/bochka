@@ -145,8 +145,26 @@ lifecycleDayShortenedFor: ""
 # still decides, and a signature that fails to verify stays a failure at either setting.
 anonymous: false
 
-# The ceiling on the number of objects. 0 leaves it derived from the heap, which is what the
-# shipped image prints: **399215**.
+# Which runtime profile the image starts under, and therefore how many objects this deployment
+# promises to hold (M33). Two whole profiles, named — not a heap size, because the heap decides the
+# published ceiling and a deployment running a different heap is running a different promise:
+#
+#   default  -Xmx512M, ceiling 399215 objects. What every other number in this file assumes.
+#   small    -Xmx128M, ceiling  99816. Measured (docs/measurements.md, M-233): the process needs
+#            215 MiB instead of 553, and a read of a 300 MiB object costs 132 ms instead of 455,
+#            because the heap and the page cache come out of one cgroup and the read path is
+#            `transferTo` from a hot file.
+#
+# There is no right default here and the chart cannot compute one: it does not know how many objects
+# will arrive. `default` is the conservative half of that bet — being wrong the other way is a 507
+# on every new key while the store still reads and overwrites, which is noticed late.
+#
+# The server prints the ceiling it actually derived on its first line, and that is the number to
+# trust: it comes from Runtime.maxMemory() rather than from -Xmx, and under SerialGC the two differ.
+heapProfile: default
+
+# The ceiling on the number of objects. 0 leaves it derived from the heap, and what that comes to
+# depends on `heapProfile` above: **399215** on the default profile and **99816** on the small one.
 #
 # This knob is only meaningful downwards. The heap is baked into the start script (-Xmx512M,
 # build.gradle.kts:26-48) and the ceiling is `Runtime.maxMemory() * 0.5 / 650`
@@ -345,6 +363,16 @@ probes:
 # reservation, and on a node with 200 MiB free there is nothing for the ceiling to admit. Raise it
 # only where the machine genuinely has the memory; otherwise the smaller heap is the lever, because
 # it hands memory back to the **node** rather than to this cgroup.
+#
+# And the floor moves with `heapProfile`, because it is a property of the profile rather than of the
+# chart. Measured the same way for both, under load with the index at that profile's own ceiling:
+#
+#   default  576Mi survives, 512Mi is OOM-killed (M-148)   → the chart asks 768Mi
+#   small    224Mi survives, 192Mi is OOM-killed (M-237)   → the chart asks 320Mi
+#
+# Each is the measured floor plus a third, for the same reason in both cases: a floor found under
+# one traffic shape is one traffic shape's floor. On the small profile the process peaked at 218 MiB
+# with 99 000 objects in the index, four listing clients and one overwriting.
 #
 # Memory request == memory limit because a JVM with a fixed -Xmx does not shrink: a smaller request
 # would let the scheduler place this pod where the heap it will certainly reach does not fit, and

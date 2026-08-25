@@ -73,6 +73,7 @@
       }
     },
     "region": { "type": "string", "minLength": 1 },
+    "heapProfile": { "type": "string", "enum": ["default", "small"] },
     "virtualHostSuffixes": {
       "type": "array",
       "items": {

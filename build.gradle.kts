@@ -54,6 +54,21 @@ val defaultJvmArgs =
 val shippedJvmArgs = defaultJvmArgs.map { if (it == "-Xmx64M") "-Xmx512M" else it }
 
 /**
+ * The second shipped profile, and the whole of M33: the same list with a quarter of the heap.
+ *
+ * It exists because the chart cannot know how many objects a deployment will hold, and the heap is
+ * what decides. Measured (M-233): 99 816 objects instead of 399 215, and in exchange a read of a
+ * 300 MiB object costs 132 ms instead of 455 — because the heap and the page cache come out of one
+ * cgroup, and the read path is `transferTo` from a **hot** file. The process itself needs 215 MiB
+ * rather than 553.
+ *
+ * A whole profile rather than a knob, for the same reason `bochka.jvmArgs` replaces the list
+ * instead of merging into it: a half-overridden profile is a third configuration nobody described,
+ * and a number produced under it belongs to neither column.
+ */
+val smallJvmArgs = defaultJvmArgs.map { if (it == "-Xmx64M") "-Xmx128M" else it }
+
+/**
  * `-Pbochka.jvmArgs="-Xmx4G -XX:+UseG1GC"` replaces the whole list for one invocation.
  *
  * For answering "what does the footprint cost", and nothing else. All-or-nothing rather than a
@@ -75,6 +90,11 @@ val footprintOverridden = project.hasProperty("bochka.jvmArgs")
 extra["bochkaJvmArgs"] =
     if (footprintOverridden) jvmArgs + "-Dbochka.footprintOverridden=true" else jvmArgs
 extra["bochkaShippedJvmArgs"] = if (footprintOverridden) jvmArgs else shippedJvmArgs
+
+// An override is for answering "what does the footprint cost", and it answers it about one
+// process: both scripts then carry the same replaced list, so the distribution still ships two
+// entry points and they still describe the same profile.
+extra["bochkaSmallJvmArgs"] = if (footprintOverridden) jvmArgs else smallJvmArgs
 
 allprojects {
     // `io.github.<login>` — coordinates whose ownership is proved by owning the GitHub account.

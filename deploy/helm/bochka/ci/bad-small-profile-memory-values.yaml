@@ -1,0 +1,13 @@
+# The small profile with a limit under **its** measured floor. The floor moves with the profile —
+# 768Mi for the default heap, 320Mi for the small one — and a chart that kept one number for both
+# would either refuse a perfectly good small deployment or admit one that gets OOM-killed at work.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+heapProfile: small
+resources:
+  limits:
+    memory: 256Mi
+  requests:
+    memory: 256Mi
