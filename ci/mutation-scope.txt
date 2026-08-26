@@ -1,0 +1,68 @@
+# Why a mutation survives, when the answer is not "a test is missing".
+#
+# One rule per line: <status> <tab> <substring of "<file>:<method>:<description>"> <tab> <reason>.
+# The first matching rule wins, so order is significance: put the narrow ones first.
+#
+# A substring rather than a line number on purpose. A line moves with the next edit, and a rule
+# pinned to one would go on explaining a different mutation without saying so — which is the same
+# failure this repository has already had three times in `ci/s3-tests-scope.txt`, where a rule that
+# could not fire quietly held a line in the accounting. `ci/mutation.py` prints every rule with its
+# count, zero included and marked, for exactly that reason.
+#
+# Status is one of:
+#   equivalent    — the change cannot alter what anything observes. Not "no test covers it": no
+#                   test **could**. The reason has to say why, and "it looks harmless" is not a
+#                   why.
+#   unobservable  — the change is real and shows only outside a JVM: a barrier that survives the
+#                   machine stopping, a core burned by a spin. Those are held by a different
+#                   instrument, and the reason names which one.
+#
+# Anything a rule does not match stays in SURVIVED, which is the bucket that gets read. Adding a
+# rule here is a claim, and the claim is signed by the reason beside it.
+
+# A capacity hint for the buffer a document is assembled in. `XmlWriter(1024 + contents.size * 128)`
+# sizes a `ByteArrayOutputStream`; it grows when the estimate is short and wastes a little when the
+# estimate is long, and in both cases the bytes that come out are the same bytes. This is the
+# textbook equivalent mutation, and there are 23 of them in one class.
+equivalent	S3Documents.kt:listBucketResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listObjectsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listVersionsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listMultipartUploadsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listAllMyBucketsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listPartsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:getObjectAttributesResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:taggingResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:corsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:lifecycleResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:deleteResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+
+# The durability barriers, held by a gate on the bytecode rather than by an assertion
+# (`DurabilityBarrierTest`, M34). `fsync` is what survives the **machine** stopping, and a JVM test
+# kills a process — the page cache belongs to the machine, so the parent reads back everything the
+# child wrote whether or not anything was flushed. Removing both calls left 779 tests green, which
+# is how this was found; the gate says the call is still there and deliberately says nothing about
+# where.
+unobservable	ObjectStore.kt:stage:removed call to java/nio/channels/FileChannel::force	the object's fsync: held by DurabilityBarrierTest, unobservable inside a JVM
+unobservable	ObjectStore.kt:copy:removed call to java/nio/channels/FileChannel::force	the copy's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:stagePartFrom:removed call to java/nio/channels/FileChannel::force	the copied part's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:completeUpload:removed call to java/nio/channels/FileChannel::force	the assembled object's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:syncDirectory:removed call to java/nio/channels/FileChannel::force	the directory entry's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:claimDirectory:removed call to java/nio/channels/FileChannel::force	the lock file's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:write:removed call to io/github/youndie/bochka/core/RecordLog::force	the index record's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:compact:removed call to io/github/youndie/bochka/core/RecordLog::force	the compacted log's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:compact:removed call to io/github/youndie/bochka/core/ObjectStore::syncDirectory	the rename's directory fsync: held by DurabilityBarrierTest
+
+# A file descriptor that is opened and not closed. Nothing a JVM assertion can see: the read gives
+# the same bytes, the write lands, and the cost arrives later as a process that runs out of
+# descriptors. Seeing it would mean counting `/proc/self/fd` around each operation — a Linux-only
+# test measuring the JDK's bookkeeping rather than this code, and a flaky one on a machine that
+# also runs a compiler.
+unobservable	ObjectStore.kt:*:removed call to kotlin/io/CloseableKt::closeFinally	a leaked descriptor: real, and invisible until the process runs out of them
+unobservable	ObjectStore.kt:*:removed call to kotlin/jdk7/AutoCloseableKt::closeFinally	a leaked descriptor: same as above, through the other `use`
+
+# One of the descriptor rules found its own boundary, and it is worth writing down rather than
+# tidying away. After `ObjectStoreConcurrencyTest` arrived, one `closeFinally` removal stopped
+# surviving — not because a test asserted anything about it, but because 320 writes under `-Xmx64M`
+# with the channels never released exhausted the heap and the minion died. The claim above is
+# therefore exactly right and exactly as narrow as it says: invisible until the process runs out,
+# and this is what running out looks like.
