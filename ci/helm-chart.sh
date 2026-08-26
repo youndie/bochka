@@ -25,14 +25,29 @@ readonly CLUSTER=bochka-chart
 readonly RELEASE=bochka
 readonly KIND_MODE=${BOCHKA_CHART_KIND:-auto}
 readonly IMAGE=${BOCHKA_IMAGE:-bochka:chart}
-# Pinned, not `latest`, and for the same reason the chart pins it: a check whose result depends on
-# somebody else's release schedule is also checking their schedule. aws-cli v2 publishes a tag nearly
-# every weekday and has changed what it puts on the wire before, and anonymous Docker Hub pulls are
-# rate-limited per IP — either would turn an untouched release red and read as a server regression.
-readonly TESTS_IMAGE=${BOCHKA_CHART_TESTS_IMAGE:-amazon/aws-cli:2.36.25}
-
 root=$(cd "$(dirname "$0")/.." && pwd)
 chart="$root/$CHART_DIR_NAME"
+
+# The image `helm test` runs, taken **from the chart** rather than repeated here. Why it is pinned
+# at all is argued beside `tests.image` in values.yaml, and that argument is the chart's to make.
+#
+# It was repeated here, and the copy went stale: renovate bumps a Helm value it recognises and not a
+# shell assignment it does not, so the two drifted six releases apart. That is not untidiness — the
+# harness overrides the chart with `--set tests.image`, so every run of this file was checking a
+# version the chart does not ship, while the version it does ship was checked by nobody.
+#
+# Read by nesting rather than by neighbouring lines: the block ends at the next top-level key, so a
+# second `image:` elsewhere in the file cannot answer this question by accident.
+chart_tests_image=$(awk '
+  /^tests:/         { in_tests = 1; next }
+  /^[^[:space:]#]/  { in_tests = 0 }
+  in_tests && $1 == "image:" { print $2 }
+' "$chart/values.yaml")
+if [ "$(printf '%s' "$chart_tests_image" | grep -c .)" -ne 1 ]; then
+  echo "expected exactly one tests.image in $chart/values.yaml, found: ${chart_tests_image:-nothing}" >&2
+  exit 1
+fi
+readonly TESTS_IMAGE=${BOCHKA_CHART_TESTS_IMAGE:-$chart_tests_image}
 values="$chart/ci"
 work=$(mktemp -d)
 passed=0; failed=0
