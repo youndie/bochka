@@ -1019,7 +1019,16 @@ class S3Handler(
     private fun failedWith(
         head: HttpRequestParser.Head,
         cause: Throwable,
-    ): HttpResponse = error(head, S3Error.INTERNAL_ERROR, detail = "${cause::class.simpleName}: ${cause.message}")
+    ): HttpResponse =
+        // A URI that cannot be read is the client's mistake, not this server's, and it is answered
+        // here rather than at each call site because the codec is reached from nine of them: the
+        // path, the object key, the query, the copy source, and the components a signature is
+        // rebuilt from. Catching it beside one of those would leave the other eight at `500`.
+        if (cause is UriCodec.Malformed) {
+            error(head, S3Error.INVALID_URI, detail = cause.message)
+        } else {
+            error(head, S3Error.INTERNAL_ERROR, detail = "${cause::class.simpleName}: ${cause.message}")
+        }
 
     /**
      * `GET /` — every bucket, in name order, a page at a time.

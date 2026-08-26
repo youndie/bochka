@@ -1,0 +1,1 @@
+PUT photos.s3.example /a.jpg  /other/key

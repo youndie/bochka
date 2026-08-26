@@ -24,6 +24,19 @@ package io.github.youndie.bochka.s3
  * encoding '/' and '*'", "Force encoding of '~'".
  */
 object UriCodec {
+    /**
+     * The URI cannot be read. `400 InvalidURI`, and typed so that the layer above can say so.
+     *
+     * It was a bare `IllegalArgumentException` and therefore indistinguishable from a bug: the
+     * generic failure handler answered `500 InternalError`, which tells a client its request may
+     * succeed on a retry. It never will — and `aws-cli` and `boto3` retry a 5xx, so one bad byte in
+     * a URI cost five requests and taught nobody anything. Found by fuzzing `S3Router.route`
+     * (M-258), which throws nothing of its own and reaches here through `parseQuery`.
+     */
+    class Malformed(
+        override val message: String,
+    ) : IllegalArgumentException(message)
+
     private const val HEX = "0123456789ABCDEF"
 
     /**
@@ -57,7 +70,7 @@ object UriCodec {
                 }
 
                 c == '%' -> {
-                    require(i + 2 < raw.length) { "truncated percent escape at $i in '$raw'" }
+                    if (i + 2 >= raw.length) throw Malformed("truncated percent escape at $i in '$raw'")
                     val hi = hexDigit(raw[i + 1], raw, i)
                     val lo = hexDigit(raw[i + 2], raw, i)
                     out[n++] = ((hi shl 4) or lo).toByte()
@@ -70,7 +83,7 @@ object UriCodec {
                 }
 
                 else -> {
-                    throw IllegalArgumentException(
+                    throw Malformed(
                         "char U+%04X at %d is not a byte; read the request line as ISO-8859-1".format(c.code, i),
                     )
                 }
@@ -160,6 +173,6 @@ object UriCodec {
             in '0'..'9' -> c - '0'
             in 'a'..'f' -> c - 'a' + 10
             in 'A'..'F' -> c - 'A' + 10
-            else -> throw IllegalArgumentException("bad percent escape at $at in '$raw'")
+            else -> throw Malformed("bad percent escape at $at in '$raw'")
         }
 }

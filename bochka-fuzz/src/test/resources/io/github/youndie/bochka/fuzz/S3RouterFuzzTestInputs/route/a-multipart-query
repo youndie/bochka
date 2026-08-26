@@ -1,0 +1,1 @@
+DELETE s3.example /b uploadId=1&partNumber=2 

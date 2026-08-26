@@ -1,0 +1,9 @@
+--b
+Content-Disposition: form-data; name="key"
+
+photos/x.jpg
+--b
+Content-Disposition: form-data; name="file"; filename="x.jpg"
+
+BYTES
+--b--
