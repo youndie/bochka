@@ -69,7 +69,7 @@ jobs:
       # daemon; building it twice would be four more minutes for the same bytes.
       - name: Hand the image to the chart job
         run: docker save bochka:smoke -o bochka-image.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bochka-image
           path: bochka-image.tar
@@ -101,7 +101,7 @@ jobs:
           # purpose, so that the Service is named `bochka` and kubelet would inject BOCHKA_* into
           # the pod. A cluster somebody else made would be one more thing to reason about.
           install_only: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bochka-image
       - run: docker load -i bochka-image.tar
