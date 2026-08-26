@@ -22,7 +22,19 @@ import io.github.youndie.bochka.http.HttpRequestParser
 class HttpHeadFuzzTest {
     @FuzzTest(maxDuration = FUZZ_DURATION)
     fun head(data: ByteArray) {
-        val parser = HttpRequestParser()
+        // Small limits, because libFuzzer does not generate an input over 4096 bytes and the
+        // shipped ones are 8 KiB a line and 64 KiB a head. Against those, the three branches that
+        // answer `431` are unreachable — the target would report coverage of everything except the
+        // bounds it exists to stand on. What is being fuzzed is the arithmetic, not the constant.
+        val parser =
+            HttpRequestParser(
+                HttpRequestParser.Limits(
+                    requestLineBytes = 64,
+                    headerLineBytes = 64,
+                    headerCount = 8,
+                    headBytes = 256,
+                ),
+            )
         try {
             // Fed in two slices rather than one, because that is how bytes arrive on a selector:
             // the parser is resumable, and a split is exactly where an index carried across calls

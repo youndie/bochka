@@ -57,21 +57,56 @@ fi
 
 printf 'targets: %s\n\n' "$names"
 
-JAZZER_FUZZ=1 "$root/gradlew" -p "$root" --console=plain --rerun-tasks \
-  -Pbochka.fuzzSeconds="$SECONDS_PER_TARGET" \
-  :bochka-fuzz:test
-status=$?
+# One invocation per target, because libFuzzer takes the process over: a JVM fuzzes one target and
+# the rest of that run's targets never start. Running them together looked like it worked — the
+# build went green and this script said "2 targets" — because the count came from the sources
+# rather than from what ran. A harness reporting work it did not do is worse than no harness, so
+# the number below is now counted from "Done N runs", which only libFuzzer prints.
+fuzzed=0
+failed=0
+for name in $names; do
+  printf -- '--- %s\n' "$name"
+  out=$(JAZZER_FUZZ=1 "$root/gradlew" -p "$root" --console=plain --rerun-tasks \
+        -Pbochka.fuzzSeconds="$SECONDS_PER_TARGET" \
+        :bochka-fuzz:test --tests "*$name*" 2>&1)
+  status=$?
+
+  runs=$(printf '%s\n' "$out" | grep -E '^Done [0-9]+ runs' | tail -1)
+  if [ -z "$runs" ]; then
+    echo "$out" | tail -30
+    printf 'FAIL    %s did not fuzz at all — no libFuzzer run in its output\n' "$name"
+    failed=$((failed + 1))
+    continue
+  fi
+
+  fuzzed=$((fuzzed + 1))
+  if [ $status -eq 0 ]; then
+    printf 'PASS    %s: %s\n' "$name" "$runs"
+  else
+    printf '%s\n' "$out" | grep -E 'FuzzTestFindingException|Caused by:|^\s+at io\.github|Test unit written' | head -12
+    printf 'FIND    %s: %s\n' "$name" "$runs"
+    failed=$((failed + 1))
+  fi
+done
 
 echo
-if [ $status -eq 0 ]; then
+# The guard that matters is not "did anything fail" but "did everything actually run". A target that
+# silently does not fuzz reports the same silence as a target that fuzzed and found nothing.
+if [ "$fuzzed" -ne "$targets" ]; then
+  printf 'only %d of %d targets fuzzed, which is a failure rather than a clean run\n' \
+    "$fuzzed" "$targets" >&2
+  summarised=yes
+  exit 1
+fi
+
+if [ "$failed" -eq 0 ]; then
   printf '%d targets, %ds each, nothing found\n' "$targets" "$SECONDS_PER_TARGET"
 else
-  printf '%d targets, %ds each — a finding is above, and its input was written to\n' \
-    "$targets" "$SECONDS_PER_TARGET"
-  printf 'bochka-fuzz/build/crash-*. Move it to\n'
+  printf '%d of %d targets have a finding above. Its input was written to\n' "$failed" "$targets"
+  printf 'bochka-fuzz/build/crash-*; move it to\n'
   printf 'bochka-fuzz/src/test/resources/io/github/youndie/bochka/fuzz/<Target>Inputs/<method>/\n'
-  printf 'and it becomes a test the gate runs from then on.\n'
+  printf 'and the gate runs it from then on.\n'
 fi
 
 summarised=yes
-exit $status
+[ "$failed" -eq 0 ]
