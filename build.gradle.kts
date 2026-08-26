@@ -135,6 +135,20 @@ subprojects {
             }
         }
 
+        // The version of JUnit the catalog names is the version the tests run on, which was not
+        // true until this line existed. `kotlin("test")` resolves to `kotlin-test-junit5`, and that
+        // artefact carries a Jupiter of its own — 5.10.1 for Kotlin 2.4.10 — so five of six modules
+        // ran on it while the catalog said 5.14.4 and explained the choice in a comment. A number
+        // that names something other than what runs is worse than no number: the comment beside it
+        // is then an argument about a version nobody is using.
+        //
+        // The platform also settles what a bump does. Raising the catalog alone put a second
+        // engine on `bochka-junit`'s test classpath beside the first, because that module declares
+        // Jupiter directly and inherits Kotlin's as well.
+        dependencies {
+            add("testImplementation", enforcedPlatform(rootProject.libs.junit.bom))
+        }
+
         tasks.withType<Test>().configureEach {
             useJUnitPlatform()
 
@@ -155,6 +169,15 @@ subprojects {
             // test's working directory is its own module, while the rule about the language of the
             // code is one rule for the whole repository.
             systemProperty("bochka.repoRoot", rootProject.layout.projectDirectory.asFile.absolutePath)
+
+            // What the catalog says JUnit is, handed to the test that checks it is true. Carried as
+            // a property rather than read from the catalog inside the test, because a test that
+            // reads the same file the build reads agrees with it by construction.
+            systemProperty(
+                "bochka.expectedJunit",
+                rootProject.libs.versions.junit
+                    .get(),
+            )
 
             // And the tree those checks read is declared as an input, or Gradle keeps the task
             // up to date exactly when the thing being guarded changed. Caught by positive control:
