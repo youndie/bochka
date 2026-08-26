@@ -31,6 +31,14 @@ import kotlin.test.assertTrue
  * What it cannot see there is the same thing it cannot see in Kotlin — a string literal — and for
  * the same reason.
  *
+ * **The version catalog and the deployment manifests are read as well**, and they were not for two
+ * milestones after this test was written. Seven Russian lines sat in `gradle/libs.versions.toml`
+ * the whole time, in the comments arguing why pitest is run as a CLI and why JUnit is where it is —
+ * exactly the kind of prose somebody arriving at this repository reads first. They were found by
+ * editing that file for an unrelated reason, which is how the last batch was found too. A gate
+ * knows the shapes its author had in front of them; the ones it does not know are silent, and
+ * silence here reads as success.
+ *
  * The research anchors are exempt because the rule exempts them by name: they are search keys into
  * the Russian documents, and a translated key finds nothing.
  */
@@ -41,8 +49,18 @@ class CodeIsEnglishTest {
         val sources =
             Files.walk(root).use { walk ->
                 walk
-                    .filter { it.extension in setOf("kt", "kts", "py", "sh") || it.isScopeFile() }
-                    .filter { path -> path.none { it.toString() == "build" || it.toString() == ".claude" } }
+                    .filter {
+                        it.extension in
+                            setOf(
+                                "kt",
+                                "kts",
+                                "py",
+                                "sh",
+                                "toml",
+                                "yml",
+                                "yaml",
+                            ) || it.isScopeFile()
+                    }.filter { path -> path.none { it.toString() == "build" || it.toString() == ".claude" } }
                     .sorted()
                     .toList()
             }
@@ -55,6 +73,7 @@ class CodeIsEnglishTest {
                 when {
                     source.extension == "kt" || source.extension == "kts" -> prose(body)
                     source.isScopeFile() -> body.lines().mapIndexed { at, line -> (at + 1) to line }
+                    source.extension == "yml" || source.extension == "yaml" -> yamlProse(body)
                     else -> scriptProse(body)
                 }
             for ((line, text) in found) {
@@ -86,6 +105,7 @@ class CodeIsEnglishTest {
                 Regex("M-\\d+[а-я]"),
                 Regex("Риск \\d+"),
                 Regex("Открытый вопрос \\d+"),
+                Regex("Чего чарт не обещает"),
             )
         private val CYRILLIC = Regex("[А-яЁё]")
         private const val TRIPLE = "\"\"\""
@@ -104,8 +124,36 @@ class CodeIsEnglishTest {
             CYRILLIC.containsMatchIn(ANCHORS.fold(text) { rest, anchor -> anchor.replace(rest, "") })
 
         /**
-         * The prose of a shell or Python script: comment lines, and the triple-quoted blocks a
+         * The prose of a YAML file: `#` comments, and the `{{/* … */}}` blocks a Helm template
+         * comments itself with.
+         *
+         * Both shapes, because only the second one had anything in it. A reader written around `#`
+         * alone would have walked all 35 of these files, found nothing, and reported that as clean
+         * — which is the failure this whole file exists to prevent, arriving through the door it
+         * was built to close.
+         */
+        fun yamlProse(source: String): List<Pair<Int, String>> {
+            val found = ArrayList<Pair<Int, String>>()
+            var inTemplateComment = false
+            for ((offset, line) in source.lines().withIndex()) {
+                val opens = line.contains("{{- /*") || line.contains("{{/*")
+                if (inTemplateComment || opens || line.trimStart().startsWith("#")) {
+                    found += (offset + 1) to line
+                }
+                if (opens) inTemplateComment = true
+                if (line.contains("*/}}")) inTemplateComment = false
+            }
+            return found
+        }
+
+        /**
+         * The prose of a shell, Python or TOML file: comment lines, and the triple-quoted blocks a
          * Python file states its purpose in.
+         *
+         * TOML comes through here because its only comment syntax is `#`. Its own triple quote is a
+         * multi-line string rather than a docstring, so a catalog holding one would read as prose
+         * from there to its close; there is none, and if there ever is, it will be a value nobody
+         * writes prose into.
          */
         fun scriptProse(source: String): List<Pair<Int, String>> {
             val found = ArrayList<Pair<Int, String>>()
