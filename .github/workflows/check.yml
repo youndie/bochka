@@ -19,7 +19,7 @@ jobs:
       # No setup-java step in *this* job: the build fetches its own JDK 25 toolchain
       # (settings.gradle.kts), so the runner's Java is not part of the answer. A green build here
       # means green on a machine with no JDK at all.
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew check
 
   live-clients:
@@ -34,7 +34,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       # The metric this project is measured by is other people's clients, not its own tests (Р6).
       - run: ./ci/live-clients.sh
 
@@ -46,7 +46,7 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       # No `|| true`, and that was a real bug rather than a tidy-up. The script already exits zero
       # for **any** score — a threshold on somebody else's suite would be a threshold on their
       # release schedule — and non-zero only when the run itself is broken: nothing ran, the build
@@ -58,7 +58,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       # No setup-java: the whole point of the image is that it carries its own runtime, and a job
       # that installed one would stop testing that.
       # Everything about the image that the gate cannot see: the user, the volume, the runtime
@@ -69,7 +69,7 @@ jobs:
       # daemon; building it twice would be four more minutes for the same bytes.
       - name: Hand the image to the chart job
         run: docker save bochka:smoke -o bochka-image.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: bochka-image
           path: bochka-image.tar
@@ -101,7 +101,7 @@ jobs:
           # purpose, so that the Service is named `bochka` and kubelet would inject BOCHKA_* into
           # the pod. A cluster somebody else made would be one more thing to reason about.
           install_only: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: bochka-image
       - run: docker load -i bochka-image.tar

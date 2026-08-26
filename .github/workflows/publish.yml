@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew check
       - run: ./ci/docker-smoke.sh
 
@@ -30,7 +30,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       - name: Build the distribution the image is made of
         run: ./gradlew -PVERSION=${GITHUB_REF_NAME#v} :bochka-app:installDist
       - uses: docker/login-action@v4
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
       # Every module, not just `:bochka-embedded:`. Its POM names the other four, and a publish
       # that pushes one of five is indistinguishable from a good one on this side — the artefact
       # is there, the task is green, and the failure is a consumer's `Could not find
