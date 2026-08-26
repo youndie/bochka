@@ -9,3 +9,9 @@
 #
 # `-text` and not `binary`: conversion off, but diffs still readable.
 docs/spec/** -text
+
+# The fuzzing corpus is the same kind of thing one layer down: every file is an input somebody's
+# parser will read byte for byte, and for the HTTP targets the CRLF **is** the framing. Normalised
+# on the way in, a seed stops being the request it was saved as, and a saved crash stops
+# reproducing the crash — silently, because the working copy of whoever committed it is fine.
+bochka-fuzz/src/test/resources/** -text

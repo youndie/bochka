@@ -1,0 +1,3 @@
+GET /bucket/key?list-type=2 HTTP/1.1
+Host: s3.example
+

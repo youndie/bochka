@@ -20,6 +20,9 @@ include(":bochka-embedded")
 // use it.
 include(":bochka-junit")
 include(":bochka-benchmark")
+// Fuzz targets for the parsers that read unauthenticated bytes (M38). Separate because the fuzzer
+// needs a heap the footprint gate does not allow anywhere else.
+include(":bochka-fuzz")
 
 dependencyResolutionManagement {
     repositories {

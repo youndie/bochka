@@ -238,7 +238,10 @@ subprojects {
         // The task is **not part of `check`** and must not be. It is slow, and its result is not a
         // threshold but a list of survivors, each of which is read on its own: a survival percentage
         // is as meaningless a number as a coverage percentage (`docs/mutation.md`).
-        if (project.name != "bochka-benchmark") {
+        // `bochka-fuzz` is excluded alongside the benchmarks and for the same reason: neither
+        // holds code anybody runs in production, and a mutation of a fuzz target asks whether the
+        // target tests itself.
+        if (project.name != "bochka-benchmark" && project.name != "bochka-fuzz") {
             val pitest = configurations.create("pitest")
             dependencies.add("pitest", rootProject.libs.pitest.cli)
             dependencies.add("pitest", rootProject.libs.pitest.junit5)
