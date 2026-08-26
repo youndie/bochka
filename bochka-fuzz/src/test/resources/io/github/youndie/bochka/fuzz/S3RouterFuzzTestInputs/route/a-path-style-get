@@ -1,0 +1,1 @@
+GET s3.example /photos/a.jpg list-type=2&prefix=x 
