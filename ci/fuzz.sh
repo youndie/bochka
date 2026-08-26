@@ -41,13 +41,27 @@ echo
 
 # Listed from the sources rather than hard-coded here: a target added to the module and not to this
 # list would be a target nobody runs, and it would look exactly like a target that found nothing.
+# Targets are `<Class>.<method>`, not classes. libFuzzer takes the process over per **method**, so
+# a class holding two `@FuzzTest`s fuzzes the first and silently skips the second — which is how
+# this script last claimed three targets while running three of the four it had.
+#
 # `while read` rather than `mapfile`, which is bash 4 and therefore absent from the bash that ships
 # with macOS. A harness that only runs where CI runs is a harness nobody runs before pushing.
 names=""
 while IFS= read -r name; do
   names="${names}${names:+ }${name}"
   targets=$((targets + 1))
-done < <(find "$root/bochka-fuzz/src/test/kotlin" -name '*FuzzTest.kt' -exec basename {} .kt \; | sort)
+done < <(
+  find "$root/bochka-fuzz/src/test/kotlin" -name '*FuzzTest.kt' | sort | while IFS= read -r file; do
+    awk -v cls="$(basename "$file" .kt)" '
+      /@FuzzTest/                          { want = 1; next }
+      want && match($0, /fun [A-Za-z_][A-Za-z0-9_]*/) {
+        print cls "." substr($0, RSTART + 4, RLENGTH - 4)
+        want = 0
+      }
+    ' "$file"
+  done
+)
 
 if [ "$targets" -eq 0 ]; then
   echo "no fuzz targets found under bochka-fuzz/src/test/kotlin" >&2
@@ -68,7 +82,7 @@ for name in $names; do
   printf -- '--- %s\n' "$name"
   out=$(JAZZER_FUZZ=1 "$root/gradlew" -p "$root" --console=plain --rerun-tasks \
         -Pbochka.fuzzSeconds="$SECONDS_PER_TARGET" \
-        :bochka-fuzz:test --tests "*$name*" 2>&1)
+        :bochka-fuzz:test --tests "*$name" 2>&1)
   status=$?
 
   runs=$(printf '%s\n' "$out" | grep -E '^Done [0-9]+ runs' | tail -1)
