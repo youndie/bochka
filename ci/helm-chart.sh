@@ -419,6 +419,11 @@ else
   skipped_cluster=no
   load_image "$IMAGE" || kind_gave_up "$IMAGE"
 
+  # Named in the log, because the result of this stage depends on it and a green job that does not
+  # say which version ran cannot be checked afterwards. That is how the copy of this pin went six
+  # releases stale without anybody noticing.
+  echo "  helm test runs $TESTS_IMAGE"
+
   # Both images are put in from the outside rather than pulled by the kubelet: an anonymous pull
   # from inside a throwaway cluster is a registry rate limit waiting to make this job flaky, and a
   # flaky harness gets ignored long before it gets fixed.
