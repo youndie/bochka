@@ -24,7 +24,7 @@ coroutines = "1.11.0"
 # This number also has to be enforced to mean anything. `kotlin("test")` brings a Jupiter of its
 # own, and until the root build put `junit-bom` on every module as a platform, five of six ran on
 # that one instead of on this.
-junit = "5.14.4"
+junit = "6.1.3"
 # Reads compiled classes in a test. The only dependency here that exists to check a property of the
 # code rather than to be part of it.
 asm = "9.10.1"
