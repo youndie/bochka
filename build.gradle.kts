@@ -188,7 +188,16 @@ subprojects {
                 inputs
                     .files(
                         rootProject.fileTree(rootProject.layout.projectDirectory) {
-                            include("**/*.kt", "**/*.kts", "ci/**/*.py", "ci/**/*.sh", "ci/**/*.txt")
+                            include(
+                                "**/*.kt",
+                                "**/*.kts",
+                                "**/*.toml",
+                                "**/*.yml",
+                                "**/*.yaml",
+                                "ci/**/*.py",
+                                "ci/**/*.sh",
+                                "ci/**/*.txt",
+                            )
                             exclude("**/build/**", "**/.gradle/**", "**/.claude/**")
                         },
                     ).withPropertyName("sourcesReadByRepositoryWideChecks")
