@@ -1,0 +1,100 @@
+# Why a mutation survives, when the answer is not "a test is missing".
+#
+# One rule per line: <status> <tab> <substring of "<file>:<method>:<description>"> <tab> <reason>.
+# The first matching rule wins, so order is significance: put the narrow ones first.
+#
+# A substring rather than a line number on purpose. A line moves with the next edit, and a rule
+# pinned to one would go on explaining a different mutation without saying so — which is the same
+# failure this repository has already had three times in `ci/s3-tests-scope.txt`, where a rule that
+# could not fire quietly held a line in the accounting. `ci/mutation.py` prints every rule with its
+# count, zero included and marked, for exactly that reason.
+#
+# Status is one of:
+#   equivalent    — the change cannot alter what anything observes. Not "no test covers it": no
+#                   test **could**. The reason has to say why, and "it looks harmless" is not a
+#                   why.
+#   unobservable  — the change is real and shows only outside a JVM: a barrier that survives the
+#                   machine stopping, a core burned by a spin. Those are held by a different
+#                   instrument, and the reason names which one.
+#
+# Anything a rule does not match stays in SURVIVED, which is the bucket that gets read. Adding a
+# rule here is a claim, and the claim is signed by the reason beside it.
+
+# A capacity hint for the buffer a document is assembled in. `XmlWriter(1024 + contents.size * 128)`
+# sizes a `ByteArrayOutputStream`; it grows when the estimate is short and wastes a little when the
+# estimate is long, and in both cases the bytes that come out are the same bytes. This is the
+# textbook equivalent mutation, and there are 23 of them in one class.
+equivalent	S3Documents.kt:listBucketResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listObjectsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listVersionsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listMultipartUploadsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listAllMyBucketsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:listPartsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:getObjectAttributesResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:taggingResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:corsResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:lifecycleResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+equivalent	S3Documents.kt:deleteResult:Replaced integer	buffer capacity hint: a size estimate cannot change the bytes written
+
+# The durability barriers, held by a gate on the bytecode rather than by an assertion
+# (`DurabilityBarrierTest`, M34). `fsync` is what survives the **machine** stopping, and a JVM test
+# kills a process — the page cache belongs to the machine, so the parent reads back everything the
+# child wrote whether or not anything was flushed. Removing both calls left 779 tests green, which
+# is how this was found; the gate says the call is still there and deliberately says nothing about
+# where.
+unobservable	ObjectStore.kt:stage:removed call to java/nio/channels/FileChannel::force	the object's fsync: held by DurabilityBarrierTest, unobservable inside a JVM
+unobservable	ObjectStore.kt:copy:removed call to java/nio/channels/FileChannel::force	the copy's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:stagePartFrom:removed call to java/nio/channels/FileChannel::force	the copied part's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:completeUpload:removed call to java/nio/channels/FileChannel::force	the assembled object's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:syncDirectory:removed call to java/nio/channels/FileChannel::force	the directory entry's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:claimDirectory:removed call to java/nio/channels/FileChannel::force	the lock file's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:write:removed call to io/github/youndie/bochka/core/RecordLog::force	the index record's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:compact:removed call to io/github/youndie/bochka/core/RecordLog::force	the compacted log's fsync: held by DurabilityBarrierTest
+unobservable	ObjectStore.kt:compact:removed call to io/github/youndie/bochka/core/ObjectStore::syncDirectory	the rename's directory fsync: held by DurabilityBarrierTest
+
+# A file descriptor that is opened and not closed. Nothing a JVM assertion can see: the read gives
+# the same bytes, the write lands, and the cost arrives later as a process that runs out of
+# descriptors. Seeing it would mean counting `/proc/self/fd` around each operation — a Linux-only
+# test measuring the JDK's bookkeeping rather than this code, and a flaky one on a machine that
+# also runs a compiler.
+unobservable	ObjectStore.kt:*:removed call to kotlin/io/CloseableKt::closeFinally	a leaked descriptor: real, and invisible until the process runs out of them
+unobservable	ObjectStore.kt:*:removed call to kotlin/jdk7/AutoCloseableKt::closeFinally	a leaked descriptor: same as above, through the other `use`
+
+# One of the descriptor rules found its own boundary, and it is worth writing down rather than
+# tidying away. After `ObjectStoreConcurrencyTest` arrived, one `closeFinally` removal stopped
+# surviving — not because a test asserted anything about it, but because 320 writes under `-Xmx64M`
+# with the channels never released exhausted the heap and the minion died. The claim above is
+# therefore exactly right and exactly as narrow as it says: invisible until the process runs out,
+# and this is what running out looks like.
+
+# `PostForm`'s bounds that no input can reach, one claim per line. Each is an index compared with
+# zero where the value is guaranteed positive by what precedes it — the guard that got there first,
+# or the bytes that must already have been consumed. `<` and `<=` therefore decide the same thing
+# for every possible body, which is what makes them equivalent rather than untested.
+equivalent	PostForm.kt:boundaryOf:changed conditional boundary	the media type is checked first, so `boundary=` is never found at index 0
+equivalent	PostForm.kt:parse:changed conditional boundary	the delimiter and its headers precede every index compared here; none can be zero
+equivalent	PostForm.kt:dispositionValue:changed conditional boundary	the line starts with `Content-Disposition`, so neither the attribute nor its quote is at index 0
+
+# The three checks that recognise the closing `--`. Removing or negating any one of them changes
+# **when** the loop ends, not whether: the bytes that follow are `--`, `skipEndOfLine` finds no line
+# break in them and returns null, and the loop breaks on the next line instead. Both paths leave the
+# form ended with whatever it had, so no body tells them apart.
+equivalent	PostForm.kt:parse:negated conditional	the closing `--` is recognised here or by the line break that is not there; both end the loop
+equivalent	PostForm.kt:parse:Replaced integer addition with subtraction	same check: the second byte read is only reached when the first is a dash, and the boundary's last byte is not one
+equivalent	PostForm.kt:trimTrailingEndOfLine:changed conditional boundary	the byte before a part's content is always the line feed ending its headers, never a carriage return, so the second trim can never reach past an empty stretch
+
+# `PostPolicy`'s bounds that no document can reach. A policy is a JSON object, so it begins with `{`
+# — every index found inside it is at least one, and a comparison with zero decides the same thing
+# either way. Stated per method rather than as one rule over the file, because the reason is about
+# what precedes each index and not about the file.
+equivalent	PostPolicy.kt:valueOf:changed conditional boundary	the document opens with a brace, so a key, its colon and its quotes are never at index zero
+equivalent	PostPolicy.kt:conditionsOf:changed conditional boundary	same: the conditions key and its bracket are found inside an object that has already begun
+equivalent	PostPolicy.kt:unescape:changed conditional boundary	a value reaching the unescaper ends before a quote, and a lone trailing backslash would have escaped that quote — so the last character is never one
+equivalent	PostPolicy.kt:unescape:Replaced integer addition with subtraction	same check, same reason: the character after a backslash is only read when a backslash is not the last thing in the value
+
+# `parseQuery`'s bounds, unobservable through the only surface that uses it. Keeping an empty token,
+# or reading `=v` as a name rather than as a nameless value, adds a parameter called the empty
+# string — and no route in this server is decided by one. The claim is about the surface, not about
+# the function: were `parseQuery` ever made public, this would stop being true and the rules would
+# have to go.
+unobservable	S3Router.kt:parseQuery:changed conditional boundary	an empty or nameless parameter changes no routing decision; the router is the only caller

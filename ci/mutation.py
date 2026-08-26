@@ -5,12 +5,20 @@ There is deliberately no survival percentage here. It would measure the **mutati
 Kotlin half of that set is code the compiler wrote — so the figure moves when somebody drops a
 `data class`, not when the tests get stricter.
 
-Hence three buckets rather than one:
+Hence four buckets rather than one:
 
 * **noise** — a mutation in code that is not in the source. Every rule below is named and prints its
   own count: a rule that swallowed a real mutation has to be visible;
+* **classified** — a survivor somebody has read and explained in `ci/mutation-scope.txt`: a change
+  that cannot be observed, or one observable only from outside a JVM. The reason is in the file
+  beside the rule, so the judgement can be argued with rather than inherited;
 * **uncovered** — no test ever reached this line. That is a map, not a verdict;
-* **survived** — a test did reach it and did not notice the change. The only bucket anybody reads.
+* **survived** — a test did reach it, it is not explained, and it went unnoticed. The only bucket
+  anybody reads.
+
+The scope file is the same shape as `ci/s3-tests-scope.txt` and carries the same guarantee: a rule
+that matches nothing says so out loud. A rule that cannot fire has been found in this repository
+three times, and each time it had been quietly holding a line in the accounting.
 """
 
 from __future__ import annotations
@@ -83,6 +91,50 @@ def parse(path: Path) -> list[dict]:
     return out
 
 
+def read_scope(near: Path) -> list[tuple[str, str, str]]:
+    """The rules explaining survivors, if the file is where it usually is.
+
+    Looked up relative to the repository rather than to the report, because a report lives under
+    `build/` and the explanation of a survivor belongs with the code. Absent file means no rules,
+    not an error: the report is still a report without them.
+    """
+    for candidate in (Path("ci/mutation-scope.txt"), near / ".." / "ci" / "mutation-scope.txt"):
+        if candidate.exists():
+            rules = []
+            for line in candidate.read_text().splitlines():
+                if not line.strip() or line.lstrip().startswith("#"):
+                    continue
+                parts = line.split("\t")
+                if len(parts) < 3:
+                    print(f"{candidate}: a rule needs three tab-separated columns: {line}", file=sys.stderr)
+                    continue
+                rules.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
+            return rules
+    return []
+
+
+def classify(mutation: dict, scope: list[tuple[str, str, str]]) -> str | None:
+    """The first rule that matches, as `status<TAB>pattern`, or None.
+
+    The pattern is matched against `<file>:<method>:<description>` — the same shape the suite's
+    scope file uses, and for the same reason: a line number moves with the next edit, and a rule
+    pinned to one would explain a different mutation a week later without saying so.
+
+    A plain substring, with one exception: `*` stands for "anything up to the next colon", so a
+    claim about every method of one file can be written as one rule instead of nine. Deliberately
+    not a general expression — a rule whose reach nobody can read is a rule nobody will argue with.
+    """
+    subject = f"{mutation['file']}:{mutation['method']}:{mutation['desc']}"
+    for status, pattern, _ in scope:
+        if "*" in pattern:
+            expression = ".*?".join(re.escape(part) for part in pattern.split("*"))
+            if re.search(expression, subject):
+                return f"{status}\t{pattern}"
+        elif pattern in subject:
+            return f"{status}\t{pattern}"
+    return None
+
+
 def main() -> int:
     if len(sys.argv) != 2:
         print("usage: mutation.py <mutations.xml>", file=sys.stderr)
@@ -98,7 +150,9 @@ def main() -> int:
         print(f"{path}: zero mutations — the run did not take place", file=sys.stderr)
         return 1
 
+    scope = read_scope(path.parent)
     noise = Counter()
+    classified = Counter()
     survived: dict[str, list[dict]] = defaultdict(list)
     uncovered: dict[str, list[dict]] = defaultdict(list)
     detected = 0
@@ -113,7 +167,11 @@ def main() -> int:
         elif m["status"] == "NO_COVERAGE":
             uncovered[m["cls"]].append(m)
         else:
-            survived[m["cls"]].append(m)
+            explained = classify(m, scope)
+            if explained is not None:
+                classified[explained] += 1
+            else:
+                survived[m["cls"]].append(m)
 
     n_surv = sum(len(v) for v in survived.values())
     n_unc = sum(len(v) for v in uncovered.values())
@@ -123,6 +181,7 @@ def main() -> int:
     print(f"mutations       {len(mutations)}")
     print(f"  noise         {sum(noise.values())}  (rules below)")
     print(f"  detected      {detected}")
+    print(f"  classified    {sum(classified.values())}  (ci/mutation-scope.txt)")
     print(f"  uncovered     {n_unc}  <- no test ever reached it")
     print(f"  SURVIVED      {n_surv}  <- read one by one")
     print()
@@ -134,6 +193,19 @@ def main() -> int:
         if name not in noise:
             print(f"  {0:5}  {name}  <- this rule matched nothing")
     print()
+
+    if scope:
+        # Zero is printed as loudly as anything else, and one zero is ordinary: a rule about another
+        # module matches nothing in this module's report. The one worth looking at is a rule about
+        # **this** module that matched nothing — either it was written for a line that moved, or the
+        # mutations it explains are now uncovered rather than surviving.
+        print("classified survivors, by rule:")
+        for status, pattern, reason in scope:
+            key = f"{status}\t{pattern}"
+            count = classified.get(key, 0)
+            dead = "  <- this rule matched nothing" if count == 0 else ""
+            print(f"  {count:5}  [{status}] {pattern}: {reason}{dead}")
+        print()
 
     for title, bucket in (("SURVIVED", survived), ("UNCOVERED", uncovered)):
         if not bucket:
