@@ -43,7 +43,7 @@ minio = "9.0.3"
 # for Gradle 8, while the engine itself is alive and shipped 2026-08-04 — both checked against
 # maven-metadata.xml. Going through the plugin would mean fixing somebody else's Gradle 9
 # compatibility to obtain a run that already exists as a standalone program.
-pitest = "1.25.9"
+pitest = "1.30.0"
 # A separate artefact, because pitest knows no test engine by itself: without it a run finds zero
 # tests and reads as code that nothing can kill.
 pitestJunit5 = "1.2.3"
