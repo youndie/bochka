@@ -1,7 +1,9 @@
 plugins {
-    alias(libs.plugins.kotlin.jvm)
-    alias(libs.plugins.kotlin.allopen)
-    alias(libs.plugins.benchmark)
+    id("org.jetbrains.kotlin.jvm")
+    id("ru.workinprogress.sborka.jvm")
+    id("ru.workinprogress.sborka.lint")
+    id("org.jetbrains.kotlin.plugin.allopen")
+    id("org.jetbrains.kotlinx.benchmark")
 }
 
 dependencies {

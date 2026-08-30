@@ -2093,9 +2093,10 @@ class S3Handler(
         // Handing the file to the terminator in front, when the deployment says to. Only a `GET`
         // of the whole object: a `HEAD` has no body to hand over, and `partNumber` names a slice
         // that no header can express — `X-Accel-Redirect` says which file, never which part of it.
+        // A part request cannot reach here at all; the branch above answers it and returns.
         // A `Range` **is** handed over, because nginx applies the client's own `Range` to the
         // internal file and answers the `206` itself.
-        if (accelRedirect != null && withBody && partNumber == null) {
+        if (accelRedirect != null && withBody) {
             val relative = store.dataRoot.relativize(path)
             return HttpResponse(
                 200,
@@ -2277,7 +2278,7 @@ class S3Handler(
                     currentEnd = part.second
                 }
                 val room = minOf((currentEnd - position).toInt(), length - done)
-                cipher!!.update(buffer, from + done, room, buffer, from + done)
+                cipher.update(buffer, from + done, room, buffer, from + done)
                 done += room
                 position += room
             }

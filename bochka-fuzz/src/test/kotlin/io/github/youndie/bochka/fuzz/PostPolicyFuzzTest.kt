@@ -38,7 +38,7 @@ class PostPolicyFuzzTest {
         } catch (refused: PostPolicy.Refused) {
             // The one refusal this path may produce, and it carries the S3 error the client will be
             // answered with. Anything else escapes an unauthenticated path.
-            check(refused.message != null) { "a refusal has to say what it refused" }
+            check(refused.message.isNotEmpty()) { "a refusal has to say what it refused" }
         }
 
         // Nothing is asserted about the conditions that come back, and that is on purpose. The

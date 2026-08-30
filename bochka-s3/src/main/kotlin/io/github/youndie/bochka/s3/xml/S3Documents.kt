@@ -516,9 +516,7 @@ object S3Documents {
                         groupGrant(AUTHENTICATED_USERS, "READ")
                     }
 
-                    else -> {
-                        Unit
-                    }
+                    else -> {}
                 }
                 grant(ownerId, ownerDisplayName, "FULL_CONTROL")
                 // These two name a key rather than a group, so both lists carry display names and
@@ -533,9 +531,7 @@ object S3Documents {
                         bucketOwnerId?.takeIf { it != ownerId }?.let { grant(it, it, "FULL_CONTROL") }
                     }
 
-                    else -> {
-                        Unit
-                    }
+                    else -> {}
                 }
             }
         }

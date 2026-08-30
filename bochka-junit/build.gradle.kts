@@ -1,8 +1,10 @@
 plugins {
-    alias(libs.plugins.kotlin.jvm)
+    id("org.jetbrains.kotlin.jvm")
+    id("ru.workinprogress.sborka.jvm")
+    id("ru.workinprogress.sborka.lint")
+    id("ru.workinprogress.sborka.publish")
+    id("ru.workinprogress.sborka.mutation")
 }
-
-apply(from = rootProject.file("publishing.gradle.kts"))
 
 dependencies {
     api(project(":bochka-embedded"))

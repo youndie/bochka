@@ -16,9 +16,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # No setup-java step in *this* job: the build fetches its own JDK 25 toolchain
-      # (settings.gradle.kts), so the runner's Java is not part of the answer. A green build here
-      # means green on a machine with no JDK at all.
+      # No setup-java step in *this* job, and deliberately NOT the shared
+      # `youndie/sborka/.github/actions/setup-kotlin` action the other jobs use: that action installs
+      # JDK 21 and 25, and Gradle would then take the toolchain off the runner. The build fetches its
+      # own JDK 25 toolchain, so the runner's Java is not part of the answer, and a green build here
+      # means green on a machine with no JDK at all. Installing one would quietly stop testing that.
       - uses: gradle/actions/setup-gradle@v6
       - run: ./gradlew check
 
@@ -30,11 +32,10 @@ jobs:
       # whatever `java` is on PATH. On this runner that is 17, and the failure is
       # `UnsupportedClassVersionError: class file version 69.0` — which reads as a build problem
       # and is a runtime one. The image does not need this line because it ships its own JRE.
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '25'
-      - uses: gradle/actions/setup-gradle@v6
+      #
+      # The shared action installs 21 and 25 and leaves 25 as the default, which is what this job
+      # needs; the version lives in sborka now rather than in three copies here.
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
       # The metric this project is measured by is other people's clients, not its own tests (Р6).
       - run: ./ci/live-clients.sh
 
@@ -42,11 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-java@v6
-        with:
-          distribution: temurin
-          java-version: '25'
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
       # No `|| true`, and that was a real bug rather than a tidy-up. The script already exits zero
       # for **any** score — a threshold on somebody else's suite would be a threshold on their
       # release schedule — and non-zero only when the run itself is broken: nothing ran, the build
@@ -59,8 +56,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: gradle/actions/setup-gradle@v6
-      # No setup-java: the whole point of the image is that it carries its own runtime, and a job
-      # that installed one would stop testing that.
+      # No setup-java, and so not the shared setup-kotlin action either: the whole point of the
+      # image is that it carries its own runtime, and a job that installed one would stop testing
+      # that.
       # Everything about the image that the gate cannot see: the user, the volume, the runtime
       # profile surviving JAVA_OPTS, a misspelt setting stopping the process.
       - run: ./ci/docker-smoke.sh

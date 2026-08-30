@@ -1,4 +1,6 @@
 [versions]
+# The shared build conventions. One number: every sborka plugin below takes its version from here.
+sborka = "0.1.0.18"
 # Checked against maven-metadata.xml of org.jetbrains.kotlin:kotlin-stdlib on 2026-08-17: 2.4.10 is
 # the last stable, 2.4.20-RC is a release candidate.
 kotlin = "2.4.10"
@@ -62,6 +64,10 @@ pitest-junit5 = { module = "org.pitest:pitest-junit5-plugin", version.ref = "pit
 benchmark-runtime = { module = "org.jetbrains.kotlinx:kotlinx-benchmark-runtime", version.ref = "benchmark" }
 
 [plugins]
+sborkaJvm = { id = "ru.workinprogress.sborka.jvm", version.ref = "sborka" }
+sborkaLint = { id = "ru.workinprogress.sborka.lint", version.ref = "sborka" }
+sborkaPublish = { id = "ru.workinprogress.sborka.publish", version.ref = "sborka" }
+sborkaMutation = { id = "ru.workinprogress.sborka.mutation", version.ref = "sborka" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 # JMH needs its state classes open; Kotlin classes are final by default.
 kotlin-allopen = { id = "org.jetbrains.kotlin.plugin.allopen", version.ref = "kotlin" }

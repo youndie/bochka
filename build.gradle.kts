@@ -2,7 +2,10 @@ plugins {
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.kotlin.allopen) apply false
     alias(libs.plugins.benchmark) apply false
-    alias(libs.plugins.ktlint)
+    alias(libs.plugins.sborkaJvm) apply false
+    alias(libs.plugins.sborkaLint) apply false
+    alias(libs.plugins.sborkaPublish) apply false
+    alias(libs.plugins.sborkaMutation) apply false
 }
 
 /**
@@ -96,34 +99,20 @@ extra["bochkaShippedJvmArgs"] = if (footprintOverridden) jvmArgs else shippedJvm
 // entry points and they still describe the same profile.
 extra["bochkaSmallJvmArgs"] = if (footprintOverridden) jvmArgs else smallJvmArgs
 
-allprojects {
-    // `io.github.<login>` — coordinates whose ownership is proved by owning the GitHub account.
-    group = "io.github.youndie.bochka"
-    // A default that is a snapshot on purpose: a build with no `-PVERSION` must not be able to
-    // produce something that looks like a release.
-    version = providers.gradleProperty("VERSION").getOrElse("0.1.0-SNAPSHOT")
-}
-
-// The point of this block: the gate is one command. `./gradlew check` runs the tests AND ktlint, in
-// every module, without anybody remembering a second line in CI.
+// The group, the version, the toolchain, the ktlint wiring, the JUnit platform, the test logging and
+// the whole pitest harness came from here. They come from `ru.workinprogress.sborka` now, applied per
+// module, with the numbers in `gradle.properties`.
+//
+// What stays is what is bochka's: the JVM-argument profiles above, the ABI dump of the one module
+// anybody depends on, and the inputs those repository-wide checks read.
 subprojects {
-    apply(plugin = "org.jlleitschuh.gradle.ktlint")
-
-    extensions.configure<org.jlleitschuh.gradle.ktlint.KtlintExtension> {
-        version.set(rootProject.libs.versions.ktlint)
-    }
-
     plugins.withId("org.jetbrains.kotlin.jvm") {
         extensions.configure<org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension> {
-            // 25, and it is on the critical path rather than a preference: `FileChannel.map(mode,
-            // offset, size, Arena)` gives a mapping without the 2 GB ceiling and with a
-            // deterministic release, which is what the index log needs.
-            jvmToolchain(25)
-
             // Public API is checked into `api/` and compared on every `check` — but only for the
-            // one module anybody can depend on. `:bochka-app` and the rest publish nothing, and a
-            // dump that changes on every internal edit trains everyone to update it without reading
-            // the diff, which is the exact habit this check exists to prevent.
+            // module whose surface is the supported one. The others are published as well (see
+            // `:bochka-embedded`: a POM naming a dependency nobody pushed resolves to nothing), and
+            // a dump that changes on every internal edit trains everyone to update it without
+            // reading the diff, which is the exact habit this check exists to prevent.
             if (project.name == "bochka-embedded") {
                 @OptIn(org.jetbrains.kotlin.gradle.dsl.abi.ExperimentalAbiValidation::class)
                 abiValidation {
@@ -135,23 +124,36 @@ subprojects {
             }
         }
 
-        // The version of JUnit the catalog names is the version the tests run on, which was not
-        // true until this line existed. `kotlin("test")` resolves to `kotlin-test-junit5`, and that
-        // artefact carries a Jupiter of its own — 5.10.1 for Kotlin 2.4.10 — so five of six modules
-        // ran on it while the catalog said 5.14.4 and explained the choice in a comment. A number
-        // that names something other than what runs is worse than no number: the comment beside it
-        // is then an argument about a version nobody is using.
-        //
-        // The platform also settles what a bump does. Raising the catalog alone put a second
-        // engine on `bochka-junit`'s test classpath beside the first, because that module declares
-        // Jupiter directly and inherits Kotlin's as well.
-        dependencies {
-            add("testImplementation", enforcedPlatform(rootProject.libs.junit.bom))
+        // The same arguments, to the JVMs pitest forks. A minion is not the `Test` task and gets
+        // nothing from it: without this the suite fails inside one with no mutation applied, pitest
+        // refuses to mutate a suite that fails on its own, and `mutationTest` stops before it starts.
+        plugins.withId("ru.workinprogress.sborka.mutation") {
+            @Suppress("UNCHECKED_CAST")
+            val profile = rootProject.extra["bochkaJvmArgs"] as List<String>
+            extensions.configure<ru.workinprogress.sborka.MutationOptions>("sborkaMutation") {
+                forkJvmArgs.addAll(profile)
+                forkJvmArgs.add("-Dbochka.expectedJvmArgs=${profile.joinToString(" ")}")
+                forkJvmArgs.add(
+                    "-Dbochka.repoRoot=${rootProject.layout.projectDirectory.asFile.absolutePath}",
+                )
+                forkJvmArgs.add(
+                    "-Dbochka.specDir=${
+                        rootProject.layout.projectDirectory
+                            .dir("docs/spec")
+                            .asFile.absolutePath
+                    }",
+                )
+                forkJvmArgs.add("-Djdk.httpclient.allowRestrictedHeaders=host")
+                forkJvmArgs.add(
+                    "-Dbochka.expectedJunit=${
+                        rootProject.libs.versions.junit
+                            .get()
+                    }",
+                )
+            }
         }
 
         tasks.withType<Test>().configureEach {
-            useJUnitPlatform()
-
             @Suppress("UNCHECKED_CAST")
             val profile = rootProject.extra["bochkaJvmArgs"] as List<String>
             jvmArgs(profile)
@@ -165,9 +167,6 @@ subprojects {
             // they cite a file and a line in it (project rule 2). The path is injected because a
             // test's working directory is its module, and `../docs/spec` in a dozen tests is a
             // dozen places to fix when a module moves.
-            // The repository root, for checks that read **sources** rather than compiled classes: a
-            // test's working directory is its own module, while the rule about the language of the
-            // code is one rule for the whole repository.
             systemProperty("bochka.repoRoot", rootProject.layout.projectDirectory.asFile.absolutePath)
 
             // What the catalog says JUnit is, handed to the test that checks it is true. Carried as
@@ -220,111 +219,6 @@ subprojects {
             // filesystem rather than about the code (M-183). Passed through rather than defaulted
             // here: an empty value means the temp directory, which is every ordinary run.
             System.getProperty("bochka.crashDir")?.let { systemProperty("bochka.crashDir", it) }
-
-            testLogging {
-                events("failed")
-                exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
-            }
-        }
-
-        // Mutation testing as a run rather than an exercise.
-        //
-        // In M28 seven mutations were made by hand and found two guards **nothing** caught, and two
-        // tests that passed for a different reason than the one written in their names. Such a test
-        // is green, looks like coverage, and stays green if the check it was written for is
-        // removed. Hence the task: the same question asked in order, rather than wherever attention
-        // happened to reach.
-        //
-        // The task is **not part of `check`** and must not be. It is slow, and its result is not a
-        // threshold but a list of survivors, each of which is read on its own: a survival percentage
-        // is as meaningless a number as a coverage percentage (`docs/mutation.md`).
-        // `bochka-fuzz` is excluded alongside the benchmarks and for the same reason: neither
-        // holds code anybody runs in production, and a mutation of a fuzz target asks whether the
-        // target tests itself.
-        if (project.name != "bochka-benchmark" && project.name != "bochka-fuzz") {
-            val pitest = configurations.create("pitest")
-            dependencies.add("pitest", rootProject.libs.pitest.cli)
-            dependencies.add("pitest", rootProject.libs.pitest.junit5)
-
-            tasks.register<JavaExec>("mutationTest") {
-                group = "verification"
-                description = "Breaks this module one place at a time and says what the tests did not notice"
-
-                // The classes have to be compiled and the tests have to be green beforehand: pitest
-                // refuses to mutate code whose suite fails without a mutation, and that is the
-                // right refusal.
-                dependsOn(tasks.named("test"))
-
-                classpath = pitest
-                mainClass.set("org.pitest.mutationtest.commandline.MutationCoverageReport")
-                javaLauncher.set(
-                    project.extensions
-                        .getByType<JavaToolchainService>()
-                        .launcherFor { languageVersion.set(JavaLanguageVersion.of(25)) },
-                )
-
-                val sourceSets = project.extensions.getByType<SourceSetContainer>()
-                val main = sourceSets.getByName("main")
-                val test = sourceSets.getByName("test")
-                val reportDir = layout.buildDirectory.dir("reports/pitest")
-
-                // The forked test's profile travels here too. A pitest minion is a JVM of its own,
-                // and the test comparing `bochka.expectedJvmArgs` fails inside one without any
-                // mutation at all — at which point the run has not "found a defect", it has not
-                // started. pitest separates these on commas, so a value with spaces inside one
-                // argument gets through and one with a comma does not.
-                @Suppress("UNCHECKED_CAST")
-                val profile = rootProject.extra["bochkaJvmArgs"] as List<String>
-                val specDir =
-                    rootProject.layout.projectDirectory
-                        .dir("docs/spec")
-                        .asFile.absolutePath
-                val forkArgs =
-                    profile +
-                        listOf(
-                            "-Dbochka.expectedJvmArgs=${profile.joinToString(" ")}",
-                            "-Dbochka.specDir=$specDir",
-                            "-Djdk.httpclient.allowRestrictedHeaders=host",
-                        )
-
-                // Only this module's code is mutated, but everything it lives on goes on the path.
-                val mutable = main.output.classesDirs
-                val fullPath = test.runtimeClasspath
-
-                // Narrow the run to one class or family: `-PmutationTarget=…S3Handler`. A whole
-                // module takes tens of minutes, and narrowing it is the only way to ask about
-                // **one** place and get the answer today.
-                val target = providers.gradleProperty("mutationTarget").getOrElse("io.github.youndie.bochka.*")
-
-                argumentProviders.add(
-                    CommandLineArgumentProvider {
-                        listOf(
-                            "--reportDir",
-                            reportDir.get().asFile.absolutePath,
-                            "--targetClasses",
-                            target,
-                            "--targetTests",
-                            "io.github.youndie.bochka.*",
-                            "--sourceDirs",
-                            main.allSource.srcDirs.joinToString(",") { it.absolutePath },
-                            "--mutableCodePaths",
-                            mutable.joinToString(",") { it.absolutePath },
-                            "--classPath",
-                            fullPath.joinToString(",") { it.absolutePath },
-                            "--testPlugin",
-                            "junit5",
-                            "--outputFormats",
-                            "HTML,XML",
-                            "--timestampedReports",
-                            "false",
-                            "--jvmArgs",
-                            forkArgs.joinToString(","),
-                            "--threads",
-                            Runtime.getRuntime().availableProcessors().toString(),
-                        )
-                    },
-                )
-            }
         }
     }
 }
