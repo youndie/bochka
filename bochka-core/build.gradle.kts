@@ -1,11 +1,14 @@
 plugins {
-    alias(libs.plugins.kotlin.jvm)
+    id("org.jetbrains.kotlin.jvm")
+    id("ru.workinprogress.sborka.jvm")
+    id("ru.workinprogress.sborka.lint")
+    id("ru.workinprogress.sborka.publish")
+    id("ru.workinprogress.sborka.mutation")
 }
 
 // Published because `:bochka-embedded` names it: a POM whose dependencies were never
 // pushed resolves to nothing, and from the publishing side that looks exactly like a
 // good publication. Only `:bochka-embedded` is a supported surface with a checked ABI.
-apply(from = rootProject.file("publishing.gradle.kts"))
 
 dependencies {
     // `api`: the store hands out a suspending `put`, because the bytes come off a socket and a

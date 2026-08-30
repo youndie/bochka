@@ -18,7 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
       - run: ./gradlew check
       - run: ./ci/docker-smoke.sh
 
@@ -30,7 +30,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v7
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
       - name: Build the distribution the image is made of
         run: ./gradlew -PVERSION=${GITHUB_REF_NAME#v} :bochka-app:installDist
       - uses: docker/login-action@v4
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
       # Every module, not just `:bochka-embedded:`. Its POM names the other four, and a publish
       # that pushes one of five is indistinguishable from a good one on this side — the artefact
       # is there, the task is green, and the failure is a consumer's `Could not find
@@ -73,12 +73,21 @@ jobs:
       # this job for a tag that already published will therefore fail, and the fix is a new tag,
       # not a retry. (It also means a partial publish stops at the first module already present —
       # which is how four of five modules came to be missing the first time.)
+      #
+      # The repository is `wip` and the credentials are Gradle properties rather than this project's
+      # own environment variables, because both come from `ru.workinprogress.sborka.publish` now.
+      # The destination is still this repository's secret, handed over as `sborka.snapshotRepository`
+      # — it is not the convention's default, and a publish that silently went to the default would
+      # put a release in the snapshot repository.
       - name: Publish every module a consumer has to resolve
         env:
+          ORG_GRADLE_PROJECT_REPOSILITE_USER: ${{ secrets.BOCHKA_REPO_USER }}
+          ORG_GRADLE_PROJECT_REPOSILITE_SECRET: ${{ secrets.BOCHKA_REPO_SECRET }}
           BOCHKA_REPO_URL: ${{ secrets.BOCHKA_REPO_URL }}
-          BOCHKA_REPO_USER: ${{ secrets.BOCHKA_REPO_USER }}
-          BOCHKA_REPO_SECRET: ${{ secrets.BOCHKA_REPO_SECRET }}
-        run: ./gradlew -PVERSION=${GITHUB_REF_NAME#v} publishAllPublicationsToBochkaRepoRepository
+        run: |
+          ./gradlew -PVERSION=${GITHUB_REF_NAME#v} \
+            -Psborka.snapshotRepository="$BOCHKA_REPO_URL" \
+            publishAllPublicationsToWipRepository
 
   chart:
     # On `needs: gate` like the other two, and for the reason those two are separate jobs at all: a

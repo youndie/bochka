@@ -33,7 +33,7 @@ class PostFormFuzzTest {
             } catch (refused: PostForm.Malformed) {
                 // The one refusal this path may produce. A form reaches this parser before the
                 // policy is checked, so anything else escaping here escapes an unauthenticated path.
-                check(refused.message != null) { "a refusal has to say what it refused" }
+                check(refused.message.isNotEmpty()) { "a refusal has to say what it refused" }
                 return
             }
 

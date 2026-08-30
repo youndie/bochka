@@ -54,7 +54,7 @@ class JournalFromNewerVersionTest {
             appendRecordFromTheFuture(dir)
 
             val refused = assertFailsWith<ObjectStore.JournalFromNewerVersion> { ObjectStore(dir) }
-            val message = refused.message ?: ""
+            val message = refused.message
 
             assertEquals(99, refused.kind, "the message has to name the record it could not read")
             // The three things somebody rolling back needs, and none of them are in a stack trace.

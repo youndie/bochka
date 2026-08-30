@@ -42,9 +42,7 @@ class ObjectHeaderFuzzTest {
             }
 
             // Both of the other answers are whole-object answers and carry no arithmetic to check.
-            ByteRanges.Resolved.Unsatisfiable, ByteRanges.Resolved.Whole -> {
-                Unit
-            }
+            ByteRanges.Resolved.Unsatisfiable, ByteRanges.Resolved.Whole -> {}
         }
     }
 
@@ -61,7 +59,7 @@ class ObjectHeaderFuzzTest {
         try {
             ObjectHeaders.read(headers)
         } catch (refused: ObjectHeaders.Malformed) {
-            check(refused.message != null) { "a refusal has to say what it refused" }
+            check(refused.message.isNotEmpty()) { "a refusal has to say what it refused" }
         } catch (refused: UriCodec.Malformed) {
             // `x-amz-tagging` is percent-encoded, so the URI codec is reached from here as well —
             // which is the ninth call site that made M-258 answer this refusal in one place rather

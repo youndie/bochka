@@ -44,7 +44,7 @@ class ObjectStoreLockTest {
             ObjectStore(dir).use {
                 val refused = assertFailsWith<ObjectStore.DirectoryInUse> { ObjectStore(dir) }
                 assertTrue(
-                    dir.toString() in (refused.message ?: ""),
+                    dir.toString() in refused.message,
                     "the refusal has to name the directory: ${refused.message}",
                 )
             }
