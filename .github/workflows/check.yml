@@ -16,12 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      # No setup-java step in *this* job, and deliberately NOT the shared
-      # `youndie/sborka/.github/actions/setup-kotlin` action the other jobs use: that action installs
-      # JDK 21 and 25, and Gradle would then take the toolchain off the runner. The build fetches its
-      # own JDK 25 toolchain, so the runner's Java is not part of the answer, and a green build here
-      # means green on a machine with no JDK at all. Installing one would quietly stop testing that.
-      - uses: gradle/actions/setup-gradle@v6
+      # This job ran without a setup-java step until the sborka migration, to prove that the build
+      # fetches its own JDK 25 toolchain and is green on a machine with no JDK at all. That claim
+      # cannot be made any more, and the run that said so is worth writing down: the settings plugin
+      # is a *dependency of the build itself*, resolved by the JVM Gradle runs on, and the runner's
+      # is 17 —
+      #
+      #   > Could not resolve ru.workinprogress.sborka:settings:0.1.0.18
+      #   > Dependency requires at least JVM runtime version 21. This build uses a Java 17 JVM.
+      #
+      # A JDK-free runner therefore cannot configure this build at all, never mind compile it. The
+      # toolchain is still declared and still what compiles the code; what is gone is the proof that
+      # nothing else was needed.
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
       - run: ./gradlew check
 
   live-clients:
@@ -55,10 +62,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: gradle/actions/setup-gradle@v6
-      # No setup-java, and so not the shared setup-kotlin action either: the whole point of the
-      # image is that it carries its own runtime, and a job that installed one would stop testing
-      # that.
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      # A JDK is installed here for the same reason as in the gate: Gradle itself has to run on 21+
+      # to resolve the settings plugin. It does not weaken what this job tests — the image's runtime
+      # is the one inside the image, and the smoke test runs it in a container that has no access to
+      # the runner's.
       # Everything about the image that the gate cannot see: the user, the volume, the runtime
       # profile surviving JAVA_OPTS, a misspelt setting stopping the process.
       - run: ./ci/docker-smoke.sh
