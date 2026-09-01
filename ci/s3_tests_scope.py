@@ -93,14 +93,20 @@ def main():
 
     failures = []
     messages = {}
+    passed = []
     for case in ElementTree.parse(results).getroot().iter("testcase"):
         problem = case.find("failure")
         if problem is None:
             problem = case.find("error")
+        name = case.get("name", "?")
         if problem is not None:
-            name = case.get("name", "?")
             failures.append(name)
             messages[name] = (problem.get("message") or "").strip().replace("\n", " ")[:200]
+        elif case.find("skipped") is None:
+            # Kept because one check reads the other side of the run (M-261). Everything else here
+            # is about failures, and a `deferred` rule that has quietly started passing is
+            # invisible from that side by construction.
+            passed.append(name)
 
     grouped = collections.defaultdict(lambda: collections.defaultdict(list))
     for name in sorted(failures):
@@ -151,6 +157,31 @@ def main():
         print(f"  closed-and-failing: {len(regressions)}")
         for task, pattern, names in regressions:
             print(f"        ! {task} is closed and '{pattern}' still fails: {len(names)} case(s)")
+            for name in names[:5]:
+                print(f"            {name}")
+
+    # The other direction, and the one nothing here could see before (M-261). `deferred` says a case
+    # is expected to fail and nobody has claimed it; a `deferred` case that **passes** means the
+    # work happened somewhere else and the exclusion list is now hiding it. The score is understated
+    # by exactly that many, silently, and the list reads as though the cases were still missing.
+    #
+    # Matched against the pattern directly, with no notion of which rule wins, and that is correct
+    # rather than a shortcut: the whole file describes **failures**, so a passing case is classified
+    # by nothing and there is no winner to defer to. The deferred line's own claim — this case is
+    # expected to fail and nobody has claimed it — is falsified by the pass whatever any other line
+    # would have said about the same name.
+    stale = []
+    for status, pattern, reason in rules:
+        if status != "deferred":
+            continue
+        hit = [name for name in passed if pattern in name]
+        if hit:
+            stale.append((pattern, reason, hit))
+
+    if stale:
+        print(f"  deferred-but-passing: {len(stale)}")
+        for pattern, reason, names in stale:
+            print(f"        ! deferred '{pattern}' passes now: {len(names)} case(s) — {reason[:60]}")
             for name in names[:5]:
                 print(f"            {name}")
 
