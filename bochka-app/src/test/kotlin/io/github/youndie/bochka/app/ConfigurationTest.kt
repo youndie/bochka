@@ -1,5 +1,6 @@
 package io.github.youndie.bochka.app
 
+import java.nio.file.Files
 import kotlin.test.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -24,6 +25,48 @@ import kotlin.test.assertTrue
 class ConfigurationTest {
     private fun of(vararg environment: Pair<String, String>) =
         Configuration.load(environment = mapOf(*environment), configPath = null)
+
+    /**
+     * Keys can arrive in a file instead of the environment, and until now nothing said so (M-262).
+     *
+     * `BOCHKA_KEYS` in the environment is readable by anyone who can run `docker inspect` or read
+     * `/proc/PID/environ`, and neither is a privilege the secret was handed out for. `BOCHKA_CONFIG`
+     * was already the way out — it just had no test and no sentence in the README, which is the
+     * same as not having it: an escape nobody is told about is not one.
+     *
+     * Written as a characterisation rather than as a fix, and this is said out loud because the
+     * milestone asked for `BOCHKA_KEYS_FILE`: the mechanism existed under another name, so adding
+     * a second one would have been a new spelling for a path that already worked.
+     */
+    @Test
+    fun `the keys can come out of a file rather than the environment`() {
+        val file = Files.createTempFile("bochka-config", ".properties")
+        Files.writeString(file, "keys=fromfile:secret\nregion=eu-west-1\n")
+
+        val configuration = Configuration.load(environment = emptyMap(), configPath = file.toString())
+
+        assertEquals("fromfile:secret", configuration[Configuration.Key.KEYS])
+        assertEquals("eu-west-1", configuration[Configuration.Key.REGION])
+        Files.deleteIfExists(file)
+    }
+
+    @Test
+    fun `a name the file does not know is refused by name rather than ignored`() {
+        // The other half, and the one that makes the test above worth having: a file whose settings
+        // are read and silently dropped is worse than no file, because the process then runs on
+        // defaults while its operator believes otherwise. This is the same rule the environment
+        // half already follows.
+        val file = Files.createTempFile("bochka-config", ".properties")
+        Files.writeString(file, "keyz=typo:secret\n")
+
+        val refused =
+            assertFailsWith<Configuration.Refused> {
+                Configuration.load(environment = emptyMap(), configPath = file.toString())
+            }
+
+        assertContains(refused.message, "keyz")
+        Files.deleteIfExists(file)
+    }
 
     @Test
     fun `the printed configuration does not carry the secret half of a key`() {

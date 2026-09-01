@@ -204,6 +204,10 @@ the premises of the original brief that did not survive contact with the sources
   that would make this process a keeper of secrets with rotation and an audit trail behind it.
   `SSE-C` is there, where the key belongs to whoever sends it.
 - **Not an identity system.** Access keys are a static list in the configuration; no IAM, no STS.
+  Passed as `BOCHKA_KEYS` they are readable by anyone who can run `docker inspect` or read
+  `/proc/<pid>/environ`, which is a wider audience than the one the secret was handed to. Point
+  `BOCHKA_CONFIG` at a properties file instead and they never enter the environment — the file is
+  the same list, under the same names, and it is what a mounted secret is for.
 - **Not compared with anything.** The read path is measured — host, filesystem and spread included
   — but nothing here has been benchmarked *against another store*, and no number above should be
   read as one.
