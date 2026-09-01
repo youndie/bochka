@@ -64,6 +64,7 @@ class EnospcStandTest {
         // and hit the wall" and "the test returned on the first line because the variable never
         // reached this JVM" produce the same duration, the same `tests=1` and the same exit code.
         // The stand refuses a run without this file.
-        Files.writeString(directory.resolve("exercised"), "the volume ended by ENOSPC\n")
+        Files.createDirectories(directory.resolve("exercised"))
+        Files.writeString(directory.resolve("exercised").resolve("stand"), "the volume ended by ENOSPC\n")
     }
 }
