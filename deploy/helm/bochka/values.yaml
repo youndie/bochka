@@ -491,4 +491,4 @@ tests:
   # The compatibility harness in this repository (ci/live-clients.sh) keeps `latest` on purpose, and
   # that is not an inconsistency: tracking the client people actually run is the whole job there,
   # while this one is a health check on somebody's release and has to answer about the release.
-  image: amazon/aws-cli:2.36.31
+  image: amazon/aws-cli:2.36.37
