@@ -10,7 +10,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import kotlin.test.fail
 
 /**
  * A journal write that runs out of disk is a torn tail, and everything before it survives (M-266).
@@ -169,22 +168,6 @@ class EnospcJournalTest {
                     "the length reached the disk before the body it describes",
             )
             position = end
-        }
-    }
-
-    /** Writes until the volume refuses, so that the next record has nowhere to go. */
-    private fun fillTheVolume(filler: Path) {
-        val block = ByteArray(64 * 1024)
-        try {
-            Files.newOutputStream(filler).use { out ->
-                repeat(4096) {
-                    out.write(block)
-                    out.flush()
-                }
-            }
-            fail("wrote 256 MiB of filler without filling the volume: this stand is not constraining anything")
-        } catch (_: IOException) {
-            // Expected: this is how the volume is brought to its edge.
         }
     }
 }

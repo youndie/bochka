@@ -76,4 +76,14 @@ if [ $status -eq 0 ] && [ "$markers" -ne "$classes" ]; then
   echo "$markers of $classes ENOSPC tests reached the volume; the rest returned without touching it" >&2
   status=1
 fi
+
+# Printed, not just counted. The markers are the only account of what each test actually met on the
+# volume, and they die with the mount a few lines below — a CI log that says "$classes of $classes"
+# and nothing else cannot be read afterwards to tell a real run from a coincidence.
+if [ -d "$mount_point/exercised" ]; then
+  echo
+  for marker in "$mount_point/exercised"/*; do
+    [ -f "$marker" ] && printf '%s: %s\n' "$(basename "$marker")" "$(cat "$marker")"
+  done
+fi
 exit $status
