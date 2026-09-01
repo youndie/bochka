@@ -46,6 +46,20 @@ jobs:
       # The metric this project is measured by is other people's clients, not its own tests (Р6).
       - run: ./ci/live-clients.sh
 
+  enospc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      # A volume that ends, which no ordinary `check` can produce: the stand needs `mount`, and a
+      # gate that runs as root to get one would be paying more than the check is worth (M-264).
+      #
+      # This job is also what keeps the test honest. Without `BOCHKA_ENOSPC_DIR` the test returns
+      # on its first line, so in the ordinary gate it is a pass that touched nothing — which would
+      # be a silent gate if nothing ever provided the directory. This provides it, and the harness
+      # refuses a run whose tests never reached the volume.
+      - run: ./ci/enospc.sh
+
   compatibility:
     runs-on: ubuntu-latest
     steps:
