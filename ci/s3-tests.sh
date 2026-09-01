@@ -351,6 +351,9 @@ if [ -f "$work/results.xml" ]; then
   # A failure nobody has classified is the other kind of run worth keeping: either the rules have
   # gone stale or something new broke, and both are answered from the log rather than from here.
   if echo "$classification" | grep "unclassified" >/dev/null; then keep=yes; fi
+  # A `defect` rule that names no task (M-295). Kept for the same reason as an unclassified
+  # failure: both are claims nobody can follow up, and both are invisible in the score.
+  if echo "$classification" | grep "unattributed" >/dev/null; then keep=yes; fi
   # M-218. Against a deployment the lifecycle family is measurable only if that deployment's day
   # was shortened to the same number this run uses, and there is one way to do that — the chart's
   # `lifecycleDaySeconds`. Without it those cases fail on the clock and land in `unclassified`,

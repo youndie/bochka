@@ -9,7 +9,12 @@
 #   out-of-scope  — bochka does not have this and the backlog says it will not (README, "What
 #                   bochka is not"). Failing it is the design, not a defect.
 #   deferred      — in scope eventually, nobody has claimed it. Becomes `defect` when it does.
-#   defect        — bochka should pass this and does not. Every one of these names the task.
+#   defect        — bochka should pass this and does not. Every one of these names the task, and
+#                   the name is the **first token of the reason** (`M-228: …`) rather than a
+#                   mention inside the sentence: prose satisfied this by eye and could not be asked
+#                   a question. A `defect` line without it is printed as `unattributed`, the same
+#                   way an unclassified failure is printed — and it is read from the rules rather
+#                   than from the failures, because a sentinel matches nothing until it fires.
 #                   Read it as a conditional: a `defect` line placed above a broad rule, for a
 #                   family a finished milestone should already pass, is a sentinel. It says
 #                   nothing while the cases pass and keeps the broad rule from swallowing them
@@ -99,7 +104,7 @@ out-of-scope	tags_acl_public	the case hands rights to a group with a grant; grou
 # defect in M-228, and the address is named. While the five pass, the line matches nothing. The run
 # that shows it is M-204.
 out-of-scope	nonpublicpolicy_acl_bucket_policy_status	the case's policy puts a condition on `aws:SourceIp`; the peer address never reaches the decision, and the operator and the key are refused by name (§3.8, decision M-201в)
-defect	bucket_policy_status	`GetBucketPolicyStatus` exists (M-228) — a failure here is a defect in it rather than in ACL; the line stands above the broad `acl` rule so that it does not swallow three names of the six
+defect	bucket_policy_status	M-228: `GetBucketPolicyStatus` exists — a failure here is a defect in it rather than in ACL; the line stands above the broad `acl` rule so that it does not swallow three names of the six
 out-of-scope	ignore_public_acls	the public access block is a feature of its own rather than ACL
 out-of-scope	cors_presigned_get_object_tenant_v2	the case presigns with SigV2, which this server does not verify
 out-of-scope	cors_presigned_get_object_v2	the case presigns with SigV2, which this server does not verify

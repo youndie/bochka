@@ -13,8 +13,20 @@ hide inside a category by accident.
 """
 
 import collections
+import re
 import sys
 import xml.etree.ElementTree as ElementTree
+
+
+# A `defect` line says bochka should pass a case and does not, so it owes the task that will make
+# it pass -- the file's own header says every one of them names it. Prose satisfied that by eye and
+# nothing else: the reference sat inside the sentence, which reads fine and cannot be asked a
+# question. This is the same reference as a token the first word can be matched against.
+#
+# `deferred` deliberately carries none. The header defines it as "in scope eventually, nobody has
+# claimed it", so requiring a task there would contradict the status: a deferred line with an owner
+# is a `defect` line.
+TASK = re.compile(r"^M-\d+\b")
 
 
 def load_rules(path):
@@ -30,6 +42,18 @@ def load_rules(path):
             status, pattern, reason = parts[0].strip(), parts[1].strip(), parts[2].strip()
             rules.append((status, pattern, reason))
     return rules
+
+
+def unattributed(rules):
+    """`defect` rules that name no task, as (pattern, reason) pairs.
+
+    Read from the **rules** rather than from the failures, and that is the whole point rather than
+    an implementation detail. A `defect` line placed above a broad one for a family that already
+    passes is a sentinel: it matches nothing until something regresses, so anything derived from
+    matched cases cannot see it at all. The line that is hardest to notice is exactly the line this
+    check exists for.
+    """
+    return [(pattern, reason) for status, pattern, reason in rules if status == "defect" and not TASK.match(reason)]
 
 
 def classify(name, rules):
@@ -75,6 +99,14 @@ def main():
         for names in unclassified.values():
             for name in names[:20]:
                 print(f"        ? {name}")
+
+    # Printed by name, the same way `unclassified` is, and for the same reason: a rule that claims
+    # bochka has a defect without saying who is fixing it is a claim nobody can follow up.
+    orphans = unattributed(rules)
+    if orphans:
+        print(f"  unattributed: {len(orphans)}")
+        for pattern, reason in orphans:
+            print(f"        ? defect rule '{pattern}' names no task: {reason[:80]}")
 
     if failed_out:
         with open(failed_out, "w", encoding="utf-8") as handle:
