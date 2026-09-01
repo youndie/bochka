@@ -141,6 +141,31 @@ collection grows with it — 7.56 seconds of stop-the-world at 4 GiB is a reques
 hiccup. The ceiling is also a property of the collector rather than of `-Xmx`, which is why the
 startup log names both.
 
+## What happens when the disk fills
+
+A different failure from the one above, and the two answer differently on purpose. The ceiling is a
+promise this store publishes and keeps: reaching it is `507 InsufficientStorage` on new keys, and
+nothing else stops. A full disk is the machine underneath failing, so it is `500 InternalError`
+with a document carrying the failure the disk reported — an answer, never a dropped connection. The
+difference matters to software rather than to people: a closed socket is read by every SDK as a
+network failure, and a network failure is the thing they retry hardest.
+
+What holds while the disk is full:
+
+- a write that runs out of space leaves **no key**, and no index entry pointing at bytes that are
+  not there; what it did leave is a partial file, which the orphan sweep collects;
+- an index write that runs out of space is read back as a torn tail — recovery stops before it and
+  everything the log had admitted to is still there after a restart;
+- a compaction that runs out of space leaves the index it was rewriting untouched, and the
+  half-built replacement is ignored by the next start;
+- the process keeps serving. Reads answer and deletes are accepted — a delete frees the file it
+  names, which is how a store with a full disk makes itself smaller. Writes are what stops, and
+  they stop one request at a time rather than by taking the server with them.
+
+None of that is asserted against a mock: `ci/enospc.sh` builds a small ext4 image, mounts it, and
+runs those cases against a filesystem that really ends. It refuses a run in which the tests did not
+reach the volume, and prints what each of them met there.
+
 ## How it is checked
 
 Five levels, because each is blind to what the others catch:
