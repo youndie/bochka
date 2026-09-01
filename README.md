@@ -5,7 +5,7 @@
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
 [![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-518%2F744-green)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![release](https://img.shields.io/badge/release-v0.4.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.4.0)
+[![release](https://img.shields.io/badge/release-v0.5.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.4.0)
 
 An S3-compatible object store in Kotlin/JVM. One process, one node, one disk: no erasure coding,
 no replication, no quorum. On the outside, the protocol `aws s3`, `mc`, `boto3` and every S3
@@ -24,7 +24,7 @@ it can also be the thing you start inside a test.
 docker run -d --name bochka -u 1000:1000 \
   -v /srv/bochka:/var/lib/bochka -p 127.0.0.1:9000:9000 \
   -e BOCHKA_KEYS='youraccesskey:yoursecretkey' \
-  ghcr.io/youndie/bochka:v0.4.0
+  ghcr.io/youndie/bochka:v0.5.0
 ```
 
 Bound to the loopback on purpose, with your own TLS terminator in front — terminating TLS inside
@@ -50,7 +50,7 @@ signature verification, same four body framings, same storage.
 
 ```kotlin
 repositories { maven("https://reposilite.kotlin.website/snapshots") }
-dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:0.4.0") }
+dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:0.5.0") }
 ```
 
 ```kotlin
