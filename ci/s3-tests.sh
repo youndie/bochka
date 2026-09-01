@@ -82,8 +82,9 @@ keep=no
 # Set when a case ran out of clock (M-206). Read by the exit trap rather than acted on where it is
 # discovered, so that the refusal to call the run a measurement cannot be skipped.
 timedout=no
-# Set when a case a **closed** task claims to have fixed is still red (M-260). Same shape as the
-# flag above and for the same reason.
+# Set when the classification and the run disagree in either direction: a case a **closed** task
+# claims to have fixed is still red (M-260), or a case marked `deferred` has started passing
+# (M-261). Same shape as the flag above and for the same reason.
 regressed=no
 
 # Where the evidence goes when it is kept. Inside `build/` because that is already ignored, and
@@ -147,7 +148,7 @@ cleanup() {
   # moved, while the cases it named stayed red; the total is not consulted here at all, one named
   # case is.
   if [ "${regressed:-no}" = yes ]; then
-    echo "a case named by a closed task is still failing: see closed-and-failing above" >&2
+    echo "the classification and the run disagree: see closed-and-failing / deferred-but-passing" >&2
     [ "$status" -eq 0 ] && status=1
   fi
   # Before the removal, and deliberately: a copy made after `rm -rf` copies nothing, and would do
@@ -368,6 +369,9 @@ if [ -f "$work/results.xml" ]; then
   # trap, beside the other two guards and for their reason: a check that only fires when control
   # reaches it does not fire on the runs that matter.
   if echo "$classification" | grep "closed-and-failing" >/dev/null; then regressed=yes; keep=yes; fi
+  # And the other direction (M-261): a `deferred` case that passes. The exclusion list is then
+  # hiding finished work and the score is understated by exactly that many, with nothing saying so.
+  if echo "$classification" | grep "deferred-but-passing" >/dev/null; then regressed=yes; keep=yes; fi
   # M-218. Against a deployment the lifecycle family is measurable only if that deployment's day
   # was shortened to the same number this run uses, and there is one way to do that — the chart's
   # `lifecycleDaySeconds`. Without it those cases fail on the clock and land in `unclassified`,
