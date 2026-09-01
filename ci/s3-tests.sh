@@ -82,6 +82,9 @@ keep=no
 # Set when a case ran out of clock (M-206). Read by the exit trap rather than acted on where it is
 # discovered, so that the refusal to call the run a measurement cannot be skipped.
 timedout=no
+# Set when a case a **closed** task claims to have fixed is still red (M-260). Same shape as the
+# flag above and for the same reason.
+regressed=no
 
 # Where the evidence goes when it is kept. Inside `build/` because that is already ignored, and
 # under a fixed name because the point is that the next command can find it without being told.
@@ -138,6 +141,13 @@ cleanup() {
   # or a complaint. A guard that can be stepped over is not a guard.
   if [ "${timedout:-no}" = yes ]; then
     echo "this run measured the machine as much as the server: see the timed-out cases above" >&2
+    [ "$status" -eq 0 ] && status=1
+  fi
+  # The translation of M13's rule into the gate. A milestone used to be closed because the total
+  # moved, while the cases it named stayed red; the total is not consulted here at all, one named
+  # case is.
+  if [ "${regressed:-no}" = yes ]; then
+    echo "a case named by a closed task is still failing: see closed-and-failing above" >&2
     [ "$status" -eq 0 ] && status=1
   fi
   # Before the removal, and deliberately: a copy made after `rm -rf` copies nothing, and would do
@@ -346,7 +356,7 @@ fi
 if [ -f "$work/results.xml" ]; then
   echo
   classification=$(python3 "$root/ci/s3_tests_scope.py" "$work/results.xml" "$root/ci/s3-tests-scope.txt" \
-    "${BOCHKA_FAILED_OUT:-}")
+    "${BOCHKA_FAILED_OUT:-}" "${BOCHKA_BACKLOG:-$root/BACKLOG.md}")
   echo "$classification"
   # A failure nobody has classified is the other kind of run worth keeping: either the rules have
   # gone stale or something new broke, and both are answered from the log rather than from here.
@@ -354,6 +364,10 @@ if [ -f "$work/results.xml" ]; then
   # A `defect` rule that names no task (M-295). Kept for the same reason as an unclassified
   # failure: both are claims nobody can follow up, and both are invisible in the score.
   if echo "$classification" | grep "unattributed" >/dev/null; then keep=yes; fi
+  # A case named by a closed task and still red (M-260). Recorded here and refused in the exit
+  # trap, beside the other two guards and for their reason: a check that only fires when control
+  # reaches it does not fire on the runs that matter.
+  if echo "$classification" | grep "closed-and-failing" >/dev/null; then regressed=yes; keep=yes; fi
   # M-218. Against a deployment the lifecycle family is measurable only if that deployment's day
   # was shortened to the same number this run uses, and there is one way to do that — the chart's
   # `lifecycleDaySeconds`. Without it those cases fail on the clock and land in `unclassified`,

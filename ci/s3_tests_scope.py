@@ -44,6 +44,27 @@ def load_rules(path):
     return rules
 
 
+CLOSED = re.compile(r"^\s*- \[x\]\s+\*\*(M-\d+)\*\*")
+
+
+def closed_tasks(path):
+    """Tasks the backlog marks `[x]`, by name.
+
+    Read from the backlog rather than passed in, because the claim being checked is the backlog's:
+    a `defect` line says a task will make the case pass, and a closed task says it has. Those two
+    sentences live in different files and nothing until now compared them.
+    """
+    if not path:
+        return set()
+    found = set()
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            hit = CLOSED.match(line)
+            if hit:
+                found.add(hit.group(1))
+    return found
+
+
 def unattributed(rules):
     """`defect` rules that name no task, as (pattern, reason) pairs.
 
@@ -66,7 +87,9 @@ def classify(name, rules):
 def main():
     results, rules_path = sys.argv[1], sys.argv[2]
     failed_out = sys.argv[3] if len(sys.argv) > 3 else ""
+    backlog = sys.argv[4] if len(sys.argv) > 4 else ""
     rules = load_rules(rules_path)
+    closed = closed_tasks(backlog)
 
     failures = []
     messages = {}
@@ -107,6 +130,29 @@ def main():
         print(f"  unattributed: {len(orphans)}")
         for pattern, reason in orphans:
             print(f"        ? defect rule '{pattern}' names no task: {reason[:80]}")
+
+    # A `defect` line names the task that will make the case pass; a closed task says it has. When
+    # both are true at once the backlog is wrong, and this is the only place the two sentences meet
+    # (M-260). It is what turns "declared done because the total went up" from something to be
+    # ashamed of into something that cannot happen: the total is not consulted at all here, one
+    # named case is.
+    regressions = []
+    for status, pattern, reason in rules:
+        if status != "defect":
+            continue
+        task = TASK.match(reason)
+        if not task or task.group(0) not in closed:
+            continue
+        hit = [name for name in failures if pattern in name and classify(name, rules)[1] == reason]
+        if hit:
+            regressions.append((task.group(0), pattern, hit))
+
+    if regressions:
+        print(f"  closed-and-failing: {len(regressions)}")
+        for task, pattern, names in regressions:
+            print(f"        ! {task} is closed and '{pattern}' still fails: {len(names)} case(s)")
+            for name in names[:5]:
+                print(f"            {name}")
 
     if failed_out:
         with open(failed_out, "w", encoding="utf-8") as handle:
