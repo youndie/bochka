@@ -2,6 +2,8 @@ package io.github.youndie.bochka.core
 
 import kotlinx.coroutines.test.runTest
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
@@ -29,6 +31,10 @@ import kotlin.test.fail
  * Runs only under `ci/enospc.sh`; see [EnospcStandTest] for why the skip is not a silent gate.
  */
 class EnospcJournalTest {
+    private companion object {
+        const val HEADER_BYTES = 8
+    }
+
     private val prepared: Path? = System.getenv("BOCHKA_ENOSPC_DIR")?.let(Path::of)
 
     @Test
@@ -76,6 +82,14 @@ class EnospcJournalTest {
                         caught.message?.contains("No space left on device") == true,
                         "the journal write failed for some other reason than a full disk: ${caught.message}",
                     )
+
+                    // Asked of the file, before the reopen that truncates it away, because this is
+                    // the one property nothing else in this repository can see. Reversing the two
+                    // writes in `RecordLog` — length first, body last — leaves every other test
+                    // green, the crash tests included: the checksum catches a torn record either
+                    // way. So until this line existed the framing was documented, believed, and
+                    // pinned by nothing.
+                    assertLengthWrittenLast(home.resolve("index.log"))
 
                     // Freed here rather than only in the `finally`, because everything after this
                     // point needs somewhere to write: closing the store, reopening it, and the
@@ -132,6 +146,31 @@ class EnospcJournalTest {
                 }
             }
         }
+
+    /**
+     * Walks the log the way recovery does and asks what stands where the records stop: a zero
+     * length, or the end of the file. Either means the tail announces nothing. A length in front of
+     * bytes that are not there is the failure the framing exists to prevent, and it is what the
+     * reversed order produces on a full volume — the header fits in the block already allocated, the
+     * body does not.
+     */
+    private fun assertLengthWrittenLast(log: Path) {
+        val bytes = Files.readAllBytes(log)
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+        var position = 0
+        while (position + HEADER_BYTES <= bytes.size) {
+            val length = buffer.getInt(position)
+            if (length == 0) return
+            assertTrue(length > 0, "the log announces $length bytes at $position")
+            val end = position + HEADER_BYTES + length
+            assertTrue(
+                end <= bytes.size,
+                "the log ends inside a record that announced $length bytes at $position: " +
+                    "the length reached the disk before the body it describes",
+            )
+            position = end
+        }
+    }
 
     /** Writes until the volume refuses, so that the next record has nowhere to go. */
     private fun fillTheVolume(filler: Path) {
