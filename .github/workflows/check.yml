@@ -60,6 +60,17 @@ jobs:
       # refuses a run whose tests never reached the volume.
       - run: ./ci/enospc.sh
 
+  consumers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      # The systems that build a table on top of an object store, which ask for promises no
+      # round-trip test reaches: a commit decided by a conditional write, a snapshot found by
+      # walking a listing, somebody else's file layout read by range (M41). The harness refuses a
+      # run in which no consumer executed, so an image that cannot be pulled cannot pass as a tick.
+      - run: ./ci/consumers.sh
+
   compatibility:
     runs-on: ubuntu-latest
     steps:
