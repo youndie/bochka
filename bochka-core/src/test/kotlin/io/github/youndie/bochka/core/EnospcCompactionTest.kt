@@ -8,7 +8,6 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
-import kotlin.test.fail
 
 /**
  * A compaction that runs out of disk leaves the index it was rewriting (M-267).
@@ -42,7 +41,11 @@ class EnospcCompactionTest {
             val filler = directory.resolve("compaction-filler")
             val acknowledged = mutableMapOf<String, String>()
             try {
-                val keys = listOf("alpha", "beta", "gamma")
+                // Enough keys that the replacement log needs several blocks rather than one. The
+                // first version of this test wrote three, and three records fit in whatever a
+                // filler happens to leave behind: it starved the compaction on one machine and not
+                // on the other, which is a test that reports the machine.
+                val keys = (1..64).map { "key-$it" }
                 ObjectStore(home, ObjectStore.Durability.FSYNC).use { store ->
                     store.createBucket("photos")
                     for (key in keys) {
@@ -131,20 +134,4 @@ class EnospcCompactionTest {
                 }
             }
         }
-
-    /** Writes until the volume refuses, so that the compaction has nowhere to put its replacement. */
-    private fun fillTheVolume(filler: Path) {
-        val block = ByteArray(64 * 1024)
-        try {
-            Files.newOutputStream(filler).use { out ->
-                repeat(4096) {
-                    out.write(block)
-                    out.flush()
-                }
-            }
-            fail("wrote 256 MiB of filler without filling the volume: this stand is not constraining anything")
-        } catch (_: IOException) {
-            // Expected: this is how the volume is brought to its edge.
-        }
-    }
 }
