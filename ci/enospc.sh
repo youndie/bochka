@@ -66,8 +66,10 @@ status=$?
 # when `BOCHKA_ENOSPC_DIR` does not reach the forked JVM, and that produces the same `tests=1`, the
 # same exit code and — because filling three mebibytes takes milliseconds — the same duration as a
 # real run. So the test leaves a marker on the volume itself, and this refuses a run without it.
-if [ $status -eq 0 ] && [ ! -f "$mount_point/exercised" ]; then
-  echo "the tests passed without touching the volume: BOCHKA_ENOSPC_DIR did not reach them" >&2
+classes=$(find "$root/bochka-core/src/test" -name 'Enospc*Test.kt' | wc -l | tr -d ' ')
+markers=$(find "$mount_point/exercised" -type f 2>/dev/null | wc -l | tr -d ' ')
+if [ $status -eq 0 ] && [ "$markers" -ne "$classes" ]; then
+  echo "$markers of $classes ENOSPC tests reached the volume; the rest returned without touching it" >&2
   status=1
 fi
 exit $status
