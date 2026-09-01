@@ -90,5 +90,15 @@ class EnospcObjectWriteTest {
 
             Files.createDirectories(directory.resolve("exercised"))
             Files.writeString(directory.resolve("exercised").resolve("object-write"), "ENOSPC in stage\n")
+
+            // The volume is shared with the other tests on it, and it is small on purpose. A test
+            // that keeps its bytes leaves the next one failing to create a directory, which reads
+            // as a stand that does not work rather than as a neighbour that did not tidy up.
+            removeTree(home)
         }
+
+    private fun removeTree(root: Path) {
+        if (!Files.exists(root)) return
+        Files.walk(root).use { walk -> walk.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
+    }
 }

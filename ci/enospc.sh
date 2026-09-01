@@ -14,10 +14,14 @@
 # repository refuses it — a tmpfs full of pages is a machine out of memory, not a disk out of space.
 set -uo pipefail
 
-# Eight mebibytes formatted leaves about three and a half usable, which is enough for an index and a
-# handful of objects and small enough that filling it is instant. The number is here rather than in
-# the test because it is a property of the stand.
-readonly IMAGE_MB=${BOCHKA_ENOSPC_MB:-8}
+# Thirty-two mebibytes, and the number moved up once the tests stopped being one. Eight left about
+# three and a half usable, which is plenty for any single test and not enough for three sharing the
+# volume: the one needing four hundred small objects took it all, and its neighbours then failed
+# creating a directory — a full disk that was the first test's doing rather than the stand's.
+#
+# Each test cleans up after itself for the same reason. Both halves are needed: room, so a test can
+# work, and cleanup, so it does not spend the room permanently.
+readonly IMAGE_MB=${BOCHKA_ENOSPC_MB:-32}
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
