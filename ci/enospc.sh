@@ -63,14 +63,14 @@ echo
 # Gradle would call the task up to date and the stand would report a pass having executed nothing.
 ran=yes
 BOCHKA_ENOSPC_DIR="$mount_point" "$root/gradlew" -p "$root" --console=plain --rerun-tasks \
-  :bochka-core:test --tests '*Enospc*'
+  :bochka-core:test :bochka-app:test --tests '*Enospc*'
 status=$?
 
 # A green suite is not evidence that anything was exercised here. The test returns on its first line
 # when `BOCHKA_ENOSPC_DIR` does not reach the forked JVM, and that produces the same `tests=1`, the
 # same exit code and — because filling three mebibytes takes milliseconds — the same duration as a
 # real run. So the test leaves a marker on the volume itself, and this refuses a run without it.
-classes=$(find "$root/bochka-core/src/test" -name 'Enospc*Test.kt' | wc -l | tr -d ' ')
+classes=$(find "$root"/bochka-*/src/test -name 'Enospc*Test.kt' | wc -l | tr -d ' ')
 markers=$(find "$mount_point/exercised" -type f 2>/dev/null | wc -l | tr -d ' ')
 if [ $status -eq 0 ] && [ "$markers" -ne "$classes" ]; then
   echo "$markers of $classes ENOSPC tests reached the volume; the rest returned without touching it" >&2

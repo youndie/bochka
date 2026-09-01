@@ -45,9 +45,21 @@ class S3Fixture(
     private val lifecycleDay: java.time.Duration = io.github.youndie.bochka.s3.Lifecycle.DAY,
     /** Layer two of the access model, off as it ships (M28). */
     anonymous: Boolean = false,
+    /**
+     * Where the store lives, a fresh temporary directory unless a test says otherwise.
+     *
+     * Named by the ENOSPC tests, which need the store on a volume that ends — a question no
+     * temporary directory can answer, because `/tmp` is as large as the machine.
+     */
+    val root: Path = Files.createTempDirectory("bochka-e2e"),
+    /**
+     * `NONE` because a test that fsyncs every record spends its time on the disk rather than on
+     * the question. A test about what a full disk does asks for `FSYNC`: with the barrier off, a
+     * write that the page cache accepted looks like a write that succeeded.
+     */
+    durability: ObjectStore.Durability = ObjectStore.Durability.NONE,
 ) : AutoCloseable {
-    val root: Path = Files.createTempDirectory("bochka-e2e")
-    val store = ObjectStore(root, ObjectStore.Durability.NONE)
+    val store = ObjectStore(root, durability)
 
     private val server =
         HttpServer(
