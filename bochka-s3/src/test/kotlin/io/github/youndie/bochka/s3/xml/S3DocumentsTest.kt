@@ -612,6 +612,10 @@ class S3DocumentsTest {
             ListMultipartUploadsResult/IsTruncated = false
             ListMultipartUploadsResult/Upload/Key = big/a.bin
             ListMultipartUploadsResult/Upload/UploadId = upload-1
+            ListMultipartUploadsResult/Upload/Initiator/ID = bochkaadmin
+            ListMultipartUploadsResult/Upload/Initiator/DisplayName = bochkaadmin
+            ListMultipartUploadsResult/Upload/Owner/ID = bochkaadmin
+            ListMultipartUploadsResult/Upload/Owner/DisplayName = bochkaadmin
             ListMultipartUploadsResult/Upload/Initiated = $NOW
             ListMultipartUploadsResult/Upload/StorageClass = STANDARD
             """.trimIndent(),
@@ -622,7 +626,12 @@ class S3DocumentsTest {
                     delimiter = "/".toByteArray(),
                     maxUploads = 1000,
                     isTruncated = false,
-                    uploads = listOf(S3Documents.UploadEntry(ObjectKey.of("big/a.bin"), "upload-1", NOW)),
+                    uploads =
+                        listOf(
+                            // With an owner, because S3 puts an `Initiator` and an `Owner` on every
+                            // entry and clients dereference them without checking (M-303).
+                            S3Documents.UploadEntry(ObjectKey.of("big/a.bin"), "upload-1", NOW, owner = "bochkaadmin"),
+                        ),
                     encoding = S3Documents.KeyEncoding.NONE,
                 ),
             ),

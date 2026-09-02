@@ -735,6 +735,15 @@ object S3Documents {
         val key: ObjectKey,
         val uploadId: String,
         val initiated: String,
+        /**
+         * The access key that started the upload, or `null` for one started before owners existed.
+         *
+         * S3 puts an `Initiator` and an `Owner` on every entry, and clients read them without
+         * checking: minio-js dereferences `upload.Initiator.ID` and dies with a `TypeError` when
+         * the element is missing, which reads as a broken client rather than a short document
+         * (M-303). `null` here becomes an empty `ID`, which is a value a client can hold.
+         */
+        val owner: String? = null,
     )
 
     /**
@@ -765,6 +774,17 @@ object S3Documents {
                 element("Upload") {
                     encodedText("Key", entry.key.toByteArray(), encoding)
                     text("UploadId", entry.uploadId)
+                    // Both, and both always: S3 emits an `Initiator` and an `Owner` per upload, and
+                    // they are the same key here — this server has keys rather than users, and the
+                    // key that started an upload is the only one that may finish it.
+                    element("Initiator") {
+                        text("ID", entry.owner.orEmpty())
+                        text("DisplayName", entry.owner.orEmpty())
+                    }
+                    element("Owner") {
+                        text("ID", entry.owner.orEmpty())
+                        text("DisplayName", entry.owner.orEmpty())
+                    }
                     text("Initiated", entry.initiated)
                     text("StorageClass", "STANDARD")
                 }
