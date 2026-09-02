@@ -163,6 +163,32 @@ class HttpRequestParserTest {
     }
 
     @Test
+    fun `a control character in a header value is refused`() {
+        // Found by putting nginx from `deploy/` in front and sending the same bytes to both
+        // (M-281, `ci/smuggling.sh`): nginx answered 400 and this server answered 200. A NUL is
+        // the end of a string to everything written in C, so a value carrying one means two
+        // readers with two different values — which is the same shape as the three framings this
+        // parser already refuses, one field further in.
+        val nul =
+            assertFailsWith<HttpRequestParser.Malformed> { parse(get(extra = "X-Amz-Meta-A: b\u0000c\r\n")) }
+        assertEquals(400, nul.status)
+
+        // The whole class, not the one byte that was found: DEL is outside `field-vchar` too.
+        val del =
+            assertFailsWith<HttpRequestParser.Malformed> { parse(get(extra = "X-Amz-Meta-A: b\u007Fc\r\n")) }
+        assertEquals(400, del.status)
+    }
+
+    @Test
+    fun `a tab and a byte above ASCII stay allowed in a header value`() {
+        // The other half, and it is not decoration: `obs-text` is legal in a field value, and a
+        // metadata header carrying UTF-8 is exactly what an object store receives. A refusal
+        // written as "anything unusual" would have broken it.
+        val head = parse(get(extra = "X-Amz-Meta-A: b\tc\u00e9\r\n"))
+        assertEquals("b\tc\u00e9", head.header("x-amz-meta-a"))
+    }
+
+    @Test
     fun `a request without host is refused on http 1_1`() {
         val e =
             assertFailsWith<HttpRequestParser.Malformed> {
