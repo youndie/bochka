@@ -79,6 +79,19 @@ class HttpServer(
     private val live =
         java.util.concurrent.atomic
             .AtomicInteger()
+
+    /**
+     * Requests being served right now — not connections, and the difference is the whole point.
+     *
+     * A stop waits for this rather than for [live], because a keep-alive connection sitting idle
+     * between requests is not work in progress: waiting for it means waiting for a client that has
+     * no reason to say anything, and every stop becomes the full window. Measured the hard way —
+     * the first version waited on connections and the suite went from seconds to minutes, one
+     * whole grace period per server it shut down.
+     */
+    private val inFlight =
+        java.util.concurrent.atomic
+            .AtomicInteger()
     private val loop = SelectorLoop()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val serverChannel: ServerSocketChannel = ServerSocketChannel.open()
@@ -213,6 +226,9 @@ class HttpServer(
             }
 
             val body = SocketBody(connection, request, leftover, readBufferBytes, bodyIdleTimeout)
+            // Counted from here to the response going out: this is what a stop waits for, and it
+            // starts when the head has been read rather than when the connection was made.
+            inFlight.incrementAndGet()
             val response =
                 try {
                     handler.handle(request, body)
@@ -231,11 +247,13 @@ class HttpServer(
                 }
             if (!body.isDrained) {
                 respond(connection, request, response.copy(close = true))
+                inFlight.decrementAndGet()
                 return
             }
 
             carried = body.carried()
             respond(connection, request, response)
+            inFlight.decrementAndGet()
             if (response.close || !request.keepAlive) return
         }
     }
@@ -366,7 +384,7 @@ class HttpServer(
         serverChannel.close()
 
         val deadline = System.nanoTime() + shutdownGrace.toNanos()
-        while (live.get() > 0 && System.nanoTime() < deadline) {
+        while (inFlight.get() > 0 && System.nanoTime() < deadline) {
             Thread.sleep(POLL_MILLIS)
         }
 
