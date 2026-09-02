@@ -204,6 +204,15 @@ class S3Router(
             val bucket: String,
             val key: ObjectKey,
             val method: String,
+            /**
+             * Which version's tags, when the client named one (M-305).
+             *
+             * Every other subresource of an object carries this — `?acl`, `?attributes`, a plain
+             * read — and tagging did not, so `?tagging&versionId=…` answered about the newest
+             * version instead. The answer was a real tag set belonging to a real object, which is
+             * what made it quiet.
+             */
+            val versionId: String? = null,
         ) : Route
 
         /**
@@ -527,7 +536,7 @@ class S3Router(
                     }
 
                     "tagging" in params -> {
-                        Route.ObjectTagging(bucket, key, "PUT")
+                        Route.ObjectTagging(bucket, key, "PUT", params["versionId"])
                     }
 
                     "acl" in params -> {
@@ -561,7 +570,7 @@ class S3Router(
                         if ("tagging" in
                             params
                         ) {
-                            Route.ObjectTagging(bucket, key, "PUT")
+                            Route.ObjectTagging(bucket, key, "PUT", params["versionId"])
                         } else {
                             Route.PutObject(bucket, key)
                         }
@@ -580,7 +589,7 @@ class S3Router(
                     }
 
                     "tagging" in params -> {
-                        Route.ObjectTagging(bucket, key, "GET")
+                        Route.ObjectTagging(bucket, key, "GET", params["versionId"])
                     }
 
                     "acl" in params -> {
@@ -622,7 +631,7 @@ class S3Router(
             "DELETE" -> {
                 when {
                     uploadId != null -> Route.AbortMultipartUpload(bucket, key, uploadId)
-                    "tagging" in params -> Route.ObjectTagging(bucket, key, "DELETE")
+                    "tagging" in params -> Route.ObjectTagging(bucket, key, "DELETE", params["versionId"])
                     params.keys.any { it in OBJECT_SUBRESOURCES } -> Route.NotImplemented("DELETE object sub-resource")
                     else -> Route.DeleteObject(bucket, key, params["versionId"])
                 }
