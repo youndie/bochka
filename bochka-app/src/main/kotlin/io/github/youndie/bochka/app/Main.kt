@@ -97,7 +97,28 @@ object Main {
             )
 
         val logged = LoggingHandler(handler, enabled = configuration[Configuration.Key.LOG] == "1")
-        val server = HttpServer(logged, bindAddress = address, port = port)
+        // Named in the configuration rather than only in the code, because a limit somebody may
+        // have to raise is a limit they have to be able to find. A slow satellite link and a
+        // connection-exhaustion attack look the same from here, and which is which is the
+        // operator's knowledge, not ours.
+        val headTimeout =
+            Duration.ofSeconds(
+                configuration.int(Configuration.Key.HEAD_TIMEOUT_SECONDS)?.toLong()
+                    ?: HttpServer.DEFAULT_HEAD_TIMEOUT.seconds,
+            )
+        val bodyIdleTimeout =
+            Duration.ofSeconds(
+                configuration.int(Configuration.Key.BODY_IDLE_TIMEOUT_SECONDS)?.toLong()
+                    ?: HttpServer.DEFAULT_BODY_IDLE_TIMEOUT.seconds,
+            )
+        val server =
+            HttpServer(
+                logged,
+                bindAddress = address,
+                port = port,
+                headTimeout = headTimeout,
+                bodyIdleTimeout = bodyIdleTimeout,
+            )
         println("bochka listening on $address:${server.boundPort}, data in $dataDir")
         println("configuration:")
         println(configuration.describe())
