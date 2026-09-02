@@ -40,6 +40,7 @@ asm = "9.10.1"
 # its *client* is somebody else's signer and framer, which is the whole point. Checked against
 # maven-metadata.xml on 2026-08-23: 9.0.3 is the last version.
 minio = "9.0.3"
+testcontainers = "1.21.4"
 # Mutation testing. **Run as a CLI rather than through the Gradle plugin**, and that is not a
 # preference: `info.solidsoft.gradle.pitest` was last released in September 2023, which is to say
 # for Gradle 8, while the engine itself is alive and shipped 2026-08-04 — both checked against
@@ -59,6 +60,7 @@ junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "jun
 junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
 asm = { module = "org.ow2.asm:asm", version.ref = "asm" }
 minio = { module = "io.minio:minio", version.ref = "minio" }
+testcontainers = { module = "org.testcontainers:testcontainers", version.ref = "testcontainers" }
 pitest-cli = { module = "org.pitest:pitest-command-line", version.ref = "pitest" }
 pitest-junit5 = { module = "org.pitest:pitest-junit5-plugin", version.ref = "pitestJunit5" }
 benchmark-runtime = { module = "org.jetbrains.kotlinx:kotlinx-benchmark-runtime", version.ref = "benchmark" }

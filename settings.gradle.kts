@@ -35,6 +35,7 @@ include(":bochka-embedded")
 // A module of its own, so that `bochka-embedded` does not drag JUnit along for those who do not
 // use it.
 include(":bochka-junit")
+include(":bochka-testcontainers")
 include(":bochka-benchmark")
 // Fuzz targets for the parsers that read unauthenticated bytes (M38). Separate because the fuzzer
 // needs a heap the footprint gate does not allow anywhere else.
