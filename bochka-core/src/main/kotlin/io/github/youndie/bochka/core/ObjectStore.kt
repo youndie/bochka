@@ -2205,6 +2205,31 @@ class ObjectStore(
     /** How large the log is right now, and how much of it is worth keeping. */
     val logSizeBytes: Long get() = log.sizeBytes
 
+    /**
+     * What one compaction would leave: one record per bucket, object and upload with its parts.
+     *
+     * Public because it is half of a number an operator needs — the log against the live set is
+     * what says whether a store is about to spend a minute recovering (M-291). On its own the log
+     * size says nothing: two megabytes is small for a million objects and large for ten.
+     */
+    val liveRecordCount: Long get() = liveRecords()
+
+    /** When the last compaction finished, or `null` if none has run in this process (M-291). */
+    @Volatile
+    var lastCompactionAt: Instant? = null
+        private set
+
+    /** What the last orphan sweep collected, and when — `null` until one has run (M-291). */
+    @Volatile
+    var lastSweep: Sweep? = null
+        private set
+
+    /** One orphan sweep: how many files it removed and when it finished. */
+    data class Sweep(
+        val removed: Int,
+        val at: Instant,
+    )
+
     /** What one compaction would leave: one record per bucket, object and upload with its parts. */
     private fun liveRecords(): Long = buckets.size.toLong() + objects.size + uploads.values.sumOf { 1L + it.parts.size }
 
@@ -2347,6 +2372,7 @@ class ObjectStore(
             syncDirectory()
             log = RecordLog(logPath).also { it.recover { } }
             recordsSinceCompaction.set(records)
+            lastCompactionAt = Instant.now()
             Compaction(before, after, records)
         }
 
@@ -2393,6 +2419,9 @@ class ObjectStore(
                 removed++
             }
         }
+        // Remembered, because "how many orphans were there" is a question an operator asks after
+        // the fact and the sweep is the only thing that knows (M-291).
+        lastSweep = Sweep(removed, Instant.now())
         return removed
     }
 

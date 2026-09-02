@@ -24,6 +24,10 @@ class AnonymousReachTest {
     private val requests =
         listOf(
             Triple("GET", "/", "") to S3Router.Route.ListBuckets::class,
+            // The numbers about the store, which are signed like everything else: the health path
+            // next door is open because an orchestrator has to reach it, and how much this store
+            // is holding is a different question (M-291).
+            Triple("GET", "/-/stats", "") to S3Router.Route.Stats::class,
             Triple("PUT", "/vault", "") to S3Router.Route.CreateBucket::class,
             Triple("DELETE", "/vault", "") to S3Router.Route.DeleteBucket::class,
             Triple("HEAD", "/vault", "") to S3Router.Route.HeadBucket::class,

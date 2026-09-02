@@ -92,6 +92,12 @@ class BucketPolicyReachTest {
         setOf(
             S3Router.Route.ListBuckets::class,
             S3Router.Route.Health::class,
+            // `-/stats` carries no bucket, so a bucket policy has nothing to say about it — and
+            // that is a reason to name what *does* protect it rather than to wave it through: it
+            // is signed like every other route, and `StatsTest` asks an unsigned caller and gets
+            // a 403. Any valid key may read it; the numbers are about the store rather than about
+            // anybody's objects, and a scope narrowed to one bucket does not narrow them (M-291).
+            S3Router.Route.Stats::class,
             S3Router.Route.Preflight::class,
             S3Router.Route.NotImplemented::class,
             S3Router.Route.PostObject::class,

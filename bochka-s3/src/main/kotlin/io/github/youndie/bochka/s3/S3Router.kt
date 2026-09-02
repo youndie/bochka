@@ -47,6 +47,18 @@ class S3Router(
          */
         data object Health : Route
 
+        /**
+         * `GET /-/stats` — the numbers an operator watches, and the ones the log answers `507`
+         * about later (M-291).
+         *
+         * Its own route rather than a longer health body, and **signed** rather than open: the
+         * health path is what an orchestrator polls every few seconds and what anybody can reach,
+         * and how many objects a store holds is not a thing to hand out for free. A signature
+         * costs the operator nothing — they already have a key — and it keeps this off the list of
+         * things a stranger can ask.
+         */
+        data object Stats : Route
+
         data class CreateBucket(
             val bucket: String,
         ) : Route
@@ -338,6 +350,10 @@ class S3Router(
         // only, and two methods only: everything else under this path keeps meaning what it meant.
         if (bucketFromHost == null && trimmed == HEALTH_PATH && (method == "GET" || method == "HEAD")) {
             return Route.Health
+        }
+
+        if (bucketFromHost == null && trimmed == STATS_PATH && method == "GET") {
+            return Route.Stats
         }
 
         val bucket: String
@@ -669,6 +685,9 @@ class S3Router(
     private companion object {
         /** `/-/healthy`, minus the leading slash. Prometheus spells its own handles this way too. */
         const val HEALTH_PATH = "-/healthy"
+
+        /** Where the numbers live. Under the same prefix as the health path, and never a bucket. */
+        const val STATS_PATH = "-/stats"
 
         /**
          * The settings bochka **stores** rather than refuses.
