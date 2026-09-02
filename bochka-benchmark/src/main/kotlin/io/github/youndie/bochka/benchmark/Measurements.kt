@@ -117,6 +117,13 @@ object Measurements {
                     ceiling()
                 }
 
+                // Seven by default rather than three: this one is milliseconds rather than
+                // seconds, so a run that lands on somebody else's page fault moves the median of
+                // three and not the median of seven.
+                "startup" -> {
+                    Startup.measure(dir, System.getenv("BOCHKA_MEASURE_REPEATS")?.toIntOrNull() ?: 7)
+                }
+
                 // Two halves of one measurement that needs two machines. `serve-network` is the
                 // sender and holds the numbers; `drain` is the other end of the wire and prints
                 // nothing worth reading.
