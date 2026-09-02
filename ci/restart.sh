@@ -34,6 +34,7 @@ skip()  { printf '  SKIPPED %s (%s)\n' "$1" "$2"; skipped=$((skipped+1)); }
 
 cleanup() {
   [ -n "${server_pid:-}" ] && kill -9 "$server_pid" 2>/dev/null
+  docker kill bochka-sync-restart-term bochka-sync-restart-kill >/dev/null 2>&1
   chmod -R u+w "$work" 2>/dev/null
   rm -rf "$work" 2>/dev/null || docker run --rm -v "$work:/w" --entrypoint "" alpine:latest rm -rf /w/. 2>/dev/null
 }
@@ -64,6 +65,16 @@ rc() {
 # one-line check into minutes, and a control run spent its whole budget in a polling loop rather
 # than failing. The sync itself keeps the defaults, because the defaults are the claim.
 rc_fast() { rc --retries 1 --low-level-retries 2 --contimeout 3s --timeout 10s "$@"; }
+
+# The sync itself, in a container with a name, because a client that never gives up has to be
+# stoppable from outside. Told nothing about retries: those defaults are the claim. `--bwlimit` is
+# not one of them - see the round below for why it is here.
+rc_sync() {
+  docker run --rm --network host --name "bochka-sync-$1" -v "$work:/work" --entrypoint "" \
+    rclone/rclone:latest rclone --s3-provider Other --s3-endpoint "$ENDPOINT" \
+    --s3-access-key-id $KEY --s3-secret-access-key $SECRET --s3-region us-east-1 \
+    --config /dev/null sync /work/tree ":s3:$1" --transfers 4 --bwlimit 4M
+}
 
 echo "building the distribution"
 "$root/gradlew" -p "$root" -q :bochka-app:installDist || { echo "build failed" >&2; exit 3; }
@@ -99,7 +110,7 @@ run_round() {
   # and a stop is a stop. Four megabytes rather than eight because the machine that matters is not
   # this one: a run sharing the box with another measured its window through a listing that took
   # eight seconds and reported a transfer that was already over.
-  rc sync /work/tree ":s3:$bucket" --transfers 4 --bwlimit 4M >"$work/$bucket.sync" 2>&1 &
+  rc_sync "$bucket" >"$work/$bucket.sync" 2>&1 &
   local sync_pid=$!
 
   # The restart has to land inside the sync, and "sleep and hope" would let a fast machine finish
@@ -151,6 +162,19 @@ run_round() {
   fi
 
   start_server || { fail "$signal: the server did not come back"; return; }
+
+  # Bounded, and the bound is the assertion. Left alone against a server that never comes back
+  # rclone retried for over twenty-five minutes in a control run - the harness did not report a
+  # failure, it hung, and a job that hangs is worse than one that fails. "Finishes by itself" is
+  # a claim about a client that finishes.
+  local patience=$((SECONDS + 420))
+  while kill -0 "$sync_pid" 2>/dev/null && [ $SECONDS -lt $patience ]; do sleep 1; done
+  if kill -0 "$sync_pid" 2>/dev/null; then
+    docker kill "bochka-sync-$bucket" >/dev/null 2>&1
+    wait "$sync_pid" 2>/dev/null
+    fail "$signal: the client was still retrying seven minutes after the restart"
+    return
+  fi
 
   wait "$sync_pid"
   local sync_rc=$?
