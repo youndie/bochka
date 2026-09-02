@@ -57,6 +57,7 @@ object Main {
         // A directory somebody else is using is a refusal like a misspelt setting, not a crash: the
         // one moment this message is read is a second server started by mistake, and a stack trace
         // there says "bochka is broken" rather than "you already have one" (M-224).
+        val recoveryBegan = System.nanoTime()
         val store =
             try {
                 ObjectStore(
@@ -72,6 +73,9 @@ object Main {
                 System.err.println("bochka will not start: ${e.message}")
                 kotlin.system.exitProcess(2)
             }
+        // Taken here rather than inside the `try`: what is being timed is the store opening and
+        // replaying its log, which is over exactly when the constructor returns.
+        val recoveryMillis = (System.nanoTime() - recoveryBegan) / 1_000_000
         val lifecycleDay = Duration.ofSeconds(configuration.long(Configuration.Key.LIFECYCLE_DAY_SECONDS) ?: 86400)
         if (!lifecycleDay.isPositive) {
             System.err.println("bochka will not start: lifecycle.day.seconds must be positive, not $lifecycleDay")
@@ -123,6 +127,21 @@ object Main {
                 maxConnections = maxConnections,
             )
         println("bochka listening on $address:${server.boundPort}, data in $dataDir")
+        // Measured from the **process** rather than from this function: the JVM before `main` is
+        // part of what an operator waits through, and leaving it out would publish a number
+        // smaller than the one they see. Falls back to this function's own start where the
+        // platform does not say when the process began.
+        val processStart =
+            ProcessHandle
+                .current()
+                .info()
+                .startInstant()
+                .map {
+                    java.time.Duration
+                        .between(it, java.time.Instant.now())
+                        .toMillis()
+                }.orElse((System.nanoTime() - recoveryBegan) / 1_000_000)
+        println(StartupSummary.of(processStart, recoveryMillis, store.recovery))
         println("configuration:")
         println(configuration.describe())
         // What the log said when it was opened, rather than a silent start: a run that discarded a
