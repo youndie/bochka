@@ -93,10 +93,16 @@ run_round() {
   # The restart has to land inside the sync, and "sleep and hope" would let a fast machine finish
   # first and report a green tick for a restart that happened after the work. So: wait until the
   # bucket has something and the client is still running, and refuse the round otherwise.
+  #
+  # A quarter of the way in rather than "as soon as something is there": the first version waited
+  # for four objects, and on a fast machine the client was already finishing when the signal
+  # arrived - the round then proved that a restart after the work does no harm, which is not the
+  # question. A quarter leaves three quarters of the files still to upload.
   local at_restart=0
-  for _ in $(seq 1 200); do
+  local enough=$((FILES / 4))
+  for _ in $(seq 1 600); do
     at_restart=$(rc lsf ":s3:$bucket" 2>/dev/null | grep -c . )
-    [ "$at_restart" -gt 3 ] && break
+    [ "$at_restart" -ge "$enough" ] && break
     kill -0 "$sync_pid" 2>/dev/null || break
     sleep 0.1
   done
@@ -119,6 +125,14 @@ run_round() {
   done
   $gone || { fail "$signal: the server did not stop"; return; }
 
+  # Asked after the stop and not before it: between the listing above and the signal the client
+  # can finish, and a round where it did finish says nothing about a restart it never saw.
+  if ! kill -0 "$sync_pid" 2>/dev/null; then
+    wait "$sync_pid"
+    fail "$signal: the sync was over before the server went down"
+    return
+  fi
+
   start_server || { fail "$signal: the server did not come back"; return; }
 
   wait "$sync_pid"
@@ -131,6 +145,10 @@ run_round() {
 
   local after
   after=$(rc lsf ":s3:$bucket" 2>/dev/null | grep -c . )
+  if [ "$after" -eq 0 ]; then
+    fail "$signal: the bucket could not be listed after the round - the server is not answering"
+    return
+  fi
   if [ "$after" -le "$at_restart" ]; then
     fail "$signal: nothing was written after the restart ($at_restart then, $after now)"
     return
