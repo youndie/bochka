@@ -321,6 +321,14 @@ class ObjectStore(
     /** One writer at a time on the log: its records must land in the order they were decided. */
     private val writing = ReentrantLock()
 
+    /**
+     * The conditional write, as one step rather than as two lines under a lock (M-306).
+     *
+     * Holds the same lock as everything else here: eight other places take it for things that are
+     * not conditional writes, and two locks would be two orders.
+     */
+    private val conditional = ConditionalWrite(writing)
+
     // Declared here rather than beside the rest of the multipart code because property
     // initialisers run in declaration order and `init` replays the log into this one.
     private val uploads = ConcurrentHashMap<String, UploadState>()
@@ -977,6 +985,35 @@ class ObjectStore(
         val lastModifiedMillis: Long? = null,
     ) {
         /**
+         * Whether this condition holds for what the key holds now.
+         *
+         * A member rather than a private helper of the store, because it is a property of the
+         * condition and because [ConditionalWrite] has to be able to ask it — the whole point of
+         * that class is that the asking and the writing cannot be separated (M-306).
+         */
+        internal fun holdsFor(existing: Stored?): Outcome {
+            if (existing == null) {
+                return if (needsTheObject) Outcome.ABSENT else Outcome.HELD
+            }
+            val matches =
+                (ifMatch == null || "*" in ifMatch || ifMatch.any { it.trim('"') == existing.eTag.trim('"') }) &&
+                    (
+                        ifNoneMatch == null ||
+                            ("*" !in ifNoneMatch && ifNoneMatch.none { it.trim('"') == existing.eTag.trim('"') })
+                    ) &&
+                    (size == null || size == existing.size) &&
+                    // To the second, because that is the resolution the object's timestamp is
+                    // published at: `Last-Modified` and `rfc822` both drop the milliseconds, so a
+                    // client can only ever have seen a whole second and comparing finer would make
+                    // this condition impossible to satisfy from outside.
+                    (
+                        lastModifiedMillis == null ||
+                            lastModifiedMillis / 1000 == existing.lastModified.toEpochMilli() / 1000
+                    )
+            return if (matches) Outcome.HELD else Outcome.MISMATCH
+        }
+
+        /**
          * Whether anything here is a claim about an object that exists.
          *
          * `If-None-Match` is the one condition satisfied by absence, so a request carrying only
@@ -1007,28 +1044,6 @@ class ObjectStore(
         val outcome: Outcome,
         override val message: String,
     ) : RuntimeException(message)
-
-    private fun Precondition.holdsFor(existing: Stored?): Outcome {
-        if (existing == null) {
-            return if (needsTheObject) Outcome.ABSENT else Outcome.HELD
-        }
-        val matches =
-            (ifMatch == null || "*" in ifMatch || ifMatch.any { it.trim('"') == existing.eTag.trim('"') }) &&
-                (
-                    ifNoneMatch == null ||
-                        ("*" !in ifNoneMatch && ifNoneMatch.none { it.trim('"') == existing.eTag.trim('"') })
-                ) &&
-                (size == null || size == existing.size) &&
-                // To the second, because that is the resolution the object's timestamp is
-                // published at: `Last-Modified` and `rfc822` both drop the milliseconds, so a
-                // client can only ever have seen a whole second and comparing finer would make
-                // this condition impossible to satisfy from outside.
-                (
-                    lastModifiedMillis == null ||
-                        lastModifiedMillis / 1000 == existing.lastModified.toEpochMilli() / 1000
-                )
-        return if (matches) Outcome.HELD else Outcome.MISMATCH
-    }
 
     /**
      * Publishes staged bytes as a version of a key.
@@ -1068,7 +1083,11 @@ class ObjectStore(
         /** The class the client asked for, already checked by the layer that knows the S3 names. */
         storageClass: String = STANDARD_STORAGE_CLASS,
     ): Stored =
-        writing.withLock {
+        // Through [ConditionalWrite] rather than by taking the lock and remembering the order: the
+        // check and the write are one step because the class is shaped that way, not because two
+        // lines happen to sit under one lock. Moving the read out was a one-character diff that no
+        // test here noticed (M-286, M-306).
+        conditional.install(precondition, current = { get(bucket, key) }) {
             // The bucket was there when the head was read; the body has been arriving ever since,
             // and a minute is a long time (M-220). Under the same lock `deleteBucket` takes, so
             // the two orders are the only two there are: either the delete goes first and this
@@ -1076,17 +1095,6 @@ class ObjectStore(
             if (!buckets.containsKey(bucket)) throw BucketGone(bucket)
 
             val state = versioning(bucket)
-            val outcome = precondition.holdsFor(get(bucket, key))
-            if (outcome != Outcome.HELD) {
-                throw PreconditionFailed(
-                    outcome,
-                    if (outcome == Outcome.ABSENT) {
-                        "there is no object at this key"
-                    } else {
-                        "the object is not the one described"
-                    },
-                )
-            }
 
             // The ceiling counts entries, and only a write that adds one is refused: overwriting
             // costs nothing, and refusing it would make a full store unable to shrink. A
