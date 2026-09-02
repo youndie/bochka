@@ -215,6 +215,55 @@ class SignatureVerifierTest {
         assertEquals(403, expired.error.status)
     }
 
+    /**
+     * A presigned `PUT` that signs its payload hash in a **header**, which is what the AWS Go SDK
+     * does and what mint's `PresignedPut` case exercises (M-300).
+     *
+     * Signed here rather than replayed from a vector because the vectors are all `GET`s: what
+     * matters is that `x-amz-content-sha256` is named in `X-Amz-SignedHeaders`, so the value the
+     * canonical request must use is the header's, not `UNSIGNED-PAYLOAD`.
+     */
+    private fun presignedWithSignedPayloadHash(payloadHash: String): CanonicalRequest.Request {
+        val host = "photos.s3.us-east-1.amazonaws.com"
+        val scope = "${TIMESTAMP.take(8)}/us-east-1/s3/aws4_request"
+        val signedHeaders = "host;x-amz-content-sha256"
+        val query =
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256" +
+                "&X-Amz-Credential=" + UriCodec.encodeQueryComponent("$AKID/$scope".toByteArray()) +
+                "&X-Amz-Date=$TIMESTAMP" +
+                "&X-Amz-Expires=3600" +
+                "&X-Amz-SignedHeaders=" + UriCodec.encodeQueryComponent(signedHeaders.toByteArray())
+        val headers = listOf("Host" to host, "X-Amz-Content-Sha256" to payloadHash)
+        val canonical =
+            CanonicalRequest.build(
+                CanonicalRequest.Request("PUT", "/report.txt", query, headers),
+                signedHeaders.split(";"),
+                payloadHash,
+                CanonicalRequest.PathMode.VERBATIM,
+            )
+        val signature =
+            Sigv4.signature(
+                Sigv4.signingKey(SECRET, TIMESTAMP.take(8), "us-east-1", "s3"),
+                Sigv4.stringToSign(TIMESTAMP, scope, canonical),
+            )
+        return CanonicalRequest.Request("PUT", "/report.txt", "$query&X-Amz-Signature=$signature", headers)
+    }
+
+    @Test
+    fun `a presigned url that signs its payload hash in a header verifies`() {
+        // Found by mint: the AWS Go SDK presigns a PUT this way, and this server answered
+        // SignatureDoesNotMatch because it rebuilt the canonical request with UNSIGNED-PAYLOAD
+        // while the client had signed the header's hash. The client is then told its credentials
+        // are wrong, which sends whoever reads that message looking in the wrong place entirely.
+        val payloadHash = Sigv4.sha256Hex("report".toByteArray())
+        val result = verifierAt().verify(presignedWithSignedPayloadHash(payloadHash))
+
+        val ok = assertIs<SignatureVerifier.Result.Ok>(result, "expected acceptance, got $result")
+        // And the hash travels on, because the body path is what compares it to the bytes that
+        // arrive — that comparison is the difference between the right error and the wrong one.
+        assertEquals(payloadHash, ok.payloadHash)
+    }
+
     @Test
     fun `a presigned url with an encoded key verifies`() {
         // The one that would break if the path were decoded and re-encoded anywhere on the way in.
