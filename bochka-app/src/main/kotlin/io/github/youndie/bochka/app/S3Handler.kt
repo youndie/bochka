@@ -465,6 +465,10 @@ class S3Handler(
                 )
             }
 
+            is S3Router.Route.Stats -> {
+                stats()
+            }
+
             is S3Router.Route.HeadObject -> {
                 getObject(
                     head,
@@ -1955,6 +1959,50 @@ class S3Handler(
     /** An `ETag` as it travels: thirty-two hex characters in quotes. */
     private fun hexETag(bytes: ByteArray) =
         bytes.joinToString(separator = "", prefix = quote, postfix = quote) { "%02x".format(it) }
+
+    /**
+     * `GET /-/stats` — what the store is holding, in numbers an operator can watch (M-291).
+     *
+     * The ceiling is honest and the refusal at it is honest, and neither is any use to somebody
+     * who learns about them from a `507` on a Tuesday. Four numbers say how close the store is,
+     * and each is a pair rather than a figure on its own: a count against its ceiling, a log
+     * against the live set it would compact to, a compaction against when it last ran, a sweep
+     * against what it found. One of those numbers alone means nothing — two megabytes of log is
+     * small for a million objects and large for ten.
+     *
+     * `text/plain` in `key=value` lines rather than JSON or a metrics format: it is read by a
+     * person with `curl` and by whatever they already run, and neither needs a schema. Adding a
+     * Prometheus endpoint is a separate decision with a dependency attached.
+     */
+    private fun stats(): HttpResponse {
+        val objects = store.objectCount
+        val ceiling = store.maxObjects
+        val live = store.liveRecordCount
+        val log = store.logSizeBytes
+        val body =
+            buildString {
+                append("objects=").append(objects).append('\n')
+                append("object-ceiling=").append(ceiling).append('\n')
+                append("objects-used-percent=").append(percent(objects.toLong(), ceiling.toLong())).append('\n')
+                append("log-bytes=").append(log).append('\n')
+                append("log-records-live=").append(live).append('\n')
+                append("compaction-last=").append(store.lastCompactionAt?.toString() ?: "never").append('\n')
+                append("orphans-last-sweep=").append(store.lastSweep?.removed?.toString() ?: "never").append('\n')
+                append("orphans-swept-at=").append(store.lastSweep?.at?.toString() ?: "never").append('\n')
+            }
+        return HttpResponse(
+            200,
+            "OK",
+            headers = listOf("content-type" to "text/plain"),
+            body = body.toByteArray(),
+        )
+    }
+
+    /** A whole per cent, because a store at 0.03 % and one at 0.04 % are the same store. */
+    private fun percent(
+        part: Long,
+        whole: Long,
+    ): Long = if (whole <= 0) 0 else part * 100 / whole
 
     /** The same header the read path adds, for the answers that are about one version (M-305). */
     private fun HttpResponse.withVersion(stored: ObjectStore.Stored): HttpResponse =
@@ -4099,8 +4147,10 @@ class S3Handler(
                 "s3:ListMultipartUploadParts"
             }
 
-            // No `versionId` on this route: `?tagging` on an object always means the current
-            // version here, which is why the version-flavoured tagging actions never appear.
+            // The version-flavoured actions are deliberately not here: S3 has
+            // `s3:GetObjectVersionTagging` and this server does not distinguish them in a policy,
+            // even though the route now carries a version (M-305). One action per operation, and
+            // a policy that names the versioned one is refused rather than silently matched.
             is S3Router.Route.ObjectTagging -> {
                 when (route.method) {
                     "GET" -> "s3:GetObjectTagging"
@@ -4137,6 +4187,10 @@ class S3Handler(
             }
 
             is S3Router.Route.Health -> {
+                null
+            }
+
+            is S3Router.Route.Stats -> {
                 null
             }
 
