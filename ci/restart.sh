@@ -59,6 +59,12 @@ rc() {
     --config /dev/null "$@"
 }
 
+# The same client, told not to wait. Everything that asks a question *about* the round - listing
+# the bucket, comparing the files - uses this: with the server gone, the shipped retries turn a
+# one-line check into minutes, and a control run spent its whole budget in a polling loop rather
+# than failing. The sync itself keeps the defaults, because the defaults are the claim.
+rc_fast() { rc --retries 1 --low-level-retries 2 --contimeout 3s --timeout 10s "$@"; }
+
 echo "building the distribution"
 "$root/gradlew" -p "$root" -q :bochka-app:installDist || { echo "build failed" >&2; exit 3; }
 
@@ -76,7 +82,7 @@ echo "bochka is up on $ENDPOINT, data in $data"
 tree="$work/tree"
 mkdir -p "$tree"
 for n in $(seq 1 $FILES); do
-  head -c $((4096 + n)) /dev/urandom > "$tree/file-$n.bin"
+  head -c $((262144 + n)) /dev/urandom > "$tree/file-$n.bin"
 done
 
 # `sync` and not `copy`, because sync is what a person runs on a schedule, and it is the one that
@@ -100,8 +106,9 @@ run_round() {
   # question. A quarter leaves three quarters of the files still to upload.
   local at_restart=0
   local enough=$((FILES / 4))
-  for _ in $(seq 1 600); do
-    at_restart=$(rc lsf ":s3:$bucket" 2>/dev/null | grep -c . )
+  local deadline=$((SECONDS + 180))
+  while [ $SECONDS -lt $deadline ]; do
+    at_restart=$(rc_fast lsf ":s3:$bucket" 2>/dev/null | grep -c . )
     [ "$at_restart" -ge "$enough" ] && break
     kill -0 "$sync_pid" 2>/dev/null || break
     sleep 0.1
@@ -144,7 +151,7 @@ run_round() {
   fi
 
   local after
-  after=$(rc lsf ":s3:$bucket" 2>/dev/null | grep -c . )
+  after=$(rc_fast lsf ":s3:$bucket" 2>/dev/null | grep -c . )
   if [ "$after" -eq 0 ]; then
     fail "$signal: the bucket could not be listed after the round - the server is not answering"
     return
@@ -156,7 +163,7 @@ run_round() {
 
   # Not a count: `check` compares sizes and hashes file by file, which is what "no broken objects"
   # means. A restart that left a truncated body would leave the count right and the bytes wrong.
-  if rc check /work/tree ":s3:$bucket" --one-way >"$work/$bucket.check" 2>&1; then
+  if rc_fast check /work/tree ":s3:$bucket" --one-way >"$work/$bucket.check" 2>&1; then
     pass "$signal: the sync finished by itself, $after objects, every one identical"
   else
     fail "$signal: objects differ after the restart"
