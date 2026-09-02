@@ -95,6 +95,10 @@ jobs:
       # Everything about the image that the gate cannot see: the user, the volume, the runtime
       # profile surviving JAVA_OPTS, a misspelt setting stopping the process.
       - run: ./ci/docker-smoke.sh
+      # The Testcontainers module, run against the image this pull request would produce rather
+      # than against the one published last month (M-278). It lives here because this is the only
+      # job where that image exists, and it refuses to run without being told which image to use.
+      - run: ./gradlew :bochka-testcontainers:containerTest -Pbochka.image=bochka:smoke
       # The chart job installs *this* image rather than the published one, so that a pull request
       # is checked against what it changed. Handed over as an artefact because jobs do not share a
       # daemon; building it twice would be four more minutes for the same bytes.

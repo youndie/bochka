@@ -68,6 +68,20 @@ It picks its own port, makes its own directory and removes it on close. There is
 extension beside it, and a mode that hands out prepared answers and refusals for the tests that
 need a server to misbehave.
 
+### Or as a container, if that is the harness you have
+
+```kotlin
+val bochka = BochkaContainer().apply { start() }
+val s3 = MinioClient.builder().endpoint(bochka.endpoint)
+    .credentials(bochka.accessKeyId, bochka.secretKey).build()
+```
+
+Slower than the embedded server by seconds rather than milliseconds, and worth it for exactly two
+reasons: a project that already has a Testcontainers harness plugs this in with one line, and what
+it starts is **the image that ships** — same non-root user, same runtime profile — rather than the
+same classes in the test's own JVM. It waits for `GET /-/healthy` to answer, not for the port to
+open: a bound socket says the process exists, not that it will serve.
+
 ## What it does
 
 Objects, with `Range`, metadata, checksums, server-side copy, conditional reads and writes,

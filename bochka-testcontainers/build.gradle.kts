@@ -6,6 +6,15 @@ plugins {
     id("ru.workinprogress.sborka.mutation")
 }
 
+/**
+ * The container test lives in its own source set, and the first version did not — it sat in `test`
+ * and was excluded by class name. That is the shape this repository refuses on purpose: the class
+ * still declared a test, JUnit still saw it, and nothing ran it. A separate source set is the
+ * honest version of the same intent — those tests are not part of the gate because they need a
+ * Docker daemon and an image, not because somebody filtered them out.
+ */
+val containerTest by sourceSets.creating
+
 dependencies {
     // `compileOnly`, for the reason `bochka-junit` gives about JUnit: this container goes into a
     // test source set where Testcontainers is already present, and a version pinned here would
@@ -14,51 +23,40 @@ dependencies {
 
     testImplementation(kotlin("test"))
     testImplementation(libs.testcontainers)
+
+    "containerTestImplementation"(project)
+    // `test-junit5` by name rather than plain `test`: the variant of `kotlin-test` is chosen from
+    // the framework of the source set's own test task, and a source set the Kotlin plugin did not
+    // create has none to look at — so `kotlin.test.Test` resolves to nothing at all.
+    "containerTestImplementation"(kotlin("test-junit5"))
+    "containerTestRuntimeOnly"(libs.junit.engine)
+    "containerTestImplementation"(libs.testcontainers)
     // A real client rather than a hand-rolled request, for the reason M31 gives: a server checked
     // by its author's own client is checked by the half of the protocol that author understood.
-    testImplementation(libs.minio)
+    "containerTestImplementation"(libs.minio)
 }
 
-/**
- * The container test, which is not part of `check` and says why out loud.
- *
- * It needs a Docker daemon and an image, and neither belongs in a gate that a laptop runs on a
- * plane. More to the point, the image it should test is **this branch's**, not the published one:
- * the CI job that builds `bochka:smoke` is the only place where that image exists, so that is the
- * job which runs this.
- *
- *   ./gradlew :bochka-testcontainers:containerTest -Pbochka.image=bochka:smoke
- *
- * No skip anywhere: without the property the task refuses rather than passing quietly.
- */
-val containerTest =
-    tasks.register<Test>("containerTest") {
-        group = "verification"
-        description = "Starts the published image through Testcontainers and talks to it"
-        testClassesDirs =
-            sourceSets.test
-                .get()
-                .output.classesDirs
-        classpath = sourceSets.test.get().runtimeClasspath
-        val image = providers.gradleProperty("bochka.image").orElse(providers.environmentVariable("BOCHKA_IMAGE"))
-        doFirst {
-            check(image.isPresent && image.get().isNotBlank()) {
-                "name the image to test: -Pbochka.image=bochka:smoke, or BOCHKA_IMAGE in the environment"
-            }
-            // Resolved here rather than at configuration time: handing `environment` a provider
-            // hands it the provider's `toString`, and the container then asks Docker for an image
-            // called `or(or(provider(?), valueof(...)), fixed())`.
-            environment("BOCHKA_IMAGE", image.get())
+// Starts the shipped image and talks to it:
+//
+//   ./gradlew :bochka-testcontainers:containerTest -Pbochka.image=bochka:smoke
+//
+// Not part of `check`, and the image is named rather than defaulted: the one worth testing is the
+// one this branch would produce, which exists only in the CI job that builds it. Without a name the
+// task refuses instead of passing quietly.
+tasks.register<Test>("containerTest") {
+    group = "verification"
+    description = "Starts the shipped image through Testcontainers and talks to it"
+    testClassesDirs = containerTest.output.classesDirs
+    classpath = containerTest.runtimeClasspath
+    useJUnitPlatform()
+    val image = providers.gradleProperty("bochka.image").orElse(providers.environmentVariable("BOCHKA_IMAGE"))
+    doFirst {
+        check(image.isPresent && image.get().isNotBlank()) {
+            "name the image to test: -Pbochka.image=bochka:smoke, or BOCHKA_IMAGE in the environment"
         }
+        // Resolved here rather than at configuration time: handing `environment` a provider hands
+        // it the provider's `toString`, and Docker is then asked for an image called
+        // `or(or(provider(?), valueof(...)), fixed())`.
+        environment("BOCHKA_IMAGE", image.get())
     }
-
-// Excluded from the ordinary test task rather than skipped inside it: a test that returns on its
-// first line looks exactly like a test that passed.
-tasks.test {
-    exclude("**/BochkaContainerTest.class")
-}
-
-tasks.check {
-    // Deliberately **not** `dependsOn(containerTest)`: the image does not exist at gate time.
-    // `.github/workflows/check.yml` runs it in the job that builds one.
 }
