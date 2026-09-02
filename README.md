@@ -105,6 +105,14 @@ with what came out differently than planned.
 > real network card between two machines. Over loopback the same comparison says 5.3×, and the
 > difference is the point: loopback has no device in it.
 
+> **Three data systems that are not S3 clients run on top of it**, and they ask for promises a
+> round trip does not reach. delta-rs commits through conditional writes: in one run of
+> `ci/consumers.sh` between 43 and 62 commits lose the race, are told `412`, rebase and try again,
+> and the table reads back as every writer's rows. pyiceberg snapshots survive four
+> concurrent writers. DuckDB resolves `read_parquet('s3://…/*.parquet')` through `ListObjectsV2`
+> and then reads each file footer-first and by column range — 367 ranged reads in one query over
+> three files, on connections it keeps rather than reopens. All of it runs on every pull request.
+
 Every feature is measured against that path rather than assumed to be free, and the measurements
 that came out **against** the plan are the more useful half — the upload buffer turned out not to
 matter, `splice(2)` was not worth introducing, and the reason this project terminates TLS outside
