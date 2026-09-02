@@ -130,7 +130,18 @@ with what came out differently than planned.
 > and the table reads back as every writer's rows. pyiceberg snapshots survive four
 > concurrent writers. DuckDB resolves `read_parquet('s3://…/*.parquet')` through `ListObjectsV2`
 > and then reads each file footer-first and by column range — 367 ranged reads in one query over
-> three files, on connections it keeps rather than reopens. All of it runs on every pull request.
+> three files, on connections it keeps rather than reopens. All of it runs on every pull request. An
+> engine splitting a file of its own accord is there too: 23 MB of parquet arrives in five parts,
+> uploaded out of order and handed back as one object.
+
+> **What that contention costs is measured rather than assumed** ([M-298](docs/measurements.md)).
+> The condition itself is free — one writer gets 164 conditional writes a second against 142
+> unconditional ones, a difference the spread swallows. Eight writers on **one** key get 85, and
+> that is the shape of the thing rather than a defect: one claim wins each slot. Under delta-rs
+> the rate is the table format's, not this store's — 4.7 to 6.6 commits a second whatever the
+> writer count, twenty-five times below the bare protocol. Contention is paid in latency: the
+> worst single commit goes from 216 ms to 1.77 s between one writer and eight, no commit is lost,
+> and the slowest writer takes 1.28 times the fastest rather than starving.
 
 Every feature is measured against that path rather than assumed to be free, and the measurements
 that came out **against** the plan are the more useful half — the upload buffer turned out not to
