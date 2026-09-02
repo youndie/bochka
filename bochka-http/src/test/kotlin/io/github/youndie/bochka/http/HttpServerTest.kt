@@ -61,9 +61,11 @@ class HttpServerTest {
 
     private fun withServer(
         handler: HttpHandler,
+        headTimeout: java.time.Duration = HttpServer.DEFAULT_HEAD_TIMEOUT,
+        bodyIdleTimeout: java.time.Duration = HttpServer.DEFAULT_BODY_IDLE_TIMEOUT,
         block: (Socket, BufferedReader) -> Unit,
     ) {
-        HttpServer(handler).use { server ->
+        HttpServer(handler, headTimeout = headTimeout, bodyIdleTimeout = bodyIdleTimeout).use { server ->
             Socket().use { socket ->
                 socket.connect(InetSocketAddress("127.0.0.1", server.boundPort), 2000)
                 socket.soTimeout = 5000
@@ -193,6 +195,46 @@ class HttpServerTest {
                 )
                 assertEquals("HTTP/1.1 200 OK", lines.first(), "read $i")
             }
+        }
+    }
+
+    @Test
+    fun `a client that stops halfway through the head is told 408 and let go`() {
+        // A real slow client rather than a mocked clock: it writes half a head and then does
+        // nothing, which is what a connection-exhaustion attack looks like and what a dead NAT
+        // looks like too. Before the timeout existed this held the connection for as long as the
+        // process lived — `bochka-http` had no time limit of any kind, only size limits.
+        val handler = Recording()
+        withServer(handler, headTimeout = java.time.Duration.ofMillis(300)) { socket, reader ->
+            socket.getOutputStream().write("GET /photos HTTP/1.1\r\nHost: h\r\n".toByteArray())
+            socket.getOutputStream().flush()
+
+            val (lines, _) = readResponse(reader, expectBody = false)
+            assertTrue(lines.isNotEmpty(), "the half-written head got no answer at all")
+            assertEquals("HTTP/1.1 408 Request Timeout", lines.first())
+            assertTrue(
+                lines.any { it.equals("Connection: close", ignoreCase = true) },
+                "a timed-out connection has to be closed, and the client has to be told: $lines",
+            )
+            assertEquals(-1, reader.read(), "the connection stayed open after the timeout")
+        }
+    }
+
+    @Test
+    fun `a body that stops arriving is told 408 rather than held`() {
+        // The other half, and it is a different clock: the head arrived in time, so the request is
+        // real and the handler is already reading. What must not happen is the slot being held for
+        // ever by a client that promised ten bytes and sent one.
+        val handler = Recording()
+        withServer(handler, bodyIdleTimeout = java.time.Duration.ofMillis(300)) { socket, reader ->
+            socket.getOutputStream().write(
+                "PUT /photos/k HTTP/1.1\r\nHost: h\r\nContent-Length: 10\r\n\r\na".toByteArray(),
+            )
+            socket.getOutputStream().flush()
+
+            val (lines, _) = readResponse(reader, expectBody = false)
+            assertTrue(lines.isNotEmpty(), "the stalled body got no answer at all")
+            assertEquals("HTTP/1.1 408 Request Timeout", lines.first())
         }
     }
 
