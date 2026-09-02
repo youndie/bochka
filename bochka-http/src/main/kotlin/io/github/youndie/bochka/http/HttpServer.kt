@@ -62,6 +62,19 @@ class HttpServer(
      * dead server looks like, and the operator sees nothing at all.
      */
     private val maxConnections: Int = ceilingForHeap(),
+    /**
+     * How long a stop waits for the requests already in flight before letting go (M-292).
+     *
+     * `close` used to be `scope.cancel()`, which cancelled every request where it stood and left
+     * the client with a socket that closed and no bytes in it — the same thing a `SIGKILL` gives,
+     * and the same thing every SDK reads as a network failure and retries. `docker stop` sends
+     * `SIGTERM` and waits ten seconds before killing, so those ten seconds were spent on nothing.
+     *
+     * Bounded, because "finish what was started" without a limit is a process that does not stop.
+     * Five seconds against the ten `docker stop` allows: half the window, so the stop finishes on
+     * its own terms rather than being killed halfway through.
+     */
+    private val shutdownGrace: Duration = DEFAULT_SHUTDOWN_GRACE,
 ) : Closeable {
     private val live =
         java.util.concurrent.atomic
@@ -341,9 +354,23 @@ class HttpServer(
             }
     }
 
+    /**
+     * Stops in three steps, and the order is the whole of it: stop accepting, finish what was
+     * started, then let go.
+     *
+     * Accepting stops first, because a stop that keeps taking work has not begun. The wait is
+     * bounded by [shutdownGrace]. The cancel at the end is what a `SIGKILL` would have done to
+     * everything, applied only to whatever did not finish in time.
+     */
     override fun close() {
-        scope.cancel()
         serverChannel.close()
+
+        val deadline = System.nanoTime() + shutdownGrace.toNanos()
+        while (live.get() > 0 && System.nanoTime() < deadline) {
+            Thread.sleep(POLL_MILLIS)
+        }
+
+        scope.cancel()
         loop.close()
     }
 
@@ -460,8 +487,19 @@ class HttpServer(
     }
 
     companion object {
-        // Not private, and only because two of these are part of the surface: the defaults are
+        // Not private, and only because some of these are part of the surface: the defaults are
         // named in the constructor and a test names them to shorten them. The rest stays private.
+
+        /**
+         * Five seconds to finish what is in flight, against the ten `docker stop` allows.
+         *
+         * Half the window on purpose: a stop that used all ten would be killed while still
+         * finishing, and the difference between stopping and being killed is what this is for.
+         */
+        val DEFAULT_SHUTDOWN_GRACE: Duration = Duration.ofSeconds(5)
+
+        /** How often the stop looks to see whether the last request has finished. */
+        private const val POLL_MILLIS = 5L
 
         /**
          * Twenty seconds for a whole request head, which nothing legitimate comes near.

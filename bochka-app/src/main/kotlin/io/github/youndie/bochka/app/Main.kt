@@ -151,8 +151,27 @@ object Main {
 
         startHousekeeping(store, configuration.long(Configuration.Key.HOUSEKEEPING_MINUTES) ?: 60)
         startLifecycle(store, lifecycleDay)
-        Runtime.getRuntime().addShutdownHook(Thread { server.close() })
+        Runtime.getRuntime().addShutdownHook(Thread { stopCleanly(server, store) })
         Thread.currentThread().join()
+    }
+
+    /**
+     * What a `SIGTERM` does, in the order it has to be done (M-292).
+     *
+     * The server first, because its own stop is what finishes the requests already in flight; the
+     * store second, because closing it while a request is still writing would turn a stop into the
+     * crash it is supposed to be different from.
+     *
+     * The hook used to close the server alone. Nothing was lost by that — records reach the
+     * channel as they are written — but the directory stayed claimed until the process exited, so
+     * "stopped" and "free" were different moments with nothing saying which had happened.
+     */
+    internal fun stopCleanly(
+        server: HttpServer,
+        store: ObjectStore,
+    ) {
+        server.close()
+        store.close()
     }
 
     /**
