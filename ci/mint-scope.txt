@@ -1,0 +1,43 @@
+# Why each mint failure is there. `<status> <substring of the case name or function> <reason>`.
+#
+# Three statuses, and the difference between them is the whole value of this file:
+#
+#   out-of-scope  the case asks for something S3 does not have — MinIO's admin API, its own
+#                 extensions, or a signature version S3 has retired. Passing it would mean
+#                 implementing somebody else's product.
+#   deferred      S3 has it, we do not, and there is a task
+#   defect        our answer is wrong, and there is a task
+#
+# A rule that stops matching is reported as STALE rather than ignored: a reason for a failure that
+# no longer happens reads as true to the next person.
+
+# --- MinIO's own surface, which is not S3 ------------------------------------------------------
+out-of-scope healthcheck GET /minio/health/live is MinIO's liveness path; ours is /-/healthy and is documented as such
+out-of-scope listUsers the MinIO admin API (users, groups, canned policies) is not part of S3
+out-of-scope deleteUser the MinIO admin API is not part of S3
+out-of-scope getUserInfo the MinIO admin API is not part of S3
+out-of-scope addUser the MinIO admin API is not part of S3
+out-of-scope addCannedPolicy MinIO's admin canned policies are not part of S3
+out-of-scope setPolicy MinIO's admin policy API, distinct from S3 bucket policies, which are implemented (M29)
+out-of-scope listCannedPolicies MinIO's admin canned policies are not part of S3
+out-of-scope removeCannedPolicy MinIO's admin canned policies are not part of S3
+out-of-scope listenBucketNotification MinIO's notification stream is an extension; S3 has no listen call
+out-of-scope snowball snowball is MinIO's upload extension: a tar arrives with a header asking the server to unpack it, and S3 stores the tar
+out-of-scope testFunctionalV2 signature version 2, which S3 retired; this server implements v4 only
+out-of-scope s3select S3 Select is out of scope for v1 and answered NotImplemented on purpose
+out-of-scope selectObjectContent S3 Select is out of scope for v1 and answered NotImplemented on purpose
+out-of-scope abortMultipartupload mint expects an abort of an upload that does not exist to succeed; S3 documents NoSuchUpload, which is what this server answers
+
+# --- S3 has it, we do not: tasks ---------------------------------------------------------------
+deferred storage_class object storage classes are not implemented (M-301)
+deferred head-object object storage classes are not implemented (M-301)
+
+# --- our answer is wrong: tasks ----------------------------------------------------------------
+defect aws-sdk-go a presigned PUT whose body does not match its declared x-amz-content-sha256 is answered SignatureDoesNotMatch where S3 answers XAmzContentSHA256Mismatch (M-300)
+defect listObjects a listing returns objects a client has deleted, or more than it asked for (M-302)
+defect removeIncompleteUploads ListMultipartUploads is missing a field the client dereferences: Initiator or Owner (M-303)
+defect fPutObject ListMultipartUploads is missing a field the client dereferences: Initiator or Owner (M-303)
+defect copyObject a copy that mint expects to be refused succeeds (M-304)
+defect versioning a PUT carrying x-amz-tagging with versioning on gives an unexpected result (M-305)
+defect removeBucket a bucket the client emptied is still not empty to us — the other end of M-302
+defect after all a bucket the client emptied is still not empty to us — the other end of M-302
