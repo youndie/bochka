@@ -613,8 +613,21 @@ class ObjectStore(
         bucket: String,
         key: ObjectKey,
         tags: Map<String, String>,
+        /**
+         * Which version's tags, or `null` for the newest (M-305).
+         *
+         * Tags belong to a version rather than to a key: two versions of one object may be tagged
+         * differently, and a client that names one and gets another has been answered about
+         * somebody else.
+         */
+        versionId: String? = null,
     ): Boolean {
-        val entry = currentEntry(bucket, key)?.takeIf { !it.value.deleteMarker } ?: return false
+        val entry =
+            if (versionId == null) {
+                currentEntry(bucket, key)
+            } else {
+                entryOfVersion(bucket, key, versionId)
+            }?.takeIf { !it.value.deleteMarker } ?: return false
         val stored = entry.value.copy(metadata = entry.value.metadata.copy(tags = tags))
         objects[entry.key] = stored
         // Rewritten at its own sequence, not at a new one: tagging changes what a version says
@@ -1186,6 +1199,16 @@ class ObjectStore(
         Files.deleteIfExists(pathOf(staged.fileId))
     }
 
+    /** One named version's entry, or `null` when this key has no such version. */
+    private fun entryOfVersion(
+        bucket: String,
+        key: ObjectKey,
+        versionId: String,
+    ): Map.Entry<Located, Stored>? =
+        objects.entries.firstOrNull { (located, stored) ->
+            located.bucket == bucket && located.key == key && stored.versionId == versionId
+        }
+
     /**
      * The current version of a key, delete marker included.
      *
@@ -1193,6 +1216,7 @@ class ObjectStore(
      * for the two places that need to know a tombstone is there: a read that must say
      * `x-amz-delete-marker`, and a write that must know what it is replacing.
      */
+
     private fun currentEntry(
         bucket: String,
         key: ObjectKey,

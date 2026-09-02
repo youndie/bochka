@@ -1956,6 +1956,10 @@ class S3Handler(
     private fun hexETag(bytes: ByteArray) =
         bytes.joinToString(separator = "", prefix = quote, postfix = quote) { "%02x".format(it) }
 
+    /** The same header the read path adds, for the answers that are about one version (M-305). */
+    private fun HttpResponse.withVersion(stored: ObjectStore.Stored): HttpResponse =
+        copy(headers = headers + versionHeader(stored))
+
     /**
      * `x-amz-version-id`, when there is a version worth naming.
      *
@@ -1963,6 +1967,7 @@ class S3Handler(
      * every object in a bucket that never versioned is at version `null`, and a header repeating
      * that on every response would tell a client its bucket is versioning when it is not.
      */
+
     private fun versionHeader(stored: ObjectStore.Stored): List<Pair<String, String>> =
         if (stored.versionId == ObjectStore.NULL_VERSION) {
             emptyList()
@@ -3210,18 +3215,25 @@ class S3Handler(
         route: S3Router.Route.ObjectTagging,
         body: HttpHandler.RequestBody,
     ): HttpResponse {
+        // The version the client named, or the newest when it named none. Named and missing is a
+        // `404` rather than a fall back to the newest: answering about another version is answering
+        // about another object, and the answer looks entirely valid (M-305).
+        val named = route.versionId
         val stored =
-            store.get(route.bucket, route.key)
-                ?: return error(head, S3Error.NO_SUCH_KEY, key = route.key, bucket = route.bucket)
+            if (named == null) {
+                store.get(route.bucket, route.key)
+            } else {
+                store.get(route.bucket, route.key, named)?.takeIf { !it.deleteMarker }
+            } ?: return error(head, S3Error.NO_SUCH_KEY, key = route.key, bucket = route.bucket)
 
         return when (route.method) {
             "GET" -> {
-                xml(S3Documents.taggingResult(stored.metadata.tags))
+                xml(S3Documents.taggingResult(stored.metadata.tags)).withVersion(stored)
             }
 
             "DELETE" -> {
-                store.setTags(route.bucket, route.key, emptyMap())
-                HttpResponse(204, "No Content")
+                store.setTags(route.bucket, route.key, emptyMap(), versionId = route.versionId)
+                HttpResponse(204, "No Content").withVersion(stored)
             }
 
             else -> {
@@ -3246,8 +3258,8 @@ class S3Handler(
                         bucket = route.bucket,
                     )
                 }
-                store.setTags(route.bucket, route.key, tags)
-                HttpResponse(200, "OK")
+                store.setTags(route.bucket, route.key, tags, versionId = route.versionId)
+                HttpResponse(200, "OK").withVersion(stored)
             }
         }
     }
