@@ -16,7 +16,7 @@ kotlin = "2.4.10"
 ktlint = "1.8.0"
 ktlintGradle = "14.2.0"
 # Benchmarks. kotlinx-benchmark drives JMH; JMH is what actually measures.
-benchmark = "0.4.19"
+benchmark = "0.5.0"
 # The selector loop turns readiness into something a coroutine can await; that is the only reason
 # this is here. Checked against maven-metadata.xml on 2026-08-17.
 coroutines = "1.11.0"
