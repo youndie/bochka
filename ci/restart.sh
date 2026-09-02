@@ -91,9 +91,15 @@ run_round() {
   local signal=$1 bucket=$2
   rc mkdir ":s3:$bucket" >/dev/null 2>&1
 
-  # Defaults on purpose. Raising `--retries` would prove that rclone can be told to wait through a
-  # restart; the claim is that it does so as shipped.
-  rc sync /work/tree ":s3:$bucket" --transfers 4 >"$work/$bucket.sync" 2>&1 &
+  # Retries left at their defaults on purpose: raising them would prove that rclone can be told to
+  # wait through a restart, and the claim is that it does so as shipped. `--bwlimit` is not a
+  # retry setting and is the only way this round is honest on a fast machine - sixty megabytes go
+  # in under six seconds here, one listing costs about a second, and by the time the signal landed
+  # the client had finished. Throttled, the transfer lasts about fifteen seconds
+  # and a stop is a stop. Four megabytes rather than eight because the machine that matters is not
+  # this one: a run sharing the box with another measured its window through a listing that took
+  # eight seconds and reported a transfer that was already over.
+  rc sync /work/tree ":s3:$bucket" --transfers 4 --bwlimit 4M >"$work/$bucket.sync" 2>&1 &
   local sync_pid=$!
 
   # The restart has to land inside the sync, and "sleep and hope" would let a fast machine finish
@@ -109,6 +115,7 @@ run_round() {
   local deadline=$((SECONDS + 180))
   while [ $SECONDS -lt $deadline ]; do
     at_restart=$(rc_fast lsf ":s3:$bucket" 2>/dev/null | grep -c . )
+
     [ "$at_restart" -ge "$enough" ] && break
     kill -0 "$sync_pid" 2>/dev/null || break
     sleep 0.1
@@ -118,12 +125,15 @@ run_round() {
     fail "$signal: the sync finished before the restart could land in it"
     return
   fi
-  if [ "$at_restart" -lt 1 ] || [ "$at_restart" -ge "$FILES" ]; then
+  # Half, not "not all". A round that stopped the server with two files to go is green for a
+  # reason that has nothing to do with restarts, and it is the shape a fast machine produces.
+  if [ "$at_restart" -lt 1 ] || [ "$at_restart" -gt $((FILES / 2)) ]; then
     kill -9 "$sync_pid" 2>/dev/null; wait "$sync_pid" 2>/dev/null
-    fail "$signal: the restart would not have landed inside the sync ($at_restart of $FILES were there)"
+    fail "$signal: too little was left for the restart to matter ($at_restart of $FILES were there)"
     return
   fi
 
+  printf '  the stop lands with %s of %s objects uploaded\n' "$at_restart" "$FILES"
   kill -"$signal" "$server_pid" 2>/dev/null
   local gone=false
   for _ in $(seq 1 100); do
