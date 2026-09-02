@@ -195,9 +195,11 @@ run_round() {
     return
   fi
 
-  # Not a count: `check` compares sizes and hashes file by file, which is what "no broken objects"
-  # means. A restart that left a truncated body would leave the count right and the bytes wrong.
-  if rc_fast check /work/tree ":s3:$bucket" --one-way >"$work/$bucket.check" 2>&1; then
+  # Not a count, and `--download` is not an optimisation to drop. Without it `check` compares the
+  # local hash against the `ETag` the server reports - which the server remembers rather than
+  # recomputes, so a control that overwrote a byte inside a stored file passed clean. What the
+  # round claims is that the bytes came back, so the bytes have to come back.
+  if rc_fast check /work/tree ":s3:$bucket" --one-way --download >"$work/$bucket.check" 2>&1; then
     pass "$signal: the sync finished by itself, $after objects, every one identical"
   else
     fail "$signal: objects differ after the restart"
