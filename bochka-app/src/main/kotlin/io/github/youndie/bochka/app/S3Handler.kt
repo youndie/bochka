@@ -562,6 +562,26 @@ class S3Handler(
                 return error(head, S3Error.PRECONDITION_FAILED, key = route.sourceKey, bucket = route.sourceBucket)
             }
         }
+        // The two date conditions, which were read by nothing at all until mint asked (M-304). A
+        // client uses `if-unmodified-since` to avoid overwriting something newer than what it saw;
+        // a server that ignores it does the overwrite and answers `200`, which is the accepted-and-
+        // not-enforced failure this repository refuses everywhere else.
+        //
+        // To the second, like every other timestamp comparison here: `Last-Modified` is published
+        // in `rfc822`, which has no sub-second field, so a client can only ever have seen a whole
+        // second and comparing finer would make the condition impossible to satisfy from outside.
+        head.header("x-amz-copy-source-if-unmodified-since")?.let { condition ->
+            val at = httpDateSeconds(condition) ?: return@let
+            if (source.lastModified.epochSecond > at) {
+                return error(head, S3Error.PRECONDITION_FAILED, key = route.sourceKey, bucket = route.sourceBucket)
+            }
+        }
+        head.header("x-amz-copy-source-if-modified-since")?.let { condition ->
+            val at = httpDateSeconds(condition) ?: return@let
+            if (source.lastModified.epochSecond <= at) {
+                return error(head, S3Error.PRECONDITION_FAILED, key = route.sourceKey, bucket = route.sourceBucket)
+            }
+        }
 
         val replacing = head.header("x-amz-metadata-directive").equals("REPLACE", ignoreCase = true)
         val sameObject = route.sourceBucket == route.bucket && route.sourceKey == route.key
@@ -989,7 +1009,7 @@ class S3Handler(
                 isTruncated = false,
                 uploads =
                     uploads.map {
-                        S3Documents.UploadEntry(it.key, it.id, timestamp(it.startedAt))
+                        S3Documents.UploadEntry(it.key, it.id, timestamp(it.startedAt), owner = it.owner)
                     },
                 encoding = request.encoding(),
             ),
