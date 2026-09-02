@@ -239,6 +239,61 @@ class HttpServerTest {
     }
 
     @Test
+    fun `a connection over the ceiling is refused by name rather than in silence`() {
+        // Two held open by doing nothing, which is what a connection at its limit looks like from
+        // the server: alive, counted, and not yet a request. The third has to be told.
+        val handler = Recording()
+        HttpServer(handler, maxConnections = 2).use { server ->
+            val held = (1..2).map { Socket().apply { connect(InetSocketAddress("127.0.0.1", server.boundPort), 2000) } }
+            try {
+                Socket().use { third ->
+                    third.connect(InetSocketAddress("127.0.0.1", server.boundPort), 2000)
+                    third.soTimeout = 5000
+                    val reader = BufferedReader(InputStreamReader(third.getInputStream(), StandardCharsets.ISO_8859_1))
+                    val (lines, _) = readResponse(reader, expectBody = false)
+
+                    // Answered, not dropped. A server that simply stops accepting looks to a client
+                    // exactly like a server that has died, and to an operator like nothing at all:
+                    // the refusal has to carry a status somebody can find in a log.
+                    assertTrue(lines.isNotEmpty(), "the connection over the ceiling was refused in silence")
+                    assertEquals("HTTP/1.1 503 Service Unavailable", lines.first())
+                    assertEquals(-1, reader.read(), "the refused connection was left open")
+                }
+            } finally {
+                held.forEach { it.close() }
+            }
+        }
+    }
+
+    @Test
+    fun `a slot comes back when its connection closes`() {
+        // The half that makes the ceiling a ceiling rather than a lifetime budget. Without it the
+        // count only rises, and a server that has served its limit refuses everybody for ever.
+        val handler = Recording()
+        HttpServer(handler, maxConnections = 1).use { server ->
+            val first = Socket()
+            first.connect(InetSocketAddress("127.0.0.1", server.boundPort), 2000)
+            first.close()
+
+            // The close has to reach the server before the next connection is counted, and there is
+            // no callback for that: the socket is closed here, the server notices on its own thread.
+            for (attempt in 1..50) {
+                Socket().use { next ->
+                    next.connect(InetSocketAddress("127.0.0.1", server.boundPort), 2000)
+                    next.soTimeout = 1000
+                    next.getOutputStream().write("GET /photos HTTP/1.1\r\nHost: h\r\n\r\n".toByteArray())
+                    next.getOutputStream().flush()
+                    val reader = BufferedReader(InputStreamReader(next.getInputStream(), StandardCharsets.ISO_8859_1))
+                    val (lines, _) = readResponse(reader)
+                    if (lines.firstOrNull() == "HTTP/1.1 200 OK") return
+                }
+                Thread.sleep(20)
+            }
+            throw AssertionError("the slot never came back after its connection closed")
+        }
+    }
+
+    @Test
     fun `a request split across packets is still one request`() {
         val handler = Recording()
         withServer(handler) { socket, reader ->

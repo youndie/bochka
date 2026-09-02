@@ -50,7 +50,22 @@ class HttpServer(
      * sending and never says so, and the gap between reads is what tells them apart.
      */
     private val bodyIdleTimeout: Duration = DEFAULT_BODY_IDLE_TIMEOUT,
+    /**
+     * How many connections may be live at once, refused by name beyond that.
+     *
+     * Derived from the heap rather than chosen, for the same reason the object ceiling is
+     * ([ceilingForHeap]): a connection costs memory whether or not anybody counts it, so the only
+     * question is whether the number is published or discovered by falling over.
+     *
+     * The refusal is a `503` on an accepted socket rather than a socket left unaccepted. Not
+     * accepting is silent: the client sees a connection that hangs and then dies, which is what a
+     * dead server looks like, and the operator sees nothing at all.
+     */
+    private val maxConnections: Int = ceilingForHeap(),
 ) : Closeable {
+    private val live =
+        java.util.concurrent.atomic
+            .AtomicInteger()
     private val loop = SelectorLoop()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val serverChannel: ServerSocketChannel = ServerSocketChannel.open()
@@ -78,6 +93,24 @@ class HttpServer(
             }
             val key = loop.register(channel)
             val connection = SelectorConnection(channel, key, loop)
+
+            // Counted here rather than inside the coroutine: the count has to be true by the time
+            // the next `accept` asks, and a coroutine that has not been scheduled yet has not
+            // counted itself.
+            if (live.incrementAndGet() > maxConnections) {
+                scope.launch {
+                    try {
+                        respond(connection, unsentRequest, HttpResponse(503, "Service Unavailable", close = true))
+                    } catch (e: Throwable) {
+                        handler.abandoned(e)
+                    } finally {
+                        live.decrementAndGet()
+                        connection.close()
+                    }
+                }
+                continue
+            }
+
             scope.launch {
                 try {
                     session(connection)
@@ -88,6 +121,10 @@ class HttpServer(
                     // what a dead connection is worth saying belongs up there, not here.
                     handler.abandoned(e)
                 } finally {
+                    // The slot comes back here, and this is the half that makes it a ceiling
+                    // rather than a lifetime budget: without it the count only rises and a server
+                    // that has served its limit refuses everybody for ever.
+                    live.decrementAndGet()
                     connection.close()
                 }
             }
@@ -122,7 +159,7 @@ class HttpServer(
                         // Answered rather than dropped. A client that is merely slow learns that it
                         // was too slow; one that is holding the slot on purpose learns nothing it
                         // did not know, and the slot comes back either way.
-                        respond(connection, timedOutRequest, HttpResponse(408, "Request Timeout", close = true))
+                        respond(connection, unsentRequest, HttpResponse(408, "Request Timeout", close = true))
                         return
                     }
                 if (read < 0) return
@@ -444,13 +481,41 @@ class HttpServer(
         val DEFAULT_BODY_IDLE_TIMEOUT: Duration = Duration.ofSeconds(60)
 
         /**
-         * The head a timed-out request never finished sending, invented so the answer can be sent
-         * through the same path as every other response.
+         * What one live connection costs while it is reading a request.
          *
-         * `HTTP/1.1` because that is what the response says regardless, and the fields are the
-         * least that [respond] reads. Nothing about it reaches the client except the status.
+         * The read buffer plus the head the parser is allowed to accumulate — the two allocations
+         * a connection makes before anybody has decided anything about it. It understates the peak
+         * of a connection that is *serving* an object, and deliberately: what this bounds is how
+         * many can be waiting at once, which is the number an idle-connection flood drives up.
          */
-        private val timedOutRequest =
+        const val BYTES_PER_CONNECTION: Int = 32 * 1024 + 64 * 1024
+
+        /** What fraction of the heap connections may hold before the ceiling is reached. */
+        private const val CONNECTION_HEAP_FRACTION = 0.25
+
+        /**
+         * The published number of connections, derived the way the object ceiling is derived.
+         *
+         * A quarter of the heap rather than all of it, because the index is the live set here and
+         * connections are the transient part: a server that spent its whole heap on sockets would
+         * be refusing writes long before it refused a connection.
+         */
+        fun ceilingForHeap(heapBytes: Long = Runtime.getRuntime().maxMemory()): Int =
+            ((heapBytes * CONNECTION_HEAP_FRACTION) / BYTES_PER_CONNECTION)
+                .toLong()
+                .coerceIn(16L, Int.MAX_VALUE.toLong())
+                .toInt()
+
+        /**
+         * A head for the two answers sent to a request that never arrived: the `408` of a client
+         * that stopped writing, and the `503` of a connection over the ceiling.
+         *
+         * Invented so that both go out through [respond] rather than through a second way of
+         * writing a response — one path means one place where framing can be wrong. `HTTP/1.1`
+         * because that is what the status line says regardless, and nothing else about it reaches
+         * the client.
+         */
+        private val unsentRequest =
             HttpRequestParser.Head("GET", "/", "HTTP/1.1", emptyList())
 
         private fun reasonFor(status: Int): String =
