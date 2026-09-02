@@ -174,11 +174,26 @@ class SignatureVerifier(
             return Result.Failure(S3Error.EXPIRED_PRESIGN_REQUEST, "expired at ${signedAt.plusSeconds(expires)}")
         }
 
+        // Where the payload hash comes from, in the order a client may have put it. The query
+        // parameter is the documented place; the **header** is where the AWS Go SDK puts it when
+        // it presigns a `PUT` with a known body, and then names it in `X-Amz-SignedHeaders` — so
+        // the value is covered by the signature and rebuilding the canonical request with
+        // `UNSIGNED-PAYLOAD` produces a mismatch. That is what this server used to do, and the
+        // client was told `SignatureDoesNotMatch`: the wrong answer twice over, because it names
+        // the credentials rather than the body, and mint's `PresignedPut` is what found it (M-300).
+        //
+        // The header counts only when it is signed. An unsigned header is anybody's to add, and
+        // letting it into the canonical request would let a middlebox invalidate a link.
+        val signedHeaderHash =
+            request.header("x-amz-content-sha256")?.takeIf {
+                authorization.signedHeaders.any { name -> name.equals("x-amz-content-sha256", ignoreCase = true) }
+            }
+
         return check(
             request,
             authorization,
             timestamp,
-            query["X-Amz-Content-Sha256"] ?: UNSIGNED_PAYLOAD,
+            query["X-Amz-Content-Sha256"] ?: signedHeaderHash ?: UNSIGNED_PAYLOAD,
             CanonicalRequest.PathMode.VERBATIM,
             freshness = Freshness.NOT_FROM_THE_FUTURE,
         ) {
