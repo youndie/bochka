@@ -25,6 +25,10 @@ package io.github.youndie.bochka.http
  *   fixture there reads it and this does not — a fixture may be generous where a server may not.
  * * **Whitespace before the colon.** `Content-Length : 5` is a header to some parsers and a
  *   malformed line to others.
+ * * **A control character in a value.** A NUL ends a string in anything written in C, so a value
+ *   carrying one is two values to two readers. This one was found rather than reasoned about:
+ *   `ci/smuggling.sh` sends the same bytes to nginx and to this server, and nginx refused what
+ *   this accepted.
  */
 class HttpRequestParser(
     private val limits: Limits = Limits.DEFAULT,
@@ -179,7 +183,19 @@ class HttpRequestParser(
         if (name.last() == ' ' || name.last() == '\t') throw Malformed(400, "whitespace before the colon")
         if (name.any { it.code <= 0x20 || it.code >= 0x7F }) throw Malformed(400, "header name '$name'")
         if (headers.size >= limits.headerCount) throw Malformed(431, "over ${limits.headerCount} headers")
-        headers.add(name to text.substring(colon + 1).trim())
+        val value = text.substring(colon + 1).trim()
+        // Control characters in the value, and this is the fourth refusal of the same family: a NUL
+        // ends a string in anything written in C, so a value carrying one is two different values
+        // to two readers. Found with nginx in front (M-281): it answered 400 to a header value with
+        // a NUL in it and this server answered 200.
+        //
+        // A tab is allowed and so is everything above ASCII: `obs-text` is a legal field value, and
+        // an object store receives metadata headers carrying UTF-8. A refusal written as "anything
+        // unusual" would refuse those.
+        if (value.any { (it.code < 0x20 && it != '\t') || it.code == 0x7F }) {
+            throw Malformed(400, "control character in the value of '$name'")
+        }
+        headers.add(name to value)
     }
 
     private fun finish() {

@@ -60,6 +60,16 @@ jobs:
       # refuses a run whose tests never reached the volume.
       - run: ./ci/enospc.sh
 
+  smuggling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      # The pair of parsers a request passes on the way in, asked to disagree (M-281). It needs
+      # nginx in front, which the gate cannot have, and it uses the configuration from `deploy/`
+      # rather than one written for the test - the point is the pair somebody runs.
+      - run: ./ci/smuggling.sh
+
   consumers:
     runs-on: ubuntu-latest
     steps:
