@@ -473,6 +473,106 @@ else
   skip "duckdb write" "image unavailable"
 fi
 
+# --- DuckDB writing in parts: the multipart upload a data engine makes (M-297) -----------------
+#
+# Multipart is checked elsewhere in this repository by clients that were told to do it - `aws-cli`
+# and `mc` with a payload over their thresholds. That is a different question from this one. Here
+# nobody asks for parts: an engine writes a file it cannot hold in memory, its own uploader decides
+# to split, and the store has to accept parts arriving out of order from several threads and hand
+# back one object.
+#
+# Measured before this was written, because the task assumed the sections above already reached it
+# and they do not: a `COPY` of 1.6 MB goes as one `PUT` with a plain `ETag`. DuckDB splits by part
+# size, which it derives as `s3_uploader_max_filesize / 10000`, so the threshold is about 80 MB as
+# shipped. Writing 80 MB in CI to prove a code path is not worth it; lowering the ceiling to 50 GB
+# makes the part 5 MiB, and about 23 MB of uncompressed parquet then arrives in five.
+#
+# `COMPRESSION uncompressed` is not decoration either: with the default the same rows compress to
+# under a part and the section silently becomes a single `PUT` - green, and about nothing.
+if have_image python:3.12-slim; then
+  cat > "$work/duckparts.py" <<'DUCKPARTS'
+import boto3
+import duckdb
+
+ENDPOINT = "http://127.0.0.1:19200"
+BUCKET = "consumers"
+ROWS = 300000
+
+client = boto3.client(
+    "s3",
+    endpoint_url=ENDPOINT,
+    aws_access_key_id="bochkaadmin",
+    aws_secret_access_key="bochkasecret",
+    region_name="us-east-1",
+)
+try:
+    client.create_bucket(Bucket=BUCKET)
+except client.exceptions.ClientError:
+    pass
+
+connection = duckdb.connect()
+connection.execute("INSTALL httpfs; LOAD httpfs;")
+for setting in (
+    "SET s3_endpoint='127.0.0.1:19200'",
+    "SET s3_use_ssl=false",
+    "SET s3_url_style='path'",
+    "SET s3_access_key_id='bochkaadmin'",
+    "SET s3_secret_access_key='bochkasecret'",
+    "SET s3_region='us-east-1'",
+    # The part size, said the only way DuckDB lets it be said.
+    "SET s3_uploader_max_filesize='50GB'",
+):
+    connection.execute(setting)
+
+connection.execute(
+    "COPY (SELECT i AS n, hash(i)::VARCHAR AS a, hash(i * 7)::VARCHAR AS b, hash(i * 13)::VARCHAR AS c "
+    f"FROM range({ROWS}) t(i)) "
+    "TO 's3://consumers/parts/big.parquet' (FORMAT parquet, COMPRESSION uncompressed)"
+)
+
+head = client.head_object(Bucket=BUCKET, Key="parts/big.parquet")
+etag = head["ETag"].strip('"')
+assert "-" in etag, f"the object was written whole: ETag {etag} - this section did not reach multipart"
+parts = int(etag.rsplit("-", 1)[1])
+assert parts >= 3, f"only {parts} parts; the uploader did not really split"
+
+# Read back through the same store, and compared with arithmetic rather than with a second query:
+# the sum of the first ROWS integers is known without asking anybody who might be wrong in the
+# same way twice.
+rows, total = connection.execute(
+    "SELECT count(*), sum(n) FROM read_parquet('s3://consumers/parts/big.parquet')"
+).fetchone()
+assert rows == ROWS, f"the assembled object reads back as {rows} rows rather than {ROWS}"
+expected = ROWS * (ROWS - 1) // 2
+assert total == expected, f"the assembled object sums to {total} rather than {expected}: parts were joined in the wrong order"
+
+print(f"ok parts={parts} bytes={head['ContentLength']} rows={rows}")
+DUCKPARTS
+  creates_before=$(grep -ac 'uploads' "$log")
+  parts_before=$(grep -ac 'partNumber=' "$log")
+  completes_before=$(grep -acE 'POST [^ ]*uploadId=' "$log")
+  docker run --rm --network host -v "$work:/w" python:3.12-slim \
+    sh -c "pip install -q duckdb boto3 && python /w/duckparts.py" >"$work/duckparts.out" 2>&1
+  if grep -q '^ok ' "$work/duckparts.out"; then
+    creates=$(( $(grep -ac 'uploads' "$log") - creates_before ))
+    uploaded=$(( $(grep -ac 'partNumber=' "$log") - parts_before ))
+    completes=$(( $(grep -acE 'POST [^ ]*uploadId=' "$log") - completes_before ))
+    # All three, because each alone has a green way of being wrong: parts without a completion is
+    # an upload nobody finished, and a completion without parts is a client that gave up and wrote
+    # the file whole while the assertions above still passed on somebody else's object.
+    if [ "$creates" -lt 1 ] || [ "$uploaded" -lt 3 ] || [ "$completes" -lt 1 ]; then
+      fail "duckdb parts: $creates uploads created, $uploaded parts, $completes completed - not a multipart upload"
+    else
+      pass "duckdb parts: $(sed -n 's/^ok //p' "$work/duckparts.out"), $uploaded parts uploaded and $completes completed"
+    fi
+  else
+    fail "duckdb parts: an engine splitting a file of its own accord"
+    tail -12 "$work/duckparts.out" | sed 's/^/          /'
+  fi
+else
+  skip "duckdb parts" "image unavailable"
+fi
+
 echo
 echo "passed $passed, failed $failed, skipped $skipped"
 [ "$failed" -eq 0 ] || exit 1
