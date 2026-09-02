@@ -163,6 +163,24 @@ collection grows with it — 7.56 seconds of stop-the-world at 4 GiB is a reques
 hiccup. The ceiling is also a property of the collector rather than of `-Xmx`, which is why the
 startup log names both.
 
+## What it will not wait for, and how many at once
+
+Limits with numbers, because a limit nobody published is one somebody meets as an outage.
+
+| | default | why it is that shape |
+|---|---|---|
+| a request head | **20 s** to arrive | nothing legitimate is near it; a client sending a byte a minute is not slow, it is holding a slot |
+| a request body | **60 s** of *silence* between reads | a gap, not a total: a five-gibibyte upload over a slow link is legitimate and takes as long as it takes |
+| live connections | **a quarter of the heap** ÷ 96 KiB each | derived like the object ceiling, printed at startup, `503` beyond it |
+
+All three are settable — `head.timeout.seconds`, `body.idle.timeout.seconds`, `max.connections` —
+because a slow satellite link and a connection-exhaustion attack look identical from here, and
+which one it is belongs to the operator.
+
+Both timeouts answer `408` and close, and the ceiling answers `503` on an accepted socket. None of
+them drops the connection silently: a dropped connection is read by every SDK as a network failure,
+and a network failure is the thing they retry hardest.
+
 ## What happens when the disk fills
 
 A different failure from the one above, and the two answer differently on purpose. The ceiling is a
