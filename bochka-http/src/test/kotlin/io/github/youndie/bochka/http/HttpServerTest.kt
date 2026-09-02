@@ -294,6 +294,48 @@ class HttpServerTest {
     }
 
     @Test
+    fun `a connection whose body was left on the socket is not reused`() {
+        // The danger is one sentence long: bytes of a body that nobody read are still on the
+        // socket, and a connection reused after that reads them as the next request line. That is
+        // the ambiguous framing this parser refuses by name, arriving through time instead of
+        // through a header.
+        val handler = Recording(drainsBody = false)
+        withServer(handler) { socket, reader ->
+            socket.getOutputStream().write(
+                "PUT /photos/k HTTP/1.1\r\nHost: h\r\nContent-Length: 5\r\n\r\nhello".toByteArray(),
+            )
+            socket.getOutputStream().flush()
+
+            val (lines, _) = readResponse(reader)
+            assertEquals("HTTP/1.1 200 OK", lines.first())
+            assertTrue(
+                lines.any { it.equals("Connection: close", ignoreCase = true) },
+                "the answer did not say the connection was over: $lines",
+            )
+            assertEquals(-1, reader.read(), "the connection stayed open with five unread bytes on it")
+        }
+    }
+
+    @Test
+    fun `a body that was promised and never finished ends the connection`() {
+        // The same class through the other door: the length is honest, the bytes stop coming. The
+        // handler is inside `forEach` when they do, so what ends this is the idle clock (M-282) —
+        // and what matters here is that the connection does not come back afterwards carrying the
+        // three bytes that did arrive.
+        val handler = Recording()
+        withServer(handler, bodyIdleTimeout = java.time.Duration.ofMillis(300)) { socket, reader ->
+            socket.getOutputStream().write(
+                "PUT /photos/k HTTP/1.1\r\nHost: h\r\nContent-Length: 99\r\n\r\nabc".toByteArray(),
+            )
+            socket.getOutputStream().flush()
+
+            val (lines, _) = readResponse(reader, expectBody = false)
+            assertEquals("HTTP/1.1 408 Request Timeout", lines.first())
+            assertEquals(-1, reader.read(), "an unfinished body left the connection open")
+        }
+    }
+
+    @Test
     fun `a request split across packets is still one request`() {
         val handler = Recording()
         withServer(handler) { socket, reader ->
