@@ -66,6 +66,11 @@ class Configuration private constructor(
             "20",
             "how long a request head may take to arrive before 408; a slow client, not a large one",
         ),
+        MAX_CONNECTIONS(
+            "max.connections",
+            null,
+            "how many connections may be live at once before 503; derived from the heap if unset",
+        ),
         BODY_IDLE_TIMEOUT_SECONDS(
             "body.idle.timeout.seconds",
             "60",

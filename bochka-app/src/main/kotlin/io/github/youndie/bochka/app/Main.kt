@@ -111,6 +111,8 @@ object Main {
                 configuration.int(Configuration.Key.BODY_IDLE_TIMEOUT_SECONDS)?.toLong()
                     ?: HttpServer.DEFAULT_BODY_IDLE_TIMEOUT.seconds,
             )
+        val maxConnections =
+            configuration.int(Configuration.Key.MAX_CONNECTIONS) ?: HttpServer.ceilingForHeap()
         val server =
             HttpServer(
                 logged,
@@ -118,6 +120,7 @@ object Main {
                 port = port,
                 headTimeout = headTimeout,
                 bodyIdleTimeout = bodyIdleTimeout,
+                maxConnections = maxConnections,
             )
         println("bochka listening on $address:${server.boundPort}, data in $dataDir")
         println("configuration:")
@@ -132,6 +135,13 @@ object Main {
         }
         println("access keys: ${credentials.ids.sorted().joinToString(", ")}")
         println("object ceiling: ${store.maxObjects} (${ObjectStore.BYTES_PER_OBJECT} bytes of index each)")
+        // The same kind of fact from the other end of the process: how many callers can be waiting
+        // at once. Printed rather than left to be discovered, because a limit nobody published is
+        // a limit somebody meets as an outage.
+        println(
+            "connection ceiling: $maxConnections " +
+                "(${HttpServer.BYTES_PER_CONNECTION} bytes each while reading a request)",
+        )
         // Beside the ceiling because it is the same fact from the other end: the ceiling is derived
         // from `Runtime.maxMemory()`, and that is a property of the collector (M-156). A line that
         // says which one, and a louder one when this process is outside what was measured (M-157) —
