@@ -130,6 +130,14 @@ sealed interface IndexRecord {
          */
         val owner: String? = null,
         val acl: String? = null,
+        /**
+         * The storage class the object was written with (M-301).
+         *
+         * Defaulted rather than nullable, because `STANDARD` is exactly what a record written
+         * before this field existed meant: the object was stored the one way this server stores
+         * anything. A `null` would be a third state no log ever recorded.
+         */
+        val storageClass: String = ObjectStore.STANDARD_STORAGE_CLASS,
     ) : IndexRecord
 
     /** Object lock on a bucket: the default rule, and by its presence that lock is on at all. */
@@ -363,6 +371,15 @@ sealed interface IndexRecord {
          */
         private const val KIND_PUT_OWNED: Byte = 25
 
+        /**
+         * A version that names its storage class: [KIND_PUT_OWNED] plus one text field (M-301).
+         *
+         * A new kind by the rule this file is built on — a record already written keeps decoding
+         * to what it meant, and what an old `PUT_OWNED` meant is `STANDARD`. Written only when the
+         * class is not `STANDARD`, so a store nobody sends the header to never grows a byte.
+         */
+        private const val KIND_PUT_CLASSED: Byte = 29
+
         /** A bucket with an owner and a canned ACL: [KIND_BUCKET_CREATED_AT] plus the two. */
         private const val KIND_BUCKET_CREATED_OWNED: Byte = 26
 
@@ -509,9 +526,11 @@ sealed interface IndexRecord {
                 is Put -> {
                     // The old kind while there is nothing new to say, because a reader that has
                     // never seen an encrypted object should never have to learn the newer shape.
-                    val owned = record.owner != null || record.acl != null
+                    val classed = record.storageClass != ObjectStore.STANDARD_STORAGE_CLASS
+                    val owned = classed || record.owner != null || record.acl != null
                     out.write(
                         when {
+                            classed -> KIND_PUT_CLASSED.toInt()
                             owned -> KIND_PUT_OWNED.toInt()
                             record.encryptionAlgorithm == null -> KIND_PUT_LOCKED.toInt()
                             else -> KIND_PUT_ENCRYPTED.toInt()
@@ -553,6 +572,7 @@ sealed interface IndexRecord {
                         out.putText(record.owner)
                         out.putText(record.acl)
                     }
+                    if (classed) out.putText(record.storageClass)
                 }
             }
             return out.toByteArray()
@@ -713,6 +733,7 @@ sealed interface IndexRecord {
                 KIND_PUT_LOCKED,
                 KIND_PUT_ENCRYPTED,
                 KIND_PUT_OWNED,
+                KIND_PUT_CLASSED,
                 -> {
                     val bucket = buffer.text()
                     val key = ObjectKey(buffer.bytes())
@@ -725,7 +746,8 @@ sealed interface IndexRecord {
                             kind == KIND_PUT_VERSIONED ||
                             kind == KIND_PUT_LOCKED ||
                             kind == KIND_PUT_ENCRYPTED ||
-                            kind == KIND_PUT_OWNED
+                            kind == KIND_PUT_OWNED ||
+                            kind == KIND_PUT_CLASSED
                     val metadata = buffer.metadata(withTags = withTags)
                     val parts = if (kind == KIND_PUT_WITH_PARTS || withTags) buffer.parts() else emptyList()
                     // The older kinds carry no version at all, and decode to what they meant: the
@@ -736,9 +758,14 @@ sealed interface IndexRecord {
                         kind == KIND_PUT_VERSIONED ||
                             kind == KIND_PUT_LOCKED ||
                             kind == KIND_PUT_ENCRYPTED ||
-                            kind == KIND_PUT_OWNED
-                    val lockable = kind == KIND_PUT_LOCKED || kind == KIND_PUT_ENCRYPTED || kind == KIND_PUT_OWNED
-                    val owned = kind == KIND_PUT_OWNED
+                            kind == KIND_PUT_OWNED ||
+                            kind == KIND_PUT_CLASSED
+                    val lockable =
+                        kind == KIND_PUT_LOCKED ||
+                            kind == KIND_PUT_ENCRYPTED ||
+                            kind == KIND_PUT_OWNED ||
+                            kind == KIND_PUT_CLASSED
+                    val owned = kind == KIND_PUT_OWNED || kind == KIND_PUT_CLASSED
                     val sequence = if (versioned) buffer.long else 0
                     val versionId = if (versioned) buffer.text() else ObjectStore.NULL_VERSION
                     val deleteMarker = versioned && buffer.get().toInt() == 1
@@ -772,6 +799,12 @@ sealed interface IndexRecord {
                         encryptionIv = encryptionIv,
                         owner = if (owned) buffer.optionalText() else null,
                         acl = if (owned) buffer.optionalText() else null,
+                        storageClass =
+                            if (kind == KIND_PUT_CLASSED) {
+                                buffer.optionalText() ?: ObjectStore.STANDARD_STORAGE_CLASS
+                            } else {
+                                ObjectStore.STANDARD_STORAGE_CLASS
+                            },
                     )
                 }
 

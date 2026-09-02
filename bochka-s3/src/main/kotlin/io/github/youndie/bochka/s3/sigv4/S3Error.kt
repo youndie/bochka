@@ -184,6 +184,21 @@ enum class S3Error(
         404,
     ),
 
+    /**
+     * A storage class this server will not store an object under (M-301).
+     *
+     * Two reasons a class lands here, and they are different. One is a name S3 does not have —
+     * a typo, or another vendor's word. The other is a class S3 does have and this server cannot
+     * honour: `GLACIER` and `DEEP_ARCHIVE` are not slower storage, they are storage that has to be
+     * restored before it can be read, and there is no restore here. Accepting either would be a
+     * promise made in a header.
+     */
+    INVALID_STORAGE_CLASS(
+        "InvalidStorageClass",
+        "The storage class you specified is not valid",
+        400,
+    ),
+
     /** `:604` — a header that is present, understood, and holds something impossible. */
     INVALID_ARGUMENT(
         "InvalidArgument",
