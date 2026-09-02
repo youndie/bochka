@@ -58,6 +58,43 @@ class SnapshotBackupTest {
         )
     }
 
+    @Test
+    fun `an upload in flight at the moment of the copy is in flight in the copy`() {
+        // What a backup does *not* restore is the question an operator asks second, and it has an
+        // answer rather than a caveat: an upload that had begun and not finished comes back as one
+        // that has begun and not finished — its parts are there, and it can be continued or
+        // aborted. Nothing is silently completed and nothing silently disappears.
+        val source = Files.createTempDirectory("bochka-snapshot-upload")
+        val destination = Files.createTempDirectory("bochka-snapshot-upload-copy")
+        try {
+            val upload =
+                ObjectStore(source).use { store ->
+                    store.createBucket(CrashWriter.BUCKET)
+                    val started = store.createUpload(CrashWriter.BUCKET, ObjectKey.of("big.bin"), Metadata.EMPTY)
+                    runBlocking {
+                        store.putPart(started.id, 1) { out ->
+                            val bytes = "the first part".toByteArray()
+                            out.write(bytes, 0, bytes.size)
+                        }
+                    }
+                    started.id
+                }
+
+            copyIndexThenData(source, destination)
+
+            ObjectStore(destination, ObjectStore.Durability.NONE).use { store ->
+                val uploads = store.uploads(CrashWriter.BUCKET)
+                assertTrue(uploads.any { it.id == upload }, "the upload in flight is not in the copy: $uploads")
+                assertEquals(1, store.parts(upload).size, "the part that had been uploaded is not in the copy")
+            }
+        } finally {
+            @OptIn(ExperimentalPathApi::class)
+            source.deleteRecursively()
+            @OptIn(ExperimentalPathApi::class)
+            destination.deleteRecursively()
+        }
+    }
+
     /**
      * Runs the writer, makes a copy with [copy], and checks everything the copy claims to hold.
      *
