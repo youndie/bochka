@@ -6,14 +6,17 @@ import io.github.youndie.bochka.http.nio.SelectorLoop
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import java.io.Closeable
 import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.SelectionKey
 import java.nio.channels.ServerSocketChannel
 import java.nio.charset.StandardCharsets
+import java.time.Duration
 
 /**
  * The HTTP/1.1 server: accepts connections, reads requests, answers them.
@@ -23,11 +26,30 @@ import java.nio.charset.StandardCharsets
  * supported on purpose: no S3 client does it, and a server that half-supports it answers the second
  * request with the first one's status.
  */
+
 class HttpServer(
     private val handler: HttpHandler,
     bindAddress: String = "127.0.0.1",
     port: Int = 0,
     private val readBufferBytes: Int = 32 * 1024,
+    /**
+     * How long a request head may take to arrive, from the first byte of it.
+     *
+     * The limits above it are all about **size** — the head, a line, the number of headers — and a
+     * client that sends one byte a minute breaks none of them while holding the connection for
+     * ever. That is a connection-exhaustion attack written as patience, and it is also what a dead
+     * NAT looks like from here, which is why the answer is `408` and a close rather than a silent
+     * drop: the client is told what happened.
+     */
+    private val headTimeout: Duration = DEFAULT_HEAD_TIMEOUT,
+    /**
+     * How long the body may go **idle** — between two reads, not in total.
+     *
+     * In total would be a size limit wearing a clock: a five-gibibyte upload over a slow link is
+     * legitimate and takes as long as it takes. What is not legitimate is a client that stops
+     * sending and never says so, and the gap between reads is what tells them apart.
+     */
+    private val bodyIdleTimeout: Duration = DEFAULT_BODY_IDLE_TIMEOUT,
 ) : Closeable {
     private val loop = SelectorLoop()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -93,7 +115,16 @@ class HttpServer(
 
             while (head == null) {
                 buffer.clear()
-                val read = connection.readSome(buffer)
+                val read =
+                    try {
+                        withTimeout(headTimeout.toMillis()) { connection.readSome(buffer) }
+                    } catch (_: TimeoutCancellationException) {
+                        // Answered rather than dropped. A client that is merely slow learns that it
+                        // was too slow; one that is holding the slot on purpose learns nothing it
+                        // did not know, and the slot comes back either way.
+                        respond(connection, timedOutRequest, HttpResponse(408, "Request Timeout", close = true))
+                        return
+                    }
                 if (read < 0) return
                 buffer.flip()
                 val bytes = ByteArray(buffer.remaining())
@@ -131,10 +162,15 @@ class HttpServer(
                 connection.writeFully(ByteBuffer.wrap(HttpResponse.CONTINUE))
             }
 
-            val body = SocketBody(connection, request, leftover, readBufferBytes)
+            val body = SocketBody(connection, request, leftover, readBufferBytes, bodyIdleTimeout)
             val response =
                 try {
                     handler.handle(request, body)
+                } catch (e: RequestTimeout) {
+                    // Its own answer rather than `failed`: a client that stopped sending is not a
+                    // bug in this server, and `500` would tell it to retry the very thing it did
+                    // not finish.
+                    HttpResponse(408, "Request Timeout", close = true)
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -286,6 +322,7 @@ class HttpServer(
         private val head: HttpRequestParser.Head,
         private val leftover: ByteArray,
         private val bufferBytes: Int,
+        private val idleTimeout: Duration,
     ) : HttpHandler.RequestBody {
         private var consumedLeftover = 0
         private var remaining = head.contentLength ?: 0
@@ -314,6 +351,21 @@ class HttpServer(
             if (head.isChunked) forEachChunked(consume) else forEachSized(consume)
         }
 
+        /**
+         * One read, bounded by how long the client may go quiet.
+         *
+         * The timeout becomes [RequestTimeout] here rather than travelling as the cancellation it
+         * arrives as: the session's own `catch` rethrows `CancellationException` untouched, so a
+         * body timeout would kill the coroutine with the client still waiting for an answer — the
+         * dropped connection this whole milestone is about.
+         */
+        private suspend fun readWithinIdleTimeout(buffer: ByteBuffer): Int =
+            try {
+                withTimeout(idleTimeout.toMillis()) { connection.readSome(buffer) }
+            } catch (_: TimeoutCancellationException) {
+                throw RequestTimeout("the body went quiet for ${idleTimeout.toMillis()} ms")
+            }
+
         private suspend fun forEachSized(consume: (ByteArray, Int, Int) -> Unit) {
             val fromLeftover = minOf(remaining, (leftover.size - consumedLeftover).toLong()).toInt()
             if (fromLeftover > 0) {
@@ -326,7 +378,7 @@ class HttpServer(
             while (remaining > 0) {
                 buffer.clear()
                 buffer.limit(minOf(remaining, buffer.capacity().toLong()).toInt())
-                val read = connection.readSome(buffer)
+                val read = readWithinIdleTimeout(buffer)
                 if (read < 0) throw java.io.EOFException("body ended $remaining bytes early")
                 buffer.flip()
                 val bytes = ByteArray(buffer.remaining())
@@ -352,7 +404,7 @@ class HttpServer(
             val buffer = ByteBuffer.allocate(bufferBytes)
             while (!decoder.isComplete) {
                 buffer.clear()
-                val read = connection.readSome(buffer)
+                val read = readWithinIdleTimeout(buffer)
                 if (read < 0) throw java.io.EOFException("body ended inside a chunked frame")
                 buffer.flip()
                 val bytes = ByteArray(buffer.remaining())
@@ -370,8 +422,38 @@ class HttpServer(
         }
     }
 
-    private companion object {
-        fun reasonFor(status: Int): String =
+    companion object {
+        // Not private, and only because two of these are part of the surface: the defaults are
+        // named in the constructor and a test names them to shorten them. The rest stays private.
+
+        /**
+         * Twenty seconds for a whole request head, which nothing legitimate comes near.
+         *
+         * A head is at most a few kilobytes and clients send it in one write; twenty seconds is
+         * two orders of magnitude of slack for a bad link, and still finite for a client that has
+         * no intention of finishing. nginx ships sixty for the same limit and sits on the public
+         * internet, where a slower link is likelier than an attack.
+         */
+        val DEFAULT_HEAD_TIMEOUT: Duration = Duration.ofSeconds(20)
+
+        /**
+         * A minute of silence inside a body, and it is a gap rather than a total: a five-gibibyte
+         * upload over a slow link is legitimate and takes as long as it takes. A total would be a
+         * size limit with a clock on it, and would refuse exactly the uploads this store exists for.
+         */
+        val DEFAULT_BODY_IDLE_TIMEOUT: Duration = Duration.ofSeconds(60)
+
+        /**
+         * The head a timed-out request never finished sending, invented so the answer can be sent
+         * through the same path as every other response.
+         *
+         * `HTTP/1.1` because that is what the response says regardless, and the fields are the
+         * least that [respond] reads. Nothing about it reaches the client except the status.
+         */
+        private val timedOutRequest =
+            HttpRequestParser.Head("GET", "/", "HTTP/1.1", emptyList())
+
+        private fun reasonFor(status: Int): String =
             when (status) {
                 400 -> "Bad Request"
                 431 -> "Request Header Fields Too Large"

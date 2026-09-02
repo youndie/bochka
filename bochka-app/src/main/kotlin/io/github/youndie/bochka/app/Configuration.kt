@@ -61,6 +61,16 @@ class Configuration private constructor(
             "1 to let an unsigned request through to the ACL; off, an unsigned request is 403 whatever the ACL says",
         ),
         LOG("log", "0", "1 to print a line per request"),
+        HEAD_TIMEOUT_SECONDS(
+            "head.timeout.seconds",
+            "20",
+            "how long a request head may take to arrive before 408; a slow client, not a large one",
+        ),
+        BODY_IDLE_TIMEOUT_SECONDS(
+            "body.idle.timeout.seconds",
+            "60",
+            "how long a body may go quiet between reads before 408; a gap, not a total upload time",
+        ),
         HOUSEKEEPING_MINUTES("housekeeping.minutes", "60", "how often to compact and sweep; 0 to never"),
         LIFECYCLE_DAY_SECONDS(
             "lifecycle.day.seconds",
