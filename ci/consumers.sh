@@ -260,6 +260,121 @@ else
   skip "pyiceberg" "image unavailable"
 fi
 
+# --- DuckDB over httpfs: a glob, a footer, and a great many ranges (M-272) ---------------------
+#
+# The third consumer, and the one that asks for a shape of traffic no other test here produces.
+# `read_parquet('s3://.../*.parquet')` resolves its wildcard through `ListObjectsV2` and then reads
+# each file the way parquet is meant to be read: footer, then the byte ranges of the columns the
+# query wants. Hundreds of small ranged reads in a row, from one process, over one connection each
+# time it can.
+#
+# That last part is why this section exists at all. Pointing DuckDB at bochka is what found the
+# server closing the connection after **every** read: reading a request body was what marked the
+# socket clean, and a `GET` has no body to read. Every test said connections were kept, because
+# every test used a handler that read the body unconditionally.
+if have_image python:3.12-slim; then
+  cat > "$work/duck.py" <<'DUCKDB'
+import io
+
+import boto3
+import duckdb
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+ENDPOINT = "http://127.0.0.1:19200"
+BUCKET = "consumers"
+FILES, ROWS = 3, 200_000
+
+client = boto3.client(
+    "s3",
+    endpoint_url=ENDPOINT,
+    aws_access_key_id="bochkaadmin",
+    aws_secret_access_key="bochkasecret",
+    region_name="us-east-1",
+)
+try:
+    client.create_bucket(Bucket=BUCKET)
+except client.exceptions.ClientError:
+    pass
+
+expected_rows = FILES * ROWS
+expected_sum = 0
+for part in range(FILES):
+    numbers = list(range(part * ROWS, part * ROWS + ROWS))
+    expected_sum += sum(numbers)
+    table = pa.table(
+        {
+            "n": pa.array(numbers, pa.int64()),
+            "part": pa.array([part] * ROWS, pa.int64()),
+            "pad": pa.array([f"row-{i}" for i in range(ROWS)]),
+        }
+    )
+    buffer = io.BytesIO()
+    # Small row groups on purpose: the point of this consumer is many ranged reads per file, and a
+    # file written as one row group is read as one range and proves nothing this harness needs.
+    pq.write_table(table, buffer, row_group_size=2_000, compression="snappy")
+    client.put_object(Bucket=BUCKET, Key=f"duck/part-{part}.parquet", Body=buffer.getvalue())
+
+connection = duckdb.connect()
+connection.execute("INSTALL httpfs; LOAD httpfs;")
+for setting in (
+    "SET s3_endpoint='127.0.0.1:19200'",
+    "SET s3_use_ssl=false",
+    "SET s3_url_style='path'",
+    "SET s3_access_key_id='bochkaadmin'",
+    "SET s3_secret_access_key='bochkasecret'",
+    "SET s3_region='us-east-1'",
+):
+    connection.execute(setting)
+
+rows, total = connection.execute(
+    "SELECT count(*), sum(n) FROM read_parquet('s3://consumers/duck/*.parquet')"
+).fetchone()
+assert rows == expected_rows, f"the glob read {rows} rows where the three files hold {expected_rows}"
+assert total == expected_sum, f"the sum is {total} rather than {expected_sum}: some range came back wrong"
+
+# A second shape of the same read: a predicate, so the columns are fetched in pieces rather than
+# whole. The expected answer is computed here rather than asked of DuckDB twice.
+per_file = connection.execute(
+    "SELECT part, count(*) FROM read_parquet('s3://consumers/duck/*.parquet') "
+    "WHERE n % 9973 = 0 GROUP BY part ORDER BY part"
+).fetchall()
+expected_per_file = [
+    (part, sum(1 for n in range(part * ROWS, part * ROWS + ROWS) if n % 9973 == 0)) for part in range(FILES)
+]
+assert per_file == expected_per_file, f"the filtered read gave {per_file} rather than {expected_per_file}"
+print(f"ok rows={rows}")
+DUCKDB
+  listings_before=$(grep -ac 'list-type=2' "$log")
+  ranged_before=$(grep -ac -- '-> 206' "$log")
+  closed_before=$(ss -tan state time-wait "( sport = :$PORT )" 2>/dev/null | tail -n +2 | wc -l)
+  docker run --rm --network host -v "$work:/w" python:3.12-slim \
+    sh -c "pip install -q duckdb pyarrow boto3 && python /w/duck.py" >"$work/duck.out" 2>&1
+  sleep 1
+  if grep -q '^ok ' "$work/duck.out"; then
+    listings=$(( $(grep -ac 'list-type=2' "$log") - listings_before ))
+    ranged=$(( $(grep -ac -- '-> 206' "$log") - ranged_before ))
+    closed=$(( $(ss -tan state time-wait "( sport = :$PORT )" 2>/dev/null | tail -n +2 | wc -l) - closed_before ))
+    if [ "$listings" -lt 1 ]; then
+      fail "duckdb: the answer is right but no listing was made; the wildcard did not go through ListObjectsV2"
+    elif [ "$ranged" -lt 100 ]; then
+      fail "duckdb: only $ranged ranged reads; parquet was downloaded whole rather than read by range"
+    elif [ "$closed" -gt 0 ]; then
+      # The session cycle, and the reason this consumer was worth writing. A server that ends the
+      # connection after each read makes a query of several hundred ranges into several hundred
+      # handshakes; before M-272 that is exactly what happened, and nothing here could see it.
+      fail "duckdb: $ranged ranged reads and this server closed $closed connections; keep-alive is not being honoured"
+    else
+      pass "duckdb: $listings listings, $ranged ranged reads, and not one connection closed from this end"
+    fi
+  else
+    fail "duckdb: glob and filtered read"
+    tail -12 "$work/duck.out" | sed 's/^/          /'
+  fi
+else
+  skip "duckdb" "image unavailable"
+fi
+
 echo
 echo "passed $passed, failed $failed, skipped $skipped"
 [ "$failed" -eq 0 ] || exit 1

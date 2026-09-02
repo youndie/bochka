@@ -24,6 +24,16 @@ import kotlin.test.assertTrue
 class HttpServerTest {
     private class Recording(
         val screenWith: (HttpRequestParser.Head) -> HttpResponse? = { null },
+        /**
+         * Whether the handler reads the request body, which the real one does not always do.
+         *
+         * It read it unconditionally, and that hid a defect for the life of the project: reading
+         * the body is what marks the socket clean, so a `GET` — which has no body and whose
+         * handler never asks for one — left the connection looking unfinished and the server
+         * closed it. Every test here answered from a handler that drained, so every test agreed
+         * that connections are kept.
+         */
+        val drainsBody: Boolean = true,
     ) : HttpHandler {
         val bodySeen = AtomicReference(ByteArray(0))
         val handleCalled = AtomicBoolean(false)
@@ -41,7 +51,9 @@ class HttpServerTest {
         ): HttpResponse {
             handleCalled.set(true)
             val collected = java.io.ByteArrayOutputStream()
-            body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+            if (drainsBody) {
+                body.forEach { bytes, offset, length -> collected.write(bytes, offset, length) }
+            }
             bodySeen.set(collected.toByteArray())
             return HttpResponse(200, "OK", body = "ok:${collected.size()}".toByteArray())
         }
@@ -157,6 +169,29 @@ class HttpServerTest {
                 val (lines, body) = readResponse(reader)
                 assertEquals("HTTP/1.1 200 OK", lines.first(), "request $i")
                 assertEquals("ok:3", body)
+            }
+        }
+    }
+
+    @Test
+    fun `two reads share one connection, because a request with no body leaves nothing on the socket`() {
+        // The test above proves the same thing for `PUT`, and that is the whole reason this one
+        // exists: the connection was kept only when a handler had read a body, and a `GET` has no
+        // body to read. Every read therefore ended its connection — found by pointing DuckDB at
+        // this server, where 373 requests took 370 connections and 368 were closed from here.
+        // The handler does not read the body, because the real one does not: a `GET` has none to
+        // read. Every other test here uses a handler that reads unconditionally, which is why they
+        // all agreed the connection was kept.
+        val handler = Recording(drainsBody = false)
+        withServer(handler) { socket, reader ->
+            repeat(2) { i ->
+                socket.getOutputStream().write("GET /photos/$i HTTP/1.1\r\nHost: h\r\n\r\n".toByteArray())
+                val (lines, _) = readResponse(reader)
+                assertTrue(
+                    lines.isNotEmpty(),
+                    "read $i got no answer at all: the connection ended with the request before it",
+                )
+                assertEquals("HTTP/1.1 200 OK", lines.first(), "read $i")
             }
         }
     }

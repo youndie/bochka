@@ -289,7 +289,21 @@ class HttpServer(
     ) : HttpHandler.RequestBody {
         private var consumedLeftover = 0
         private var remaining = head.contentLength ?: 0
-        var isDrained = false
+
+        /**
+         * Whether the socket holds nothing that belonged to this request.
+         *
+         * True from the start when there is no body, and that line is a fix rather than a
+         * shortcut. Reading the body is what used to set it, so a request nobody read the body of
+         * looked unfinished — and a `GET` has no body to read. Every read therefore ended its
+         * connection, while every test said connections were kept: the handler they use reads the
+         * body unconditionally, which the real one does not. Found by pointing DuckDB at this
+         * server: 373 requests took 370 connections, and 368 of those were closed from here.
+         *
+         * A body that exists and was ignored is a different case and still closes: those bytes are
+         * on the socket whether anybody wanted them or not.
+         */
+        var isDrained = !head.isChunked && (head.contentLength ?: 0L) == 0L
             private set
 
         /** Trailers that arrived after the final HTTP chunk, if the body was chunked. */
