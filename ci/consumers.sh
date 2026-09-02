@@ -375,6 +375,104 @@ else
   skip "duckdb" "image unavailable"
 fi
 
+# --- DuckDB writing: COPY TO, and the listing that guards an overwrite (M-273) -----------------
+#
+# The other direction of the same consumer. Two things were worth measuring before writing this,
+# and one of them contradicted the task it came from:
+#
+#   * a single-file `COPY … TO` **overwrites without asking anything**. No `HEAD`, no conditional
+#     header - the key is simply written over. The existence check the task expected is not there;
+#   * a partitioned `COPY` checks first, and it checks with a **listing**: one `ListObjectsV2` over
+#     the prefix, and a refusal from DuckDB if anything came back. So the client refusing is an
+#     oracle for our listing being truthful - a store that answered "empty" for a prefix full of
+#     files would have that refusal turn into a silent overwrite of somebody's dataset.
+#
+# The pair is asserted together on purpose: the first `COPY` into a fresh prefix must be accepted
+# and the second into the same prefix refused. A refusal on its own would also be produced by a
+# store that refuses everything.
+if have_image python:3.12-slim; then
+  cat > "$work/duckwrite.py" <<'DUCKWRITE'
+import boto3
+import duckdb
+
+ENDPOINT = "http://127.0.0.1:19200"
+BUCKET = "consumers"
+
+client = boto3.client(
+    "s3",
+    endpoint_url=ENDPOINT,
+    aws_access_key_id="bochkaadmin",
+    aws_secret_access_key="bochkasecret",
+    region_name="us-east-1",
+)
+try:
+    client.create_bucket(Bucket=BUCKET)
+except client.exceptions.ClientError:
+    pass
+
+connection = duckdb.connect()
+connection.execute("INSTALL httpfs; LOAD httpfs;")
+for setting in (
+    "SET s3_endpoint='127.0.0.1:19200'",
+    "SET s3_use_ssl=false",
+    "SET s3_url_style='path'",
+    "SET s3_access_key_id='bochkaadmin'",
+    "SET s3_secret_access_key='bochkasecret'",
+    "SET s3_region='us-east-1'",
+):
+    connection.execute(setting)
+
+# Written, then written over. The second value is what has to come back: a store that kept the
+# first would look identical to one that lost the second until somebody read it.
+connection.execute("COPY (SELECT 1 AS n) TO 's3://consumers/copy/one.parquet' (FORMAT parquet)")
+connection.execute("COPY (SELECT 2 AS n) TO 's3://consumers/copy/one.parquet' (FORMAT parquet)")
+after = connection.execute("SELECT n FROM read_parquet('s3://consumers/copy/one.parquet')").fetchall()
+assert after == [(2,)], f"the overwrite left {after} rather than the row it wrote last"
+
+# A partitioned write, whose keys carry `=` and reach the wire percent-encoded (`p%3D0`). Reading
+# them back through a wildcard is what says the encoding survived the round trip in both places.
+connection.execute(
+    "COPY (SELECT i AS n, i % 3 AS p FROM range(30000) t(i)) "
+    "TO 's3://consumers/copy/parts' (FORMAT parquet, PARTITION_BY (p))"
+)
+rows = connection.execute("SELECT count(*) FROM read_parquet('s3://consumers/copy/parts/*/*.parquet')").fetchone()[0]
+assert rows == 30000, f"the partitioned write reads back as {rows} rows rather than 30000"
+
+# And the same write again, which must be refused - by DuckDB, on the strength of what our listing
+# said. The pair is the point: accepted into an empty prefix, refused into the one just filled.
+try:
+    connection.execute(
+        "COPY (SELECT i AS n, i % 3 AS p FROM range(300) t(i)) "
+        "TO 's3://consumers/copy/parts' (FORMAT parquet, PARTITION_BY (p))"
+    )
+    raise AssertionError("a second partitioned COPY into a full prefix was accepted: the listing came back empty")
+except duckdb.IOException as refused:
+    assert "not empty" in str(refused), f"refused for the wrong reason: {refused}"
+
+print("ok overwrite=2 partitioned=30000")
+DUCKWRITE
+  listings_before=$(grep -ac 'list-type=2' "$log")
+  writes_before=$(grep -ac 'handled PUT' "$log")
+  docker run --rm --network host -v "$work:/w" python:3.12-slim \
+    sh -c "pip install -q duckdb boto3 && python /w/duckwrite.py" >"$work/duckwrite.out" 2>&1
+  if grep -q '^ok ' "$work/duckwrite.out"; then
+    listings=$(( $(grep -ac 'list-type=2' "$log") - listings_before ))
+    writes=$(( $(grep -ac 'handled PUT' "$log") - writes_before ))
+    if [ "$listings" -lt 1 ]; then
+      fail "duckdb write: the refusal happened without a listing; something other than this store decided it"
+    elif [ "$writes" -lt 4 ]; then
+      fail "duckdb write: only $writes objects were written; the partitioned COPY did not reach this store"
+    else
+      pass "duckdb write: $writes objects written, and a second partitioned COPY refused on $listings listings"
+    fi
+  else
+    fail "duckdb write: COPY TO and the overwrite check"
+    tail -12 "$work/duckwrite.out" | sed 's/^/          /'
+  fi
+else
+  skip "duckdb write" "image unavailable"
+fi
+
 echo
 echo "passed $passed, failed $failed, skipped $skipped"
 [ "$failed" -eq 0 ] || exit 1
