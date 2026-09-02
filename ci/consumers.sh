@@ -139,6 +139,9 @@ PY
     # The union alone is not evidence: writers that happened to take turns would produce it too,
     # and then this test would say nothing about the commit protocol it exists to exercise. The
     # server's own log is asked whether anybody was ever refused.
+    # A count of the whole log, and it is right only because this is the first section to run.
+    # Anything added above it has to take a baseline first: a cumulative counter answers "how many
+    # ever" when the question is "how many just now".
     conflicts=$(grep -ac '_delta_log.*-> 412' "$log")
     if [ "$conflicts" -gt 0 ]; then
       pass "delta-rs: $conflicts commits lost the race, were told 412, and the table is their union"
@@ -151,6 +154,110 @@ PY
   fi
 else
   skip "delta-rs" "image unavailable"
+fi
+
+# --- pyiceberg: the same shape of promise, written by somebody else (M-271) --------------------
+#
+# A second implementation of "a table on top of an object store", asking for different things than
+# delta-rs does. Its metadata is Avro manifests rather than JSON, and a scan reads parquet the way
+# parquet is meant to be read - footer first, then the column ranges it needs - so this is where
+# ranged reads of somebody else's file layout are exercised at all.
+#
+# **The concurrent commit here is not decided by this store, and that is worth saying plainly.**
+# With a SQL catalog the arbiter is the catalog's own transaction: the writer that loses is told
+# "concurrent update" by sqlite, and the object store is never asked to decide. Measured rather
+# than assumed - four writers racing produced zero 412 here against dozens under delta-rs. What is
+# asked of bochka is that nothing committed is lost while that happens, and that the table scans
+# back as everybody's rows.
+if have_image python:3.12-slim; then
+  cat > "$work/iceberg.py" <<'ICEBERG'
+import concurrent.futures as cf
+
+import boto3
+import pyarrow as pa
+from pyiceberg.catalog.sql import SqlCatalog
+
+ENDPOINT = "http://127.0.0.1:19200"
+BUCKET = "consumers"
+WRITERS, EACH = 4, 3
+PROPERTIES = {
+    "uri": "sqlite:////tmp/catalog.db",
+    "warehouse": f"s3://{BUCKET}/iceberg",
+    "s3.endpoint": ENDPOINT,
+    "s3.access-key-id": "bochkaadmin",
+    "s3.secret-access-key": "bochkasecret",
+    "s3.region": "us-east-1",
+}
+
+client = boto3.client(
+    "s3",
+    endpoint_url=ENDPOINT,
+    aws_access_key_id="bochkaadmin",
+    aws_secret_access_key="bochkasecret",
+    region_name="us-east-1",
+)
+try:
+    client.create_bucket(Bucket=BUCKET)
+except client.exceptions.ClientError:
+    pass  # The delta-rs section got here first, which is fine: the two use different prefixes.
+
+
+def rows_of(writer, round_):
+    return pa.table({"n": pa.array([writer * 100 + round_], pa.int64()), "who": [f"w{writer}"]})
+
+
+catalog = SqlCatalog("consumers", **PROPERTIES)
+catalog.create_namespace_if_not_exists("db")
+table = catalog.create_table_if_not_exists("db.race", schema=rows_of(0, 0).schema)
+table.append(pa.table({"n": pa.array([0], pa.int64()), "who": ["seed"]}))
+
+
+def append(writer):
+    mine = SqlCatalog("consumers", **PROPERTIES).load_table("db.race")
+    for round_ in range(EACH):
+        # An outer retry around the catalog's own, for the reason the delta-rs section raises its
+        # budget: how many times a client is willing to rebase is the client's property, and this
+        # test is about what the store is left holding.
+        for _ in range(20):
+            try:
+                mine.refresh()
+                mine.append(rows_of(writer, round_))
+                break
+            except Exception as refused:
+                failure = refused
+        else:
+            raise failure
+
+
+with cf.ThreadPoolExecutor(WRITERS) as pool:
+    list(pool.map(append, range(WRITERS)))
+
+scanned = catalog.load_table("db.race").scan().to_arrow()
+writers = {who for who in scanned.column("who").to_pylist() if who != "seed"}
+expected = 1 + WRITERS * EACH
+assert scanned.num_rows == expected, f"the table scans to {scanned.num_rows} rows where {expected} were committed"
+assert len(writers) == WRITERS, f"only {sorted(writers)} survived: a snapshot took somebody else's rows with it"
+print(f"ok rows={scanned.num_rows} writers={len(writers)}")
+ICEBERG
+  ranged_before=$(grep -ac -- '-> 206' "$log")
+  docker run --rm --network host -v "$work:/w" python:3.12-slim \
+    sh -c "pip install -q 'pyiceberg[sql-sqlite,pyarrow]' boto3 && python /w/iceberg.py" >"$work/iceberg.out" 2>&1
+  if grep -q '^ok ' "$work/iceberg.out"; then
+    # The scan is the claim, and on its own it could have been served by whole-object reads - which
+    # would mean this section exercised nothing the one above does not. The baseline is taken
+    # before the run rather than counted from zero, because the log is cumulative.
+    ranged=$(( $(grep -ac -- '-> 206' "$log") - ranged_before ))
+    if [ "$ranged" -gt 0 ]; then
+      pass "pyiceberg: snapshots survive four concurrent writers, and the scan made $ranged ranged reads"
+    else
+      fail "pyiceberg: the table is right but nothing was read by range; parquet was not read as parquet"
+    fi
+  else
+    fail "pyiceberg: concurrent appends and scan"
+    tail -12 "$work/iceberg.out" | sed 's/^/          /'
+  fi
+else
+  skip "pyiceberg" "image unavailable"
 fi
 
 echo
