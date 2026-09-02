@@ -16,6 +16,9 @@ dependencies {
     api(libs.coroutines.core)
 
     testImplementation(kotlin("test"))
+    // Lincheck for the one claim a probabilistic test cannot make: that the index is linearizable
+    // under *every* interleaving of a scenario rather than under the ones a race happened to hit.
+    testImplementation(libs.lincheck)
     testImplementation(libs.coroutines.test)
     // For the no-locks gate: the rule is checked by reading the bytecode this module compiles to.
     testImplementation(libs.asm)
