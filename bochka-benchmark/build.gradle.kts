@@ -11,6 +11,9 @@ dependencies {
     // The lifecycle sweep is S3's, not the core's — the core does not know what `lifecycle` means,
     // deliberately (M23). Measuring the sweep therefore needs the layer that does.
     implementation(project(":bochka-s3"))
+    // What a test suite actually starts, for the one measurement whose subject is starting rather
+    // than moving bytes (M-277).
+    implementation(project(":bochka-embedded"))
     implementation(libs.benchmark.runtime)
 }
 
