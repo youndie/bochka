@@ -225,6 +225,11 @@ Five levels, because each is blind to what the others catch:
 - **crash and cluster** — a test that kills the JVM with `SIGKILL` mid-write and demands that
   everything the log admitted to still reads back, and a chart harness that installs into a real
   kubelet rather than rendering YAML;
+- **a restart underneath somebody's client** — [`ci/restart.sh`](ci/restart.sh) stops the server
+  while an `rclone` sync is running, twice: the stop an orchestrator sends and the stop that comes
+  when the grace period runs out. Both have to end with the client finishing on its own default
+  retries and every object identical, compared by downloading them rather than by trusting the
+  `ETag` the server remembers;
 - **the code, broken on purpose** — [`ci/mutation.py`](ci/mutation.py) over a pitest run, asking
   what can be changed without a single test noticing. Its answer is a list of survivors and never a
   percentage; the first run said that removing **both** `fsync` calls leaves all 779 tests green,
