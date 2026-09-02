@@ -81,6 +81,17 @@ jobs:
       # run in which no consumer executed, so an image that cannot be pulled cannot pass as a tick.
       - run: ./ci/consumers.sh
 
+  restart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      # The server going down underneath a client that is in the middle of a sync (M-294). Every
+      # other harness stops the server when it has finished asking; this one stops it while the
+      # question is still being asked, twice - the stop an orchestrator sends and the stop that
+      # comes when the grace period runs out.
+      - run: ./ci/restart.sh
+
   compatibility:
     runs-on: ubuntu-latest
     steps:
