@@ -1275,6 +1275,7 @@ class S3Handler(
                 timestamp(stored.lastModified),
                 stored.eTag,
                 stored.size,
+                storageClass = stored.storageClass,
                 owner = stored.owner,
             )
         }
@@ -1613,6 +1614,19 @@ class S3Handler(
         verification: Caller,
         body: HttpHandler.RequestBody,
     ): HttpResponse {
+        // Refused before a byte of body is read, like every other refusal decided from the head
+        // (research, §1.2.2): a class this server cannot honour is the client's mistake, and it
+        // costs them nothing to be told at once.
+        val storageClass =
+            storageClassOf(head)
+                ?: return error(
+                    head,
+                    S3Error.INVALID_STORAGE_CLASS,
+                    detail = head.header("x-amz-storage-class"),
+                    key = route.key,
+                    bucket = route.bucket,
+                )
+
         val payloadHash = verification.payloadHash
         val streaming = payloadHash in SignatureVerifier.ALL_STREAMING
         val checksums = PayloadChecksums.of { head.header(it) }
@@ -1675,6 +1689,7 @@ class S3Handler(
                     encryption = encryption,
                     owner = ownerFor(route.bucket, verification.accessKeyId),
                     acl = statedAcl(head),
+                    storageClass = storageClass,
                 )
             staged = null
             // `x-amz-object-lock-*` on the upload itself: the object arrives already protected,
@@ -1739,6 +1754,24 @@ class S3Handler(
         }
 
     /**
+     * The storage class a write asked for, checked against what this server can honour (M-301).
+     *
+     * Absent means `STANDARD`, which is what the object is. The classes accepted are the ones that
+     * differ from `STANDARD` in durability or price rather than in **access**: every one of them
+     * is readable the moment it is written, which is the only promise this store can keep. The two
+     * that are refused, `GLACIER` and `DEEP_ARCHIVE`, require a restore before a read, and this
+     * server has no restore — accepting them would be a promise made in a header, which is the one
+     * thing this repository refuses to do: accept what it does not enforce.
+     *
+     * Found by `mint`: the header was read by nothing at all, so every class was silently
+     * `STANDARD` and every listing said so.
+     */
+    private fun storageClassOf(head: HttpRequestParser.Head): String? {
+        val asked = head.header("x-amz-storage-class") ?: return ObjectStore.STANDARD_STORAGE_CLASS
+        return asked.takeIf { it in STORABLE_CLASSES }
+    }
+
+    /**
      * `If-Match` and `If-None-Match` on a write.
      *
      * The same two headers as a conditional read and a different meaning: on a read they say "do
@@ -1779,6 +1812,7 @@ class S3Handler(
     ) : RuntimeException(message)
 
     /** `rfc822`, which is the format `s3-service-2.json` gives these timestamps and `Last-Modified` uses. */
+
     private fun parseHttpDate(value: String): Long? =
         try {
             java.time.ZonedDateTime
@@ -1997,6 +2031,12 @@ class S3Handler(
                     add("Last-Modified" to httpDate(stored.lastModified))
                     addAll(sseHeaders(stored))
                     addAll(versionHeader(stored))
+                    // Absent for a STANDARD object rather than present and saying so, which is
+                    // what S3 does: a client that reads this header to decide whether an object
+                    // needs restoring would otherwise see one on everything (M-301).
+                    if (stored.storageClass != ObjectStore.STANDARD_STORAGE_CLASS) {
+                        add("x-amz-storage-class" to stored.storageClass)
+                    }
                     addAll(expirationHeader(bucket, key, stored))
                     stored.retention?.let {
                         add("x-amz-object-lock-mode" to it.mode)
@@ -4638,6 +4678,23 @@ class S3Handler(
     private fun httpDate(instant: java.time.Instant): String = HTTP_DATE.format(instant)
 
     private companion object {
+        /**
+         * Classes an object may be stored under here.
+         *
+         * All of them are readable immediately; the list is deliberately not "every name S3 has".
+         * `GLACIER` and `DEEP_ARCHIVE` are missing on purpose and `EXPRESS_ONEZONE` because it
+         * belongs to directory buckets, which this server does not have.
+         */
+        private val STORABLE_CLASSES =
+            setOf(
+                ObjectStore.STANDARD_STORAGE_CLASS,
+                "REDUCED_REDUNDANCY",
+                "STANDARD_IA",
+                "ONEZONE_IA",
+                "INTELLIGENT_TIERING",
+                "GLACIER_IR",
+            )
+
         const val OWNER = "bochka"
 
         /**

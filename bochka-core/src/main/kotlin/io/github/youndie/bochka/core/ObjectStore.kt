@@ -113,6 +113,15 @@ class ObjectStore(
          * `x-amz-delete-marker: true`. Deleting it by version id is how a key comes back.
          */
         val deleteMarker: Boolean = false,
+        /**
+         * The storage class this version was written with (M-301).
+         *
+         * `STANDARD` unless a client asked for another, and the ones a client may ask for are the
+         * ones this server can honour: a class that requires a restore before a read is refused at
+         * the edge rather than stored, because accepting it would promise a tier this store does
+         * not have.
+         */
+        val storageClass: String = STANDARD_STORAGE_CLASS,
         /** Retention on this version, when it has any (M-110). */
         val retention: Retention? = null,
         /** A legal hold: on until somebody turns it off, independent of [retention] (M-111). */
@@ -421,6 +430,7 @@ class ObjectStore(
                                             Retention(it, record.retentionUntilMillis)
                                         },
                                     legalHold = record.legalHold,
+                                    storageClass = record.storageClass,
                                     encryption =
                                         record.encryptionAlgorithm?.let { algorithm ->
                                             Encryption(
@@ -884,8 +894,9 @@ class ObjectStore(
         bucket: String,
         key: ObjectKey,
         metadata: Metadata,
+        storageClass: String = STANDARD_STORAGE_CLASS,
         write: suspend (Sink) -> Unit,
-    ): Stored = commit(bucket, key, metadata, stage(write))
+    ): Stored = commit(bucket, key, metadata, stage(write), storageClass = storageClass)
 
     /**
      * An object's bytes on the disk, not yet anybody's.
@@ -1041,6 +1052,8 @@ class ObjectStore(
         /** Who is writing it, and under which canned ACL, when the deployment records owners (M-192). */
         owner: String? = null,
         acl: String? = null,
+        /** The class the client asked for, already checked by the layer that knows the S3 names. */
+        storageClass: String = STANDARD_STORAGE_CLASS,
     ): Stored =
         writing.withLock {
             // The bucket was there when the head was read; the body has been arriving ever since,
@@ -1090,6 +1103,7 @@ class ObjectStore(
                     encryption = encryption,
                     owner = owner,
                     acl = acl,
+                    storageClass = storageClass,
                 )
 
             // Not versioning means the write **replaces** the null version rather than joining it,
@@ -1164,6 +1178,7 @@ class ObjectStore(
         encryptionIv = stored.encryption?.iv,
         owner = stored.owner,
         acl = stored.acl,
+        storageClass = stored.storageClass,
     )
 
     /** Throws away bytes that were written and turned out not to be wanted. */
@@ -2517,6 +2532,12 @@ class ObjectStore(
          * looked like a Kotlin `null` would collapse "has no version" into "has no value".
          */
         const val NULL_VERSION: String = "null"
+
+        /**
+         * What an object is stored as unless somebody says otherwise, and what every object
+         * written before M-301 is.
+         */
+        const val STANDARD_STORAGE_CLASS: String = "STANDARD"
 
         /**
          * The floor on every part but the last, from the AWS documentation's own table
