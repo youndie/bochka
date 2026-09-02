@@ -32,9 +32,18 @@ import kotlin.test.Test
  * commit. Each invocation gets its own directory: the store owns files, and Lincheck builds a fresh
  * instance per run.
  *
- * **Stress rather than model checking.** The model checker re-executes an interleaving many times
- * to narrow it down, and every re-execution would replay writes to a real disk. Stress mode runs
- * the scenario as written, which is the mode that fits a subject with side effects.
+ * **Stress rather than model checking, and that is a limitation rather than a preference.** The
+ * model checker is the half that would enumerate; it was tried here and killed at twenty-five
+ * minutes without finishing three iterations, because it re-executes each interleaving many times
+ * and every re-execution replays writes to a real disk.
+ *
+ * **What this test does not catch, measured rather than assumed.** Moving the precondition read
+ * out from under the write lock — the check-then-act race these claims are about — leaves this
+ * green: the window is a few instructions wide and stress mode has to land in it by luck, which is
+ * the same luck `ObjectStoreConcurrencyTest` depends on. So this is not yet the promotion from
+ * "proved by racing" to "proved by enumeration" that M-286 wanted; it is a cheap guard against
+ * gross breakage of the index, and the enumeration needs a subject without a disk under it
+ * (M-306).
  */
 @Param(name = "key", gen = StringGen::class, conf = "2:ab")
 class IndexLinearizabilityTest {
