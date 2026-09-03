@@ -67,6 +67,22 @@ class ObjectLockTest {
     }
 
     @Test
+    fun `the same absence answers the GET with a code of its own`() {
+        // Two codes for one absence, and the difference is the point: the `PUT` says "recreate the
+        // bucket", the `GET` says "stop asking". The `PUT` half was pinned above from the start;
+        // this half lived in the KDoc alone until M20 was checked again, and a `NoSuchBucket` or a
+        // `NotImplemented` here would have read as a broken server rather than an empty setting.
+        S3Fixture().use { s3 ->
+            s3.createBucket("photos")
+
+            val answer = s3.send("GET", "/photos", query = "object-lock")
+
+            assertEquals(404, answer.status, answer.text)
+            assertTrue("ObjectLockConfigurationNotFoundError" in answer.text, answer.text)
+        }
+    }
+
+    @Test
     fun `a versioning bucket may take the lock after creation`() {
         // Creation is not the only door: the real precondition is versioning, and
         // `ObjectLockEnabledForBucket` was a special case of it.
