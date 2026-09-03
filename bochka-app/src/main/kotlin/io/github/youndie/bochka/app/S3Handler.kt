@@ -2363,7 +2363,7 @@ class S3Handler(
      * object and start a new cipher at every seam — including when a `Range` drops it into the
      * middle of one.
      */
-    private fun decrypting(
+    internal fun decrypting(
         stored: ObjectStore.Stored,
         presented: SseC?,
         offset: Long,

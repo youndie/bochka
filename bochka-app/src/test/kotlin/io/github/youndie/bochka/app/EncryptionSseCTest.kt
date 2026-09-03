@@ -1,9 +1,12 @@
 package io.github.youndie.bochka.app
 
+import io.github.youndie.bochka.core.ObjectKey
+import io.github.youndie.bochka.s3.SseC
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -155,6 +158,32 @@ class EncryptionSseCTest {
         assertEquals(200, answer.status)
         assertEquals("hello", answer.text)
         assertNull(answer.header("x-amz-server-side-encryption-customer-algorithm"))
+
+        // And the marker itself, which none of the three assertions above can see: both read paths
+        // put the same bytes on the same wire, so a server that filtered every response would
+        // answer this request exactly as it just did. The filter is asked for directly.
+        val plain = s3.store.get("photos", ObjectKey.of("plain.txt"))!!
+        assertNull(s3.handler.decrypting(plain, null, 0), "an unencrypted object was given a filter")
+        assertNull(
+            s3.handler.decrypting(plain, SseC.of { name -> sseC().toMap()[name] }, 0),
+            "a key presented for an object that has none turned the fast path off",
+        )
+    }
+
+    @Test
+    fun `an encrypted object is given a filter, which is what makes the check above mean anything`() {
+        // The other half of the pair. Without it "no filter" is a statement that would also be true
+        // of a server which had lost the slow path entirely, and then SSE-C would be answering
+        // ciphertext.
+        s3.createBucket("photos")
+        s3.put("photos", "secret.txt", "hello", sseC())
+
+        val stored = s3.store.get("photos", ObjectKey.of("secret.txt"))!!
+
+        assertNotNull(
+            s3.handler.decrypting(stored, SseC.of { name -> sseC().toMap()[name] }, 0),
+            "an encrypted object went out unfiltered",
+        )
     }
 
     @Test
