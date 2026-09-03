@@ -203,6 +203,28 @@ class ObjectStoreCompactionTest {
         }
 
     @Test
+    fun `under versioning the ceiling counts versions rather than keys`() =
+        runTest {
+            // M-105, and the reason the published number changed its noun. With versioning on,
+            // every write adds an entry, so three versions of one key fill a ceiling of three -
+            // and a ceiling that counted distinct keys would let one key hold as many versions as
+            // somebody cares to write, which is exactly the memory the number exists to bound.
+            //
+            // The whole gate stayed green when the check was made to count keys, which is how this
+            // test came to exist.
+            store(maxObjects = 3).use { s ->
+                s.createBucket("b")
+                s.setVersioning("b", ObjectStore.Versioning.ENABLED)
+
+                repeat(3) { s.write("one key", "version $it") }
+
+                val refused = assertFailsWith<ObjectStore.CeilingExceeded> { s.write("one key", "one too many") }
+                assertEquals(3, refused.ceiling)
+                assertEquals(3, refused.objects, "three versions of one key are three entries in the index")
+            }
+        }
+
+    @Test
     fun `a store over its ceiling refuses to open`() =
         runTest {
             store().use { s ->
