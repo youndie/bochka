@@ -48,6 +48,13 @@ cleanup() {
 trap cleanup EXIT
 
 command -v docker >/dev/null || { echo "docker is not installed; every consumer would be skipped" >&2; exit 3; }
+# `ss` is not a convenience here: the duckdb section's whole point is that the server did not end
+# the connection after each read, and that is counted from sockets in TIME_WAIT whose source port
+# is this server's. Without the tool the count comes out zero, the section passes, and it passes
+# by printing the exact sentence M-272 exists to prove -- "not one connection closed from this
+# end" -- about a measurement that never happened. Measured: with the call renamed to something
+# absent, the run was 6 passed, 0 failed.
+command -v ss >/dev/null || { echo "ss (iproute2) is not installed; the keep-alive count would silently be zero" >&2; exit 3; }
 
 echo "building the distribution"
 "$root/gradlew" -p "$root" -q :bochka-app:installDist || { echo "build failed" >&2; exit 3; }
