@@ -268,7 +268,7 @@ object Main {
         }
     }
 
-    private fun housekeep(store: ObjectStore) {
+    internal fun housekeep(store: ObjectStore) {
         runCatching {
             store.compactIfWorthwhile()?.let {
                 println("compacted the index: ${it.bytesBefore} -> ${it.bytesAfter} bytes, ${it.records} records")
