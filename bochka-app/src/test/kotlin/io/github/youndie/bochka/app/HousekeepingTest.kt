@@ -2,7 +2,7 @@ package io.github.youndie.bochka.app
 
 import io.github.youndie.bochka.core.Metadata
 import io.github.youndie.bochka.core.ObjectStore
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.test.Test
@@ -23,7 +23,7 @@ import kotlin.test.assertTrue
 class HousekeepingTest {
     @Test
     fun `a round that throws is printed and does not escape`() =
-        runTest {
+        runBlocking {
             val dir: Path = Files.createTempDirectory("bochka-housekeeping")
             try {
                 val store = ObjectStore(dir)
