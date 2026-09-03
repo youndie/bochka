@@ -209,6 +209,21 @@ class AwsChunkedDecoderTest {
     }
 
     @Test
+    fun `a chunk of exactly the limit is accepted at its size line`() {
+        // The other half of the pair above, and it costs nothing: the size line is refused - or
+        // not - before a byte of the chunk is read, so the largest allowed size can be offered
+        // without producing sixteen mebibytes to go with it. Without this the refusing test alone
+        // proves only that some limit exists somewhere below 16 MiB + 1; the rule this repository
+        // wrote for itself in M37 is that a boundary needs the last value that passes as well as
+        // the first that does not.
+        val f = fixture("signed-one-chunk")
+        val atTheLimit = "${AwsChunkedDecoder.MAX_CHUNK.toString(16)};chunk-signature=${"0".repeat(64)}\r\n"
+
+        // No exception: the decoder now waits for the bytes it was promised.
+        decoderFor(f) { _, _, _ -> }.feed(atTheLimit.toByteArray())
+    }
+
+    @Test
     fun `a size line longer than the limit is refused rather than buffered`() {
         val f = fixture("signed-one-chunk")
         val endless = ("0".repeat(5000)).toByteArray()

@@ -290,7 +290,10 @@ class AwsChunkedDecoder(
             )
     }
 
-    private companion object {
+    // `internal` rather than `private`, so that the boundary test can offer exactly the largest
+    // chunk this decoder allows instead of writing `1000000` next to it. A limit spelled in two
+    // places is a limit that will be changed in one.
+    internal companion object {
         const val CHUNK_SIGNATURE = "chunk-signature="
         const val TRAILER_SIGNATURE = "x-amz-trailer-signature:"
         const val MAX_CHUNK = 16L * 1024 * 1024
