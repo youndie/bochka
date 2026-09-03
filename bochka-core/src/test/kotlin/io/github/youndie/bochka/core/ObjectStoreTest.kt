@@ -1,14 +1,18 @@
 package io.github.youndie.bochka.core
 
 import kotlinx.coroutines.test.runTest
+import java.nio.ByteBuffer
+import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -93,6 +97,31 @@ class ObjectStoreTest {
             // No name on disk carries anything from a key: they are UUIDs and nothing else.
             val uuid = Regex("^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
             assertTrue(names.all { uuid.matches(it) }, "names on disk: $names")
+        }
+
+    @Test
+    fun `a reader that opened the old file keeps reading it after the key is replaced`() =
+        runTest {
+            // R2 and M-44, and until now this was held by the shape of the code rather than by a
+            // check: every version is a file of its own, and the replaced one is unlinked only
+            // after the index has stopped pointing at it, so a `GET` already streaming does not
+            // see bytes change underneath it. Writing a version in place would keep every other
+            // test in this file green and hand a reader half of each object.
+            store().use { s ->
+                s.createBucket("b")
+                val first = s.put("b", "k", "one")
+
+                FileChannel.open(s.pathOf(first), StandardOpenOption.READ).use { open ->
+                    val second = s.put("b", "k", "two")
+                    assertNotEquals(first.fileId, second.fileId, "a version must not reuse the file of the one before")
+
+                    val buffer = ByteBuffer.allocate(16)
+                    val read = open.read(buffer)
+                    assertEquals("one", String(buffer.array(), 0, read), "the reader was handed the new bytes")
+                }
+
+                assertEquals("two", s.read("b", "k"))
+            }
         }
 
     @Test
