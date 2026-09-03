@@ -126,6 +126,25 @@ else
   fail "the shipped profile is not 512M of heap (ceiling $shipped, -Xmx512M gives $explicit)"
 fi
 
+# The number above is also a **published** number, and until M21 was checked again nothing compared
+# the two. 399 215 stands in README.md, in CLAUDE.md, in the KDoc of build.gradle.kts and in the
+# chart's `bochka.derivedCeiling` -- the last of which is what `helm install` prints to an operator
+# as "what this appVersion prints on its first line". Its sibling 99 816 is checked: the chart
+# harness reads it out of the pod's log to prove the small profile actually started. So a heap
+# profile, a collector or an index entry size that moved would leave every published number stale
+# with only the small profile's guard red. Both numbers are read out of the documents rather than
+# typed again here: a check carrying its own copy of a number is one more place for it to drift.
+published=$(sed -n 's/^| `default`, what ships |[^|]*| \*\*\([0-9 ]*\)\*\*.*/\1/p' "$root/README.md" | tr -d ' ')
+charted=$(sed -n 's/.*{{ else }}\([0-9][0-9]*\){{ end -}}.*/\1/p' "$root/deploy/helm/bochka/templates/_helpers.tpl")
+
+if [ -z "$published" ] || [ -z "$charted" ]; then
+  fail "the published ceiling could not be read back (README '$published', chart '$charted'): the table or the helper changed shape"
+elif [ "$shipped" = "$published" ] && [ "$shipped" = "$charted" ]; then
+  pass "the ceiling the process prints is the one README and the chart publish ($shipped)"
+else
+  fail "the process prints $shipped, README says $published, the chart quotes $charted"
+fi
+
 # Not an approval of the override — a record of it, so that the one place it matters is not left to
 # be discovered. Nothing that wraps this image may offer a JAVA_OPTS knob: the object ceiling is
 # derived from the heap, so such a knob reads as "more objects" and is a promise made by the wrapper
