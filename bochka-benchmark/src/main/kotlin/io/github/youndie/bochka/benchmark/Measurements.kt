@@ -109,6 +109,10 @@ object Measurements {
                     sse(dir, bytes)
                 }
 
+                "verify" -> {
+                    verify(dir, bytes)
+                }
+
                 "gc" -> {
                     gcPauses(dir)
                 }
@@ -310,6 +314,163 @@ object Measurements {
         println(plain)
         println(ciphered)
         println("  ${Measurement.compare(plain.median, ciphered.median)}")
+        println("  (checksum of the reads, so that nothing above can be optimised away: $sink)")
+    }
+
+    /**
+     * M-307: what it would cost to check an object's bytes while serving it.
+     *
+     * Nothing on the read path compares what is on disk with what the index remembers, and that is
+     * not a hole somebody forgot: the fast path exists **because** the bytes never enter this
+     * process (§1.6). Verifying them means giving that up, and the price of giving it up is
+     * already measured — M-61 on the network stand, 7.6–8.0× the processor per byte. What is not
+     * measured, and is the only new number here, is what the digest itself adds once the bytes are
+     * in a buffer anyway.
+     *
+     * Two digests rather than one, because they are not interchangeable. `CRC32C` is what would be
+     * stored deliberately for this purpose; `MD5` is what an object already carries when the client
+     * asked for no checksum, since a single-part `ETag` **is** the MD5 of the content. A design
+     * that verifies "for free, from what is already there" is paying the second number, not the
+     * first.
+     *
+     * In this process and through no socket, for the reason M-190 records above: over loopback all
+     * of this lands inside its own noise, and a variant doing strictly more work has come back
+     * cheaper. The socket half of the question already has its answer on a stand with a real card.
+     */
+    private fun verify(
+        dir: Path,
+        bytes: Long,
+    ) {
+        println("== M-307: what checking the bytes on the way out would cost ==")
+        val file = fill(dir.resolve("verify.bin"), bytes)
+        var sink = 0L
+
+        // Reads the whole file and throws the bytes away. Called before every variant rather than
+        // once at the start, because the first version left the cheapest variant with a spread of
+        // 1.92x - larger than the difference being asked about, which by this file's own rule means
+        // no conclusion at all. What varies between runs is whether the page cache still holds a
+        // gibibyte, and that is not a property of any variant.
+        fun warm() {
+            FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                val buffer = ByteBuffer.allocate(64 * KIB.toInt())
+                while (true) {
+                    buffer.clear()
+                    if (source.read(buffer) < 0) break
+                }
+            }
+        }
+
+        // Discarded passes, for the same reason the cipher needs them: `CRC32C` and `MD5` are
+        // intrinsics, and the first measured run would otherwise be a measurement of the compiler.
+        repeat(2) {
+            FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                val chunk = ByteArray(64 * KIB.toInt())
+                val buffer = ByteBuffer.wrap(chunk)
+                val crc = java.util.zip.CRC32C()
+                val md5 = java.security.MessageDigest.getInstance("MD5")
+                while (true) {
+                    buffer.clear()
+                    val read = source.read(buffer)
+                    if (read < 0) break
+                    crc.update(chunk, 0, read)
+                    md5.update(chunk, 0, read)
+                    sink += chunk[read - 1].toLong()
+                }
+                sink += crc.value + md5.digest()[0]
+            }
+        }
+
+        val plain =
+            Measurement.repeated("read the object, no digest", bytes, repeats) {
+                warm()
+                Measurement.of("read the object, no digest", bytes) {
+                    FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                        val chunk = ByteArray(64 * KIB.toInt())
+                        val buffer = ByteBuffer.wrap(chunk)
+                        while (true) {
+                            buffer.clear()
+                            val read = source.read(buffer)
+                            if (read < 0) break
+                            sink += chunk[read - 1].toLong()
+                        }
+                    }
+                }
+            }
+        val crc32c =
+            Measurement.repeated("read the object, CRC32C", bytes, repeats) {
+                warm()
+                Measurement.of("read the object, CRC32C", bytes) {
+                    FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                        val chunk = ByteArray(64 * KIB.toInt())
+                        val buffer = ByteBuffer.wrap(chunk)
+                        val crc = java.util.zip.CRC32C()
+                        while (true) {
+                            buffer.clear()
+                            val read = source.read(buffer)
+                            if (read < 0) break
+                            crc.update(chunk, 0, read)
+                            sink += chunk[read - 1].toLong()
+                        }
+                        // Into the output, so that the digest cannot be optimised away as a loop
+                        // whose result nobody reads.
+                        sink += crc.value
+                    }
+                }
+            }
+        val md5 =
+            Measurement.repeated("read the object, MD5 (the ETag)", bytes, repeats) {
+                warm()
+                Measurement.of("read the object, MD5 (the ETag)", bytes) {
+                    FileChannel.open(file, StandardOpenOption.READ).use { source ->
+                        val chunk = ByteArray(64 * KIB.toInt())
+                        val buffer = ByteBuffer.wrap(chunk)
+                        val digest = java.security.MessageDigest.getInstance("MD5")
+                        while (true) {
+                            buffer.clear()
+                            val read = source.read(buffer)
+                            if (read < 0) break
+                            digest.update(chunk, 0, read)
+                            sink += chunk[read - 1].toLong()
+                        }
+                        sink += digest.digest()[0]
+                    }
+                }
+            }
+
+        // The digests again, this time with the file taken out of the question. The three variants
+        // above are a sum of two costs, and the cheaper of the two - reading a gibibyte the page
+        // cache already holds - carries the whole run's noise: its spread stayed at 1.34x while
+        // the digested variants settled at 1.17-1.22x, so the CRC ratio above sits exactly on the
+        // noise floor and this file's own rule forbids concluding from it. Over a buffer that is
+        // already in memory there is nothing left to be noisy, and the two costs can be added by
+        // hand instead of measured together.
+        val chunk = ByteArray(64 * KIB.toInt()) { (it * 31 + 7).toByte() }
+        val passes = (bytes / chunk.size).toInt()
+        val crcInMemory =
+            Measurement.repeated("CRC32C over memory", bytes, repeats) {
+                Measurement.of("CRC32C over memory", bytes) {
+                    val crc = java.util.zip.CRC32C()
+                    repeat(passes) { crc.update(chunk, 0, chunk.size) }
+                    sink += crc.value
+                }
+            }
+        val md5InMemory =
+            Measurement.repeated("MD5 over memory", bytes, repeats) {
+                Measurement.of("MD5 over memory", bytes) {
+                    val digest = java.security.MessageDigest.getInstance("MD5")
+                    repeat(passes) { digest.update(chunk, 0, chunk.size) }
+                    sink += digest.digest()[0]
+                }
+            }
+
+        println(plain)
+        println(crc32c)
+        println(md5)
+        println(crcInMemory)
+        println(md5InMemory)
+        println("  CRC32C on top of the read: ${Measurement.compare(plain.median, crc32c.median)}")
+        println("  MD5 on top of the read:    ${Measurement.compare(plain.median, md5.median)}")
+        println("  the digests by themselves: ${Measurement.compare(crcInMemory.median, md5InMemory.median)}")
         println("  (checksum of the reads, so that nothing above can be optimised away: $sink)")
     }
 
