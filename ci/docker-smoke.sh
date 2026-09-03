@@ -38,12 +38,13 @@ ceiling() {
     [ -n "$n" ] && break
     sleep 0.5
   done
+  docker logs "$NAME-ceiling" >"$work/ceiling.log" 2>&1
   docker rm -f "$NAME-ceiling" >/dev/null 2>&1
   printf '%s' "$n"
 }
 
 cleanup() {
-  docker rm -f "$NAME" "$RO_NAME" "$NAME-ceiling" >/dev/null 2>&1
+  docker rm -f "$NAME" "$RO_NAME" "$NAME-ceiling" "$NAME-note" >/dev/null 2>&1
   chmod -R u+w "$work" 2>/dev/null
   rm -rf "$work" 2>/dev/null || docker run --rm -v "$work:/w" --entrypoint "" alpine:latest rm -rf /w/. 2>/dev/null
 }
@@ -210,6 +211,43 @@ if noisy=$(ceiling -e JAVA_OPTS=-Xmx3G) && [ -n "$noisy" ]; then
   pass "a heap beyond the measured envelope still starts (ceiling $noisy)"
 else
   fail "a heap beyond the measured envelope did not start"
+fi
+
+# The other half of M-157, and until M22 was checked again it was the missing one. "Not a refusal"
+# was asserted above; "loud" was asserted nowhere. `GcProfile.beyondWhatWasMeasured()` has its own
+# unit tests, but they test the string the function *returns* -- deleting the one line in Main that
+# prints it leaves every one of them green and this script green with them, which is the whole
+# shape of the defect the milestone was written against: a note nobody is told.
+#
+# The note is read from a run of its own rather than from the one that produced the ceiling above:
+# it is printed *after* the ceiling line, so a reader that stops at the ceiling can stop one line
+# early. Waited for by `housekeeping:`, which the server prints after both. The size is not typed
+# in either -- under -Xmx3G the JVM reports 2969 MiB, not 3072, and a check carrying its own idea
+# of the number would be testing arithmetic instead of the log.
+docker rm -f "$NAME-note" >/dev/null 2>&1
+docker run -d --rm --name "$NAME-note" -e JAVA_OPTS=-Xmx3G "$IMAGE" >/dev/null 2>&1
+for _ in $(seq 1 40); do
+  docker logs "$NAME-note" >"$work/note.log" 2>&1
+  grep '^housekeeping:' "$work/note.log" >/dev/null 2>&1 && break
+  sleep 0.5
+done
+docker rm -f "$NAME-note" >/dev/null 2>&1
+
+if grep '^NOTE: heap: .* is beyond what this distribution was measured on' "$work/note.log" >/dev/null 2>&1; then
+  pass "the heap outside the envelope is announced in the log, not only computed"
+else
+  fail "nothing in the log said the heap was outside the measured envelope"
+  grep -E '^(object ceiling|collector|NOTE):' "$work/note.log" 2>/dev/null | sed 's/^/          /'
+fi
+
+# And the negative that makes the positive worth having: a note printed on every start is not a
+# note. The shipped profile is inside the envelope by construction, so its log must be silent about
+# it -- read from the long-running container, which runs with no heap override at all.
+if docker logs "$NAME" 2>&1 | grep '^NOTE:' >/dev/null 2>&1; then
+  fail "the shipped profile announces itself as outside its own envelope"
+  docker logs "$NAME" 2>&1 | grep '^NOTE:' | sed 's/^/          /'
+else
+  pass "the shipped profile says nothing about the envelope, because it is inside it"
 fi
 
 # --- the volume belongs to the process, not to root ---------------------------------------------
