@@ -61,24 +61,30 @@ class S3Fixture(
 ) : AutoCloseable {
     val store = ObjectStore(root, durability)
 
-    private val server =
-        HttpServer(
-            S3Handler(
-                store = store,
-                verifier =
-                    SignatureVerifier(
-                        Credentials(
-                            mapOf(ACCESS_KEY to SECRET, OTHER_ACCESS_KEY to OTHER_SECRET),
-                            scope?.let { mapOf(ACCESS_KEY to it) } ?: emptyMap(),
-                        ),
+    /**
+     * The handler itself, for the one thing a socket cannot show: which read path a response chose.
+     *
+     * Everything else here deliberately goes over the wire, for the reason above. The fast path and
+     * the slow one, though, put identical bytes on that wire — which is what makes the fast path
+     * worth having and its loss invisible from outside.
+     */
+    val handler =
+        S3Handler(
+            store = store,
+            verifier =
+                SignatureVerifier(
+                    Credentials(
+                        mapOf(ACCESS_KEY to SECRET, OTHER_ACCESS_KEY to OTHER_SECRET),
+                        scope?.let { mapOf(ACCESS_KEY to it) } ?: emptyMap(),
                     ),
-                router = S3Router(virtualHostSuffixes),
-                accelRedirect = accelRedirect,
-                anonymous = anonymous,
-                lifecycleDay = lifecycleDay,
-            ),
-            port = 0,
+                ),
+            router = S3Router(virtualHostSuffixes),
+            accelRedirect = accelRedirect,
+            anonymous = anonymous,
+            lifecycleDay = lifecycleDay,
         )
+
+    private val server = HttpServer(handler, port = 0)
 
     /**
      * Runs the lifecycle rules — the same sweep that turns in the background inside the server.
