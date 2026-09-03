@@ -1330,6 +1330,28 @@ class S3Handler(
             PostForm.boundaryOf(head.header("content-type"))
                 ?: return error(head, S3Error.MALFORMED_POST_REQUEST, detail = "no multipart boundary", bucket = bucket)
 
+        // A form that says how big it is gets the same answer without a byte being read. The rule
+        // this server is built on is that a refusal costs no body (research, §1.2), and a form is
+        // the one place it cannot hold in general - the signature is inside the body. It holds
+        // here: `Content-Length` is in the head, and a client declaring more than the ceiling has
+        // told us enough already.
+        //
+        // Found by the test below being flaky rather than by design. Collecting sixteen mebibytes
+        // costs about three times that while the buffer doubles, and the test JVM has a quarter of
+        // the heap the distribution ships with, so the refusal sometimes lost the race to an
+        // OutOfMemoryError and the client got `500 InternalError` instead of `400 EntityTooLarge`.
+        // Under the shipped profile that race is not close - but a server that answers "I am
+        // broken" when it is merely full is exactly what the ceiling was written to prevent.
+        val declared = head.contentLength
+        if (declared != null && declared > MAX_FORM_BODY) {
+            return error(
+                head,
+                S3Error.ENTITY_TOO_LARGE,
+                detail = "the form states $declared bytes; the limit is $MAX_FORM_BODY",
+                bucket = bucket,
+            )
+        }
+
         val collected = ByteArrayOutputStream()
         try {
             body.forEach { bytes, offset, length ->
