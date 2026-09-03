@@ -83,7 +83,7 @@ command -v helm >/dev/null || { echo "helm is not installed" >&2; exit 3; }
 # --- lint ---------------------------------------------------------------------------------------
 
 echo "linting"
-for set in minimal full foreign-ingress existing-claim existing-secret; do
+for set in minimal full foreign-ingress existing-claim existing-secret shortened-day; do
   if helm lint "$chart" -f "$values/$set-values.yaml" >"$work/lint.out" 2>&1; then
     pass "helm lint, $set values"
   else
@@ -96,7 +96,7 @@ done
 
 echo
 echo "rendering"
-for set in minimal full foreign-ingress existing-claim existing-secret; do
+for set in minimal full foreign-ingress existing-claim existing-secret shortened-day; do
   if helm template "$RELEASE" "$chart" -f "$values/$set-values.yaml" >"$work/$set.yaml" 2>"$work/$set.err"; then
     pass "helm template, $set values"
   else
@@ -153,6 +153,25 @@ expect_not_in "$work/minimal.yaml" 'dev/tcp' "and the forked shell every period 
 # BOCHKA_LIFECYCLE_DAY_SECONDS out of a default render.
 expect_not_in "$work/minimal.yaml" 'BOCHKA_ANONYMOUS' "unsigned requests are refused unless somebody asks otherwise"
 expect_in "$work/full.yaml" 'BOCHKA_ANONYMOUS' "and asking for it renders the variable"
+# The lifecycle day, whose two rendering halves matter for different reasons and neither of which
+# was checked. **Absent** by default because an absent variable means exactly 86400 to the server,
+# while the name itself stops any image older than the setting: a chart rendering it
+# unconditionally would break a rollback, and break it looking like a typo in the values.
+# **Present, with the value asked for** when the day is shortened and the reason written down,
+# because this is the one setting in this chart that deletes data early -- by exactly the factor it
+# shortens -- so a value that renders wrong is data gone early rather than a cosmetic slip. The
+# BOCHKA_LOG check below exists because a boolean once rendered as "true"; the same class of
+# mistake here is measured in objects. The refusal in the negative sets covers neither of these:
+# a default render has nothing to refuse.
+expect_not_in "$work/minimal.yaml" 'BOCHKA_LIFECYCLE_DAY_SECONDS' \
+  "a day nobody shortened is the server's own, and the variable is not rendered at all"
+if grep -A1 'name: BOCHKA_LIFECYCLE_DAY_SECONDS' "$work/shortened-day.yaml" | grep 'value: "5"' >/dev/null; then
+  pass 'an explained shortened day renders as the number it names'
+else
+  fail 'an explained shortened day did not reach the pod as "5"'
+  grep -A1 'name: BOCHKA_LIFECYCLE_DAY_SECONDS' "$work/shortened-day.yaml" | sed 's/^/          /'
+fi
+
 expect_not_in "$work/minimal.yaml" 'JAVA_OPTS' "the runtime profile is never touched from the chart"
 expect_not_in "$work/minimal.yaml" 'terminationGracePeriodSeconds' "no invented grace period"
 expect_not_in "$work/minimal.yaml" 'preStop' "no preStop hook pretending to drain connections"
