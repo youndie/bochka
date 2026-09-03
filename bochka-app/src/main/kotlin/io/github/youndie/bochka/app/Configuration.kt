@@ -49,6 +49,11 @@ class Configuration private constructor(
         DATA_DIR("data.dir", null, "where objects and the index live; a temporary directory if unset"),
         REGION("region", "us-east-1", "the region name this deployment answers with"),
         KEYS("keys", null, "access keys as id:secret,id2:secret2; two defaults if unset"),
+        KEYS_FILE(
+            "keys.file",
+            null,
+            "a file holding what keys would hold; for a Secret mounted rather than put in the environment",
+        ),
         KEY_SCOPES(
             "key.scopes",
             null,
@@ -186,6 +191,38 @@ class Configuration private constructor(
                     KNOWN_ENVIRONMENT[name]
                         ?: throw Refused(unknown(name, KNOWN_ENVIRONMENT.keys, "in the environment"))
                 values[key.property] = value
+            }
+
+            // The keys, read from a file rather than taken from the environment (M-296).
+            //
+            // The chart used to pass them as `BOCHKA_KEYS`, which puts every secret this
+            // deployment accepts into `/proc/PID/environ` — readable by anything that can see the
+            // process, and copied into whatever collects container metadata. Mounting the Secret
+            // instead was the obvious fix and did not work: `BOCHKA_CONFIG` reads a properties
+            // file, and a Secret holds `id:secret,id2:secret2`, where the colon makes the key id a
+            // property name that `KNOWN_PROPERTIES` refuses. So the server learns the format it
+            // already publishes, from a file.
+            //
+            // Both at once is a refusal rather than a precedence rule: two sources for one value
+            // means a rotation that changes one of them silently changes nothing, and which half
+            // won would have to be remembered by whoever reads the log a year later.
+            val keysFile = values[Key.KEYS_FILE.property]?.trim()?.takeIf { it.isNotEmpty() }
+            if (keysFile != null) {
+                if (values[Key.KEYS.property]?.isNotBlank() == true) {
+                    throw Refused(
+                        "both ${Key.KEYS.environment} and ${Key.KEYS_FILE.environment} are set; " +
+                            "the keys have to come from one place",
+                    )
+                }
+                val path = Path.of(keysFile)
+                if (!Files.isReadable(path)) {
+                    throw Refused("${Key.KEYS_FILE.environment} points at $path, which cannot be read")
+                }
+                // Trimmed for the log rather than for the keys: a mounted Secret ends with a
+                // newline, and `list` already trims every pair it splits out, so removing the
+                // trim changes no behaviour a test can see. What it does change is the line
+                // `describe` prints at startup, which would otherwise carry a stray newline.
+                values[Key.KEYS.property] = Files.readString(path).trim()
             }
 
             return Configuration(values.filterValues { it.isNotBlank() })

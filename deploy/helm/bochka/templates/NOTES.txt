@@ -24,7 +24,7 @@ inside it, so two things are on you:
   * if that key renders empty, the server starts with the built-in pairs bochkaadmin/bochkaalt,
     which are published in this repository, and its log calls that a normal start. Run
     `helm test {{ .Release.Name }}` — the test asserts those credentials are refused;
-  * rotating the Secret does not reach the running process. BOCHKA_KEYS is read once at startup:
+  * rotating the Secret does not reach the running process. The keys are read once at startup:
 
       kubectl -n {{ .Release.Namespace }} rollout restart statefulset/{{ include "bochka.fullname" . }}
 {{- else }}

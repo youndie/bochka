@@ -69,6 +69,46 @@ class ConfigurationTest {
     }
 
     @Test
+    fun `the keys can come out of a file, which is how a Secret arrives`() {
+        // M-296. The chart used to pass the keys as an environment variable, which puts every
+        // secret the deployment accepts into `/proc/PID/environ`. Mounting the Secret and pointing
+        // `BOCHKA_CONFIG` at it does not work - that reads properties, and `id:secret` makes the
+        // key id a property name - so the file holds the format this server already publishes.
+        val file = Files.createTempFile("bochka-keys", ".txt")
+        // With the trailing newline a mounted Secret really has. It survives either way - `list`
+        // trims every pair - and it is written here because a fixture without it would be a
+        // fixture nobody deploys.
+        Files.writeString(file, "one:first,two:second\n")
+
+        val configuration = of("BOCHKA_KEYS_FILE" to file.toString())
+
+        assertEquals(listOf("one:first", "two:second"), configuration.list(Configuration.Key.KEYS))
+    }
+
+    @Test
+    fun `keys in two places at once are a refusal rather than a precedence rule`() {
+        val file = Files.createTempFile("bochka-keys", ".txt")
+        Files.writeString(file, "one:first")
+
+        val refused =
+            assertFailsWith<Configuration.Refused> {
+                of("BOCHKA_KEYS" to "two:second", "BOCHKA_KEYS_FILE" to file.toString())
+            }
+
+        assertContains(refused.message, "BOCHKA_KEYS_FILE")
+    }
+
+    @Test
+    fun `a keys file that cannot be read stops the start rather than falling back`() {
+        // Falling back would start the server on the two published built-in pairs while the
+        // operator believes it is running on theirs, which is the failure this whole file exists
+        // to prevent.
+        val refused = assertFailsWith<Configuration.Refused> { of("BOCHKA_KEYS_FILE" to "/nowhere/keys.txt") }
+
+        assertContains(refused.message, "cannot be read")
+    }
+
+    @Test
     fun `the printed configuration does not carry the secret half of a key`() {
         val described = of("BOCHKA_KEYS" to "bochkaadmin:s3cr3t,alt:al7secret").describe()
 

@@ -291,9 +291,12 @@ the premises of the original brief that did not survive contact with the sources
   `SSE-C` is there, where the key belongs to whoever sends it.
 - **Not an identity system.** Access keys are a static list in the configuration; no IAM, no STS.
   Passed as `BOCHKA_KEYS` they are readable by anyone who can run `docker inspect` or read
-  `/proc/<pid>/environ`, which is a wider audience than the one the secret was handed to. Point
-  `BOCHKA_CONFIG` at a properties file instead and they never enter the environment — the file is
-  the same list, under the same names, and it is what a mounted secret is for.
+  `/proc/<pid>/environ`, which is a wider audience than the one the secret was handed to. Two ways
+  out, and the second exists because the first does not fit a Kubernetes `Secret`: point
+  `BOCHKA_CONFIG` at a properties file, or point `BOCHKA_KEYS_FILE` at a file holding exactly what
+  `BOCHKA_KEYS` would hold — `id:secret,id2:secret2`. A `Secret` holds that form and not the
+  properties one, where the colon in `id:secret` would make the key id a property name; the Helm
+  chart mounts it and uses the second.
 - **Not compared with anything.** The read path is measured — host, filesystem and spread included
   — but nothing here has been benchmarked *against another store*, and no number above should be
   read as one.

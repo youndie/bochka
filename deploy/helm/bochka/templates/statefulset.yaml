@@ -84,7 +84,7 @@ spec:
       {{- if or (not .Values.auth.existingSecret) .Values.podAnnotations }}
       annotations:
         {{- /*
-        Rotating a key this chart owns rolls the pod, because BOCHKA_KEYS is read once at startup
+        Rotating a key this chart owns rolls the pod, because the keys are read once at startup
         and a Secret updated underneath a running process changes nothing. For an existingSecret the
         chart cannot see the content and does not pretend to: rotating that one means restarting the
         pod yourself, and NOTES.txt says so.
@@ -259,15 +259,18 @@ spec:
               value: {{ join "," . | quote }}
             {{- end }}
             {{- /*
-            No `optional: true`. A missing key would leave BOCHKA_KEYS unset, and unset is not an
-            error to this server — it is the two built-in pairs (Main.kt:48), so the pod would come
-            up serving credentials published in this repository.
+            The keys arrive as a **file**, not as a variable (M-296). As `BOCHKA_KEYS` they sat in
+            `/proc/PID/environ` — readable by anything that can see the process and copied into
+            whatever collects container metadata — for the whole life of the pod. The Secret is
+            mounted below and named here.
+
+            Still no `optional: true` anywhere on this path: a Secret whose key is missing fails
+            the volume projection and the pod does not start, where an optional variable would
+            have left the server up on the two built-in pairs published in this repository
+            (Main.kt:48).
             */}}
-            - name: BOCHKA_KEYS
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "bochka.secretName" . }}
-                  key: {{ include "bochka.secretKey" . }}
+            - name: BOCHKA_KEYS_FILE
+              value: /etc/bochka/keys/{{ include "bochka.secretKey" . }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -304,6 +307,23 @@ spec:
           volumeMounts:
             - name: data
               mountPath: /var/lib/bochka
+            {{- /*
+            Read-only, and its own mount: the process needs these bytes once, at startup, and
+            nothing about the deployment should let it write where its credentials come from.
+            */}}
+            - name: keys
+              mountPath: /etc/bochka/keys
+              readOnly: true
+      volumes:
+        - name: keys
+          secret:
+            secretName: {{ include "bochka.secretName" . }}
+            {{- /*
+            0400 and the container's own user: a Secret mounted with the default 0644 is readable
+            by every process in the pod, which for a sidecar somebody adds later is the same leak
+            in a different place.
+            */}}
+            defaultMode: 0400
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
