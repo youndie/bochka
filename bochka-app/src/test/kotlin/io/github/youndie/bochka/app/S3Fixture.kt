@@ -58,8 +58,16 @@ class S3Fixture(
      * write that the page cache accepted looks like a write that succeeded.
      */
     durability: ObjectStore.Durability = ObjectStore.Durability.NONE,
+    /**
+     * The ceiling on versions, as the server derives it from the heap unless a test names one.
+     *
+     * Named by the test about the fullness percentage: against the shipped ceiling a single object
+     * rounds to zero per cent, so a percentage that never moves is indistinguishable from a right
+     * one.
+     */
+    maxObjects: Int = ObjectStore.ceilingForHeap(),
 ) : AutoCloseable {
-    val store = ObjectStore(root, durability)
+    val store = ObjectStore(root, durability, maxObjects)
 
     /**
      * The handler itself, for the one thing a socket cannot show: which read path a response chose.

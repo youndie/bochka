@@ -44,6 +44,21 @@ class StatsTest {
                 .toLong()
         assertTrue(logBytes > 0, "the log is reported as empty after two writes")
         assertContains(after.text, "log-records-live=2")
+
+        // The number this handle exists for, and the only derived one here: the milestone is about
+        // seeing the ceiling approached **before** the refusal, and a percentage is what says how
+        // close. It was the one field nobody asked about -- with `percent` returning a constant
+        // zero the whole module stayed green -- so it is asked against a ceiling small enough for
+        // one object to move it, rather than against the shipped one where a single write rounds
+        // to nothing.
+        S3Fixture(maxObjects = 4).use { small ->
+            small.createBucket("photos")
+            small.put("photos", "a.txt", "content")
+
+            val stats = small.send("GET", "/-/stats").text
+            assertContains(stats, "object-ceiling=4")
+            assertContains(stats, "objects-used-percent=25", message = "the percentage does not follow the count")
+        }
     }
 
     @Test
