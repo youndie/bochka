@@ -168,6 +168,44 @@ class BucketLoggingTest {
         assertEquals(200, s3.send("PUT", "/other", query = "logging", body = status("logs").toByteArray()).status)
     }
 
+    @Test
+    fun `a delivery policy may name the account instead of the bucket`() {
+        // `aws:SourceAccount` is the second of the two condition keys whose value comes from the
+        // delivery rather than from a request, and until now only its sibling `aws:SourceArn` had
+        // ever been seen working. A key that is accepted by `PutBucketPolicy` and answered by
+        // nothing compares against null, which makes the condition silently false — so the pair is
+        // asserted here, both halves: the right account admits the configuration and a wrong one
+        // does not.
+        s3.createBucket("photos")
+        s3.createBucket("logs")
+
+        val byAccount = { account: String ->
+            """{"Version": "2012-10-17", "Statement": [{"Sid": "S3ServerAccessLogsPolicy", """ +
+                """"Effect": "Allow", "Principal": {"Service": "logging.s3.amazonaws.com"}, """ +
+                """"Action": ["s3:PutObject"], "Resource": "arn:aws:s3:::logs/log/", """ +
+                """"Condition": {"StringEquals": {"aws:SourceAccount": "$account"}}}]}"""
+        }
+
+        assertEquals(
+            204,
+            s3.send("PUT", "/logs", query = "policy", body = byAccount("somebody-else").toByteArray()).status,
+        )
+        assertEquals(
+            403,
+            s3.send("PUT", "/photos", query = "logging", body = status("logs").toByteArray()).status,
+            "the delivery went to a bucket whose policy names another account",
+        )
+
+        assertEquals(
+            204,
+            s3.send("PUT", "/logs", query = "policy", body = byAccount(S3Fixture.ACCESS_KEY).toByteArray()).status,
+        )
+        assertEquals(
+            200,
+            s3.send("PUT", "/photos", query = "logging", body = status("logs").toByteArray()).status,
+        )
+    }
+
     /** `MalformedXML` rather than `InvalidArgument`, which is what the suite asks for. */
     @Test
     fun `a partition date source outside the two names is refused`() {
