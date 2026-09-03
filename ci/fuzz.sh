@@ -52,9 +52,18 @@ while IFS= read -r name; do
   names="${names}${names:+ }${name}"
   targets=$((targets + 1))
 done < <(
-  find "$root/bochka-fuzz/src/test/kotlin" -name '*FuzzTest.kt' | sort | while IFS= read -r file; do
+  find "$root/bochka-fuzz/src/test/kotlin" -name '*.kt' | sort | while IFS= read -r file; do
     awk -v cls="$(basename "$file" .kt)" '
-      /@FuzzTest/                          { want = 1; next }
+      /^[[:space:]]*@FuzzTest/ {
+        # Annotation and function on one line is a shape Kotlin allows and this used to miss.
+        if (match($0, /fun [A-Za-z_][A-Za-z0-9_]*/)) {
+          print cls "." substr($0, RSTART + 4, RLENGTH - 4)
+          want = 0
+        } else {
+          want = 1
+        }
+        next
+      }
       want && match($0, /fun [A-Za-z_][A-Za-z0-9_]*/) {
         print cls "." substr($0, RSTART + 4, RLENGTH - 4)
         want = 0
@@ -62,6 +71,24 @@ done < <(
     ' "$file"
   done
 )
+
+# Every `.kt` in the module rather than every `*FuzzTest.kt`, and then counted a second way. The
+# list is derived from the sources, which is right, but it was derived by a **pattern** that fitted
+# the files that happened to exist: a target in a class named anything else was invisible, and an
+# invisible target looks exactly like one that found nothing. Measured: an eleventh `@FuzzTest` in
+# `ByteRangeTargets.kt` left this script saying "10 targets, nothing found".
+#
+# So the count is taken again, independently, off the annotation itself — only where it opens a
+# line, so that a KDoc mentioning `@FuzzTest` in prose is not miscounted — and the two have to
+# agree. This is the third time in this milestone that a runner reported work it had not done.
+annotated=$(
+  find "$root/bochka-fuzz/src/test/kotlin" -name '*.kt' -exec grep -hE '^[[:space:]]*@FuzzTest' {} + | wc -l | tr -d ' '
+)
+if [ "$targets" -ne "$annotated" ]; then
+  printf 'found %d targets but %d @FuzzTest annotations: the discovery below is missing one\n' \
+    "$targets" "$annotated" >&2
+  exit 1
+fi
 
 if [ "$targets" -eq 0 ]; then
   echo "no fuzz targets found under bochka-fuzz/src/test/kotlin" >&2
