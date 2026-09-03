@@ -131,6 +131,43 @@ class EmbeddedTest {
     }
 
     @Test
+    fun `one ordered refusal is one refusal even when the requests arrive together`() {
+        // M-99 says this in a comment beside the counter and nothing was checking it: with "read,
+        // then set" two simultaneous requests both see the one, and a single ordered refusal
+        // happens twice. A double that hands out more failures than it was asked for makes the
+        // client under test fail for a reason the test did not choose, which is the one thing a
+        // controlled failure must never do.
+        //
+        // Rounds rather than one shot, because a race missed once proves nothing: with the
+        // non-atomic form this fails within the first few rounds, and with `getAndUpdate` it
+        // cannot fail at all.
+        Bochka.start().use { bochka ->
+            val pool =
+                java.util.concurrent.Executors
+                    .newFixedThreadPool(WIDTH)
+            try {
+                repeat(ROUNDS) { round ->
+                    bochka.failNext(503, times = 1)
+                    val ready = java.util.concurrent.CountDownLatch(1)
+                    val answers =
+                        (1..WIDTH).map {
+                            pool.submit<Int> {
+                                ready.await()
+                                head(bochka, "/anything")
+                            }
+                        }
+                    ready.countDown()
+
+                    val refused = answers.map { it.get() }.count { it == 503 }
+                    assertEquals(1, refused, "round $round handed out $refused refusals for one ordered")
+                }
+            } finally {
+                pool.shutdownNow()
+            }
+        }
+    }
+
+    @Test
     fun `a reset clears primed refusals too`() {
         // Otherwise a refusal set up in one test fires in the next, and it gets hunted for where it
         // was never set up.
@@ -140,5 +177,13 @@ class EmbeddedTest {
 
             assertTrue(head(bochka, "/anything") != 503)
         }
+    }
+
+    private companion object {
+        /** Enough threads for two of them to be inside the counter at once, and no more. */
+        const val WIDTH = 8
+
+        /** A race missed once proves nothing; missed twenty times running is not a race. */
+        const val ROUNDS = 20
     }
 }
