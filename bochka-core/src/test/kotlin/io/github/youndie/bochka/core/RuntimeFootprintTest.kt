@@ -34,6 +34,29 @@ class RuntimeFootprintTest {
                         "profile to this JVM. Actual arguments: ${actualArguments()}",
                 )
 
+        // An empty declaration is not a profile, and until this line it read as one: with
+        // `-Pbochka.jvmArgs=" "` the list becomes empty, the expectation becomes empty too,
+        // nothing is missing from it, and this check - the one named after the property - passes
+        // while constraining nothing. The two checks under it step aside under an override by
+        // design, so seven of the eight assertions in this file and its neighbour went green on a
+        // JVM running with no profile at all.
+        //
+        // The marker is dropped before counting, and that is not tidiness: under an override the
+        // build appends `-Dbochka.footprintOverridden=true` to the list, so an empty override is
+        // not an empty expectation - it is an expectation containing exactly the flag that says
+        // the other checks may stand down. The first version of this guard compared the whole
+        // string and passed.
+        val declared =
+            expected
+                .split(" ")
+                .filter(String::isNotEmpty)
+                .filterNot { it == "-Dbochka.footprintOverridden=true" }
+        assertTrue(
+            declared.isNotEmpty(),
+            "the build declared an empty runtime profile: an override replaces the profile, and " +
+                "replacing it with nothing is not a configuration this project describes",
+        )
+
         val actual = actualArguments()
         val missing = expected.split(" ").filter(String::isNotEmpty).filterNot(actual::contains)
 

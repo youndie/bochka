@@ -158,9 +158,14 @@ subprojects {
             val profile = rootProject.extra["bochkaJvmArgs"] as List<String>
             jvmArgs(profile)
             // The expectation travels with the profile rather than being copied into the test, so
-            // the list has exactly one home. It is also itself a JVM argument, which is the point:
-            // if the profile did not reach the forked JVM, neither did this, and the check fails on
-            // a missing expectation instead of quietly having nothing to compare against.
+            // the list has exactly one home.
+            //
+            // What used to stand here claimed more than the code does: that the expectation cannot
+            // arrive unless the profile did. It can - Gradle delivers a system property whatever
+            // the profile contains, including nothing, and a check comparing an empty expectation
+            // against anything passes. Proved by emptying this list and watching the test named
+            // after the property stay green. The refusal lives in the test now, where the property
+            // is stated.
             systemProperty("bochka.expectedJvmArgs", profile.joinToString(" "))
 
             // Tests read the specification out of the repository rather than off the network, and
