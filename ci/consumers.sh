@@ -29,8 +29,12 @@ fail()  { printf '  FAIL    %s\n' "$1"; failed=$((failed+1)); }
 skip()  { printf '  SKIPPED %s (%s)\n' "$1" "$2"; skipped=$((skipped+1)); }
 
 cleanup() {
+  # First line, and that is the whole point of it: `$?` here is the run's own status, and any
+  # command put above this one - a `kill`, a `docker rm` - overwrites it with its own.
   local status=$?
   [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null
+  [ -n "${tls_server_pid:-}" ] && kill "$tls_server_pid" 2>/dev/null
+  docker rm -f bochka-consumers-tls >/dev/null 2>&1
   chmod -R u+w "$work" 2>/dev/null
   rm -rf "$work" 2>/dev/null
   # In the trap, where it cannot be stepped over by an edit above it: a run that reached no
@@ -571,6 +575,143 @@ DUCKPARTS
   fi
 else
   skip "duckdb parts" "image unavailable"
+fi
+
+# --- the same commit protocol, through the terminator people actually run (M-299) --------------
+#
+# Every section above talks plain http to a server on a loopback port. That is not how any of this
+# is deployed, and this project already paid for the difference once: `aws-cli` sends its body with
+# a trailer **only** over TLS, and the two defects that found lived in exactly the path no harness
+# went down (M-219, M-220).
+#
+# So the delta-rs race is run a second time, over TLS, through `deploy/nginx/nginx.conf` - the
+# deployment's own configuration mounted rather than a small one written for this test. A proxy
+# written here would prove that some proxy works.
+#
+# Its own server on its own port, because that configuration names its upstream (`127.0.0.1:9000`)
+# and rewriting the file to point elsewhere would be testing a file nobody deploys. The section is
+# therefore self-contained: its own store, its own log, its own conflicts counted in it.
+if have_image nginx:alpine && have_image alpine/openssl:latest && have_image python:3.12-slim; then
+  tls_home="$work/tls-data"
+  tls_log="$work/tls-bochka.log"
+  BOCHKA_PORT=9000 BOCHKA_BIND_ADDRESS=127.0.0.1 BOCHKA_LOG=1 BOCHKA_DATA_DIR="$tls_home" \
+    "$root/bochka-app/build/install/bochka-app/bin/bochka-app" >"$tls_log" 2>&1 &
+  tls_server_pid=$!
+  for _ in $(seq 1 50); do
+    (exec 3<>/dev/tcp/127.0.0.1/9000) 2>/dev/null && break
+    sleep 0.2
+  done
+
+  mkdir -p "$work/tls"
+  # nginx:alpine carries no openssl binary, so the certificate comes from an image that does.
+  docker run --rm -v "$work/tls:/tls" alpine/openssl:latest \
+    req -x509 -newkey rsa:2048 -nodes -days 1 \
+    -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1" \
+    -keyout /tls/key.pem -out /tls/cert.pem >/dev/null 2>&1
+  docker rm -f bochka-consumers-tls >/dev/null 2>&1
+  docker run -d --name bochka-consumers-tls --network host \
+    -v "$root/deploy/nginx/nginx.conf:/etc/nginx/nginx.conf:ro" \
+    -v "$work/tls:/etc/nginx/tls:ro" nginx:alpine >/dev/null 2>&1
+  for _ in $(seq 1 25); do
+    (exec 3<>/dev/tcp/127.0.0.1/443) 2>/dev/null && break
+    sleep 0.2
+  done
+
+  if ! (exec 3<>/dev/tcp/127.0.0.1/9000) 2>/dev/null; then
+    fail "delta-rs over TLS: the second store did not come up"
+    tail -5 "$tls_log" | sed 's/^/          /'
+  elif ! (exec 3<>/dev/tcp/127.0.0.1/443) 2>/dev/null; then
+    fail "delta-rs over TLS: nginx from deploy/ did not come up"
+    docker logs bochka-consumers-tls 2>&1 | tail -5 | sed 's/^/          /'
+  else
+    cat > "$work/deltatls.py" <<'DELTATLS'
+import concurrent.futures as cf
+
+import boto3
+import pyarrow as pa
+import urllib3
+from deltalake import CommitProperties, DeltaTable, write_deltalake
+
+urllib3.disable_warnings()
+
+ENDPOINT = "https://127.0.0.1:443"
+BUCKET = "consumers"
+URI = f"s3://{BUCKET}/race-tls"
+WRITERS, EACH = 6, 3
+
+OPTIONS = {
+    "AWS_ENDPOINT_URL": ENDPOINT,
+    "AWS_ACCESS_KEY_ID": "bochkaadmin",
+    "AWS_SECRET_ACCESS_KEY": "bochkasecret",
+    "AWS_REGION": "us-east-1",
+    "conditional_put": "etag",
+    # The certificate is generated a few lines above this file and trusted by nobody. Saying so
+    # here rather than turning verification off globally: this is the only endpoint that gets it.
+    "allow_invalid_certificates": "true",
+}
+RETRIES = CommitProperties(max_commit_retries=128)
+
+boto3.client(
+    "s3",
+    endpoint_url=ENDPOINT,
+    aws_access_key_id=OPTIONS["AWS_ACCESS_KEY_ID"],
+    aws_secret_access_key=OPTIONS["AWS_SECRET_ACCESS_KEY"],
+    region_name=OPTIONS["AWS_REGION"],
+    verify=False,
+).create_bucket(Bucket=BUCKET)
+
+
+def append(writer: int) -> None:
+    for round_ in range(EACH):
+        write_deltalake(
+            URI,
+            pa.table({"n": [writer * 100 + round_], "who": [f"w{writer}"]}),
+            storage_options=OPTIONS,
+            mode="append",
+            commit_properties=RETRIES,
+        )
+
+
+write_deltalake(URI, pa.table({"n": [0], "who": ["seed"]}), storage_options=OPTIONS, mode="overwrite")
+with cf.ThreadPoolExecutor(WRITERS) as pool:
+    list(pool.map(append, range(WRITERS)))
+
+table = DeltaTable(URI, storage_options=OPTIONS).to_pyarrow_table()
+rows = table.num_rows
+writers = {w for w in table.column("who").to_pylist() if w != "seed"}
+expected = 1 + WRITERS * EACH
+assert rows == expected, f"the table holds {rows} rows and every commit that returned should make {expected}"
+assert len(writers) == WRITERS, f"only {sorted(writers)} survived: a commit was lost rather than retried"
+print(f"ok rows={rows} writers={len(writers)}")
+DELTATLS
+    docker run --rm --network host -v "$work:/w" python:3.12-slim \
+      sh -c "pip install -q deltalake pyarrow boto3 && python /w/deltatls.py" >"$work/deltatls.out" 2>&1
+    if grep -q '^ok ' "$work/deltatls.out"; then
+      # From the store's own log rather than from nginx: what has to be true is that the refusal
+      # was decided here and survived the proxy, not that some 412 happened somewhere.
+      conflicts=$(grep -ac 'race-tls/_delta_log.*-> 412' "$tls_log")
+      # And nginx is asked whether it was in the path at all. A client on `--network host` can
+      # reach the store's own port directly, so "the commits worked" is not evidence that anything
+      # was terminated - this counts what the proxy handled, and names the protocol it spoke.
+      docker logs bochka-consumers-tls >"$work/nginx.log" 2>&1
+      proxied=$(grep -ac ' HTTP/' "$work/nginx.log")
+      spoke=$(grep -aoE 'HTTP/[0-9.]+' "$work/nginx.log" | sort | uniq -c | tr -s ' \n' ' ')
+      if [ "$proxied" -lt 1 ]; then
+        fail "delta-rs over TLS: nginx handled nothing; the client did not go through the terminator"
+      elif [ "$conflicts" -gt 0 ]; then
+        pass "delta-rs over TLS: $conflicts refused 412 behind the deployment's nginx, which handled $proxied requests ($spoke)"
+      else
+        fail "delta-rs over TLS: the table is right but nobody was refused; the run exercised no conflict"
+      fi
+    else
+      fail "delta-rs over TLS: concurrent appends through the terminator"
+      tail -12 "$work/deltatls.out" | sed 's/^/          /'
+    fi
+  fi
+  docker rm -f bochka-consumers-tls >/dev/null 2>&1
+  [ -n "${tls_server_pid:-}" ] && kill "$tls_server_pid" 2>/dev/null
+else
+  skip "delta-rs over TLS" "image unavailable"
 fi
 
 echo
