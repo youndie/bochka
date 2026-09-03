@@ -101,6 +101,20 @@ def accepted(answer: bytes) -> bool:
     return any(line.startswith(b"HTTP/1.") and b" 2" in line[:12] for line in answer.split(b"\r\n"))
 
 
+def answered(answer: bytes) -> bool:
+    """Whether anything came back at all.
+
+    Asked separately from [accepted] because silence passes that one. A refusal has to **be** an
+    answer: a connection closed without a byte is a network error to every SDK, which retries it,
+    and this repository has paid for that reading twice -- once when an exception thrown out of the
+    screen closed the socket and a foreign suite recorded it as a broken connection, and once when
+    a full disk answered nothing and turned into a retry storm. Measured before this existed: with
+    the refusal on the parser path writing nothing, all six framings reported `ok ... nothing` and
+    the run exited 0.
+    """
+    return b"HTTP/1." in answer
+
+
 def main() -> int:
     direct_port = int(sys.argv[1])
     proxy_port = int(sys.argv[2])
@@ -109,7 +123,10 @@ def main() -> int:
         direct = send("127.0.0.1", direct_port, payload, tls=False)
         through = send("127.0.0.1", proxy_port, payload, tls=True)
 
-        if accepted(direct):
+        if not answered(direct):
+            print(f"  FAIL    {name} direct: closed without an answer, which every SDK retries")
+            failures += 1
+        elif accepted(direct):
             print(f"  FAIL    {name} direct: answered {status(direct)} to a malformed framing")
             failures += 1
         else:
