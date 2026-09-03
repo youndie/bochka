@@ -4763,7 +4763,9 @@ class S3Handler(
 
     private fun httpDate(instant: java.time.Instant): String = HTTP_DATE.format(instant)
 
-    private companion object {
+    // `internal` rather than `private` so the ceiling below can be read by the test that stands on
+    // it: a limit written twice is a limit that will be changed in one place.
+    internal companion object {
         /**
          * Classes an object may be stored under here.
          *
