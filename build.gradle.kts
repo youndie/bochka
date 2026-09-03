@@ -78,6 +78,26 @@ val smallJvmArgs = defaultJvmArgs.map { if (it == "-Xmx64M") "-Xmx128M" else it 
  * merge on purpose: a half-overridden profile is a third configuration nobody described, and a
  * number produced under it belongs to neither column of the comparison.
  */
+/**
+ * Every file the repository-wide checks read, as globs relative to the root.
+ *
+ * One list, used twice: to declare the task's inputs, and — handed over as a system property — to
+ * tell the check what to walk. Two lists of the same thing drift silently, and this pair drifted
+ * once already (M36): the check read every script in the tree, the inputs named only `ci/`, and a
+ * Russian comment in a generator under `docs/spec` was invisible to a run without `--rerun-tasks`.
+ */
+val guardedSources =
+    listOf(
+        "**/*.kt",
+        "**/*.kts",
+        "**/*.toml",
+        "**/*.yml",
+        "**/*.yaml",
+        "**/*.py",
+        "**/*.sh",
+        "ci/**/*.txt",
+    )
+
 val jvmArgs: List<String> =
     (project.findProperty("bochka.jvmArgs") as String?)
         ?.split(" ")
@@ -188,24 +208,23 @@ subprojects {
             // Russian added to two `ci/` scripts left the run green, because a script is not an
             // input of anything the compiler touched, and only `--rerun-tasks` saw it. A gate that
             // stops running when its subject changes is worse than no gate — it reports success.
+            //
+            // The list has one home, and that is the second half of the same lesson. It was written
+            // twice — here as globs, and again inside the test as a set of extensions — and the two
+            // disagreed: the test read every `.py` and `.sh` in the tree while only `ci/` ones were
+            // declared, so Russian in `docs/spec/*/generate.py` left the run green and showed up
+            // only under `--rerun-tasks`. The same failure the paragraph above describes, arriving
+            // through the half nobody lined up. Now the test is told what to walk.
             if (project.name == "bochka-app") {
                 inputs
                     .files(
                         rootProject.fileTree(rootProject.layout.projectDirectory) {
-                            include(
-                                "**/*.kt",
-                                "**/*.kts",
-                                "**/*.toml",
-                                "**/*.yml",
-                                "**/*.yaml",
-                                "ci/**/*.py",
-                                "ci/**/*.sh",
-                                "ci/**/*.txt",
-                            )
+                            include(guardedSources)
                             exclude("**/build/**", "**/.gradle/**", "**/.claude/**")
                         },
                     ).withPropertyName("sourcesReadByRepositoryWideChecks")
                     .withPathSensitivity(PathSensitivity.RELATIVE)
+                systemProperty("bochka.guardedSources", guardedSources.joinToString(" "))
             }
 
             systemProperty(
