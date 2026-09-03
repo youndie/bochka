@@ -27,6 +27,7 @@ import re
 import sys
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
+from datetime import datetime
 from pathlib import Path
 
 # A rule is (name, predicate). The name is printed with its count, so there can be no bucket called
@@ -71,6 +72,37 @@ NOISE_RULES: list[tuple[str, object]] = [
 # separately because they read differently: a TIMED_OUT inside a loop often means the mutation broke
 # the exit rather than that a test caught it.
 DETECTED = {"KILLED", "TIMED_OUT", "MEMORY_ERROR", "RUN_ERROR"}
+
+
+def staleness(report: Path) -> str | None:
+    """A complaint when the report is older than the code it claims to describe.
+
+    A report from the previous run reads exactly like a fresh one — same shape, same counts, and
+    every verdict in it belongs to code that has since changed. M37 lost twenty minutes to this:
+    the wait was written as `test -s mutations.xml`, last run's file was already there and not
+    empty, so the loop came back at once and four new tests appeared to have killed nothing.
+
+    Timestamps rather than a hash, because the question is only ever "did this run happen after I
+    edited": a source newer than the report answers it whatever the contents.
+    """
+    module = next((parent for parent in report.parents if parent.name and (parent / "src").is_dir()), None)
+    if module is None:
+        return None
+    written = report.stat().st_mtime
+    newer = [
+        source
+        for source in (module / "src").rglob("*.kt")
+        if source.stat().st_mtime > written
+    ]
+    if not newer:
+        return None
+    when = datetime.fromtimestamp(written).isoformat(timespec="seconds")
+    names = ", ".join(sorted(str(source.relative_to(module)) for source in newer)[:3])
+    return (
+        f"{report}: written {when}, and {len(newer)} source file(s) under {module.name} have "
+        f"changed since ({names}). This report describes code that is no longer there — "
+        f"run the mutation task again before reading it."
+    )
 
 
 def parse(path: Path) -> list[dict]:
@@ -162,6 +194,10 @@ def main() -> int:
     if not path.exists():
         print(f"no report at {path}", file=sys.stderr)
         return 2
+
+    stale = staleness(path)
+    if stale:
+        print(stale, file=sys.stderr)
 
     mutations = parse(path)
     if not mutations:
