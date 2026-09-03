@@ -149,6 +149,7 @@ cleanup() {
   # case is.
   if [ "${regressed:-no}" = yes ]; then
     echo "the classification and the run disagree: see closed-and-failing / deferred-but-passing" >&2
+    echo "or a defect rule names no task: see unattributed" >&2
     [ "$status" -eq 0 ] && status=1
   fi
   # Before the removal, and deliberately: a copy made after `rm -rf` copies nothing, and would do
@@ -363,8 +364,15 @@ if [ -f "$work/results.xml" ]; then
   # gone stale or something new broke, and both are answered from the log rather than from here.
   if echo "$classification" | grep "unclassified" >/dev/null; then keep=yes; fi
   # A `defect` rule that names no task (M-295). Kept for the same reason as an unclassified
-  # failure: both are claims nobody can follow up, and both are invisible in the score.
-  if echo "$classification" | grep "unattributed" >/dev/null; then keep=yes; fi
+  # failure -- both are claims nobody can follow up -- and **refused**, unlike one. M-295 made the
+  # reference a field precisely so that a question could be asked of it; printing a number and
+  # going green leaves it optional in practice, which is the prose it replaced. Measured: with the
+  # task token taken off one rule the run printed `unattributed: 1` and exited 0.
+  #
+  # `unclassified` stays a note rather than a refusal, and the difference is who can cause it: a
+  # case nobody has looked at arrives with somebody else's suite, while a rule missing its task is
+  # written here and nowhere else.
+  if echo "$classification" | grep "unattributed" >/dev/null; then regressed=yes; keep=yes; fi
   # A case named by a closed task and still red (M-260). Recorded here and refused in the exit
   # trap, beside the other two guards and for their reason: a check that only fires when control
   # reaches it does not fire on the runs that matter.
