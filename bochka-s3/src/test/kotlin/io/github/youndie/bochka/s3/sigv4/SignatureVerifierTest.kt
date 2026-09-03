@@ -295,6 +295,47 @@ class SignatureVerifierTest {
         assertEquals(S3Error.SIGNATURE_DOES_NOT_MATCH, failure.error)
     }
 
+    @Test
+    fun `a signed header carrying a byte above 0x7f verifies`() {
+        // M-77, and until now the fix had nothing holding it. The canonical request is a **byte**
+        // string: a header value with a byte above 0x7F must be hashed as those bytes, and hashing
+        // the same characters as UTF-8 doubles every one of them. The defect survived the 34
+        // official vectors, both signing modes and four live clients for one reason - everything
+        // they sign is ASCII, so both spellings agree.
+        //
+        // The expected signature is **not** computed by this repository. It comes from hmac and
+        // hashlib in Python, run against the same canonical request:
+        //
+        //   canonical sha256 over the bytes: 3cf7d576fb8a3309b7c32d07937ea61e28055232f0c1f11741c4f884dad39cf1
+        //   the same characters as UTF-8:    8a9fbc9871d26f72b3b959edf1a3a7bae8eeaa3b7b7f9ce151514c62a6a1d656
+        //
+        // Two different hashes, one signature; a verifier that picks the second one refuses this
+        // request. The value is `café` in UTF-8, held here the way the parser hands it over -
+        // one char per byte.
+        val value = String("café".toByteArray(Charsets.UTF_8).map { (it.toInt() and 0xFF).toChar() }.toCharArray())
+        val signature = "9455af9ceee4e610537744d574782a758fe0250225630d84faf2d61d524a9013"
+        val scope = "20150830/us-east-1/s3/aws4_request"
+        val request =
+            CanonicalRequest.Request(
+                method = "PUT",
+                path = "/photos/a.txt",
+                query = "",
+                headers =
+                    listOf(
+                        "Host" to "example.com",
+                        "X-Amz-Content-Sha256" to "UNSIGNED-PAYLOAD",
+                        "X-Amz-Date" to TIMESTAMP,
+                        "x-amz-meta-note" to value,
+                        "Authorization" to
+                            "AWS4-HMAC-SHA256 Credential=$AKID/$scope, " +
+                            "SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-amz-meta-note, " +
+                            "Signature=$signature",
+                    ),
+            )
+
+        assertIs<SignatureVerifier.Result.Ok>(verifierAt().verify(request))
+    }
+
     private companion object {
         const val AKID = "AKIDEXAMPLE"
         const val SECRET = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY"
