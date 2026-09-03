@@ -3,9 +3,9 @@
 [![kotlin](https://img.shields.io/badge/Kotlin-2.4.10-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
-[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-518%2F744-green)](ci/s3-tests.sh)
+[![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-519%2F744-green)](ci/s3-tests.sh)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![release](https://img.shields.io/badge/release-v0.5.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.4.0)
+[![release](https://img.shields.io/badge/release-v0.5.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.5.0)
 
 An S3-compatible object store in Kotlin/JVM. One process, one node, one disk: no erasure coding,
 no replication, no quorum. On the outside, the protocol `aws s3`, `mc`, `boto3` and every S3
@@ -110,7 +110,7 @@ with what came out differently than planned.
 
 ## The numbers, and where they come from
 
-> **518 of 744** `ceph/s3-tests` as it ships, **533 of 744** with `BOCHKA_ANONYMOUS=1`, at suite
+> **519 of 744** `ceph/s3-tests` as it ships, **534 of 744** with `BOCHKA_ANONYMOUS=1`, at suite
 > revision `5522d1c`. Every remaining failure is classified with a reason, and the count of tests
 > that ran is printed beside the percentage — a rising score and a shrinking suite look identical
 > otherwise.
