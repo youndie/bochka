@@ -522,9 +522,24 @@ else
          --set resources.requests.memory=320Mi \
          --wait --timeout 3m >"$work/small-profile.out" 2>&1; then
       ceiling=$(kubectl logs "sts/$RELEASE" 2>/dev/null | grep -m1 "object ceiling")
+      # The number is read out of the chart rather than typed here. It is published in four places
+      # -- this helper, the comment beside `maxObjects` in values.yaml, the README table and the
+      # KDoc of the profile in the build file -- and until M32 was gone over again the only one
+      # compared with a running process was the literal that used to stand in this script, which is
+      # a fifth copy checking itself. What the pod prints is the only authority; the rest have to
+      # agree with it, and the two the chart ships have to agree with each other.
+      small=$(sed -n 's/.*heapProfile "small" }}\([0-9][0-9]*\){{ else }}.*/\1/p' "$chart/templates/_helpers.tpl")
+      stated=$(sed -n 's/.*\*\*\([0-9][0-9]*\)\*\* on the small one.*/\1/p' "$chart/values.yaml")
+      if [ -z "$small" ] || [ -z "$stated" ]; then
+        fail "the small profile's ceiling could not be read back (helper '$small', values '$stated')"
+      elif [ "$small" != "$stated" ]; then
+        fail "the chart quotes $stated in values.yaml and renders $small from its helper"
+      else
+        pass "the chart quotes one small-profile ceiling ($small) in both places it names it"
+      fi
       case "$ceiling" in
-        *99816*) pass "heapProfile: small starts and prints its own ceiling ($ceiling)" ;;
-        *) fail "the pod started but printed '$ceiling' — that is the other profile's heap" ;;
+        *"$small"*) pass "heapProfile: small starts and prints the ceiling the chart quotes ($ceiling)" ;;
+        *) fail "the pod printed '$ceiling', and the chart quotes $small" ;;
       esac
     else
       fail "heapProfile: small never became ready at the floor the chart asks for it"
