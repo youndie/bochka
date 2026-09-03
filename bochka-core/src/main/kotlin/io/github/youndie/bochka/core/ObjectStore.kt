@@ -48,7 +48,7 @@ import kotlin.concurrent.withLock
  */
 class ObjectStore(
     private val root: Path,
-    private val durability: Durability = Durability.FSYNC,
+    internal val durability: Durability = Durability.FSYNC,
     /**
      * The published ceiling: how many **versions** this store will manage (M-105).
      *
