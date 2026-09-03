@@ -20,8 +20,25 @@ def rules(path: str) -> list[tuple[str, str, str]]:
                 continue
             status, rest = line.split(" ", 1)
             pattern, reason = rest.split(" ", 1)
+            if status not in STATUSES:
+                # The status is the claim -- somebody else's product, a gap with a task, a wrong
+                # answer with a task -- and a word this script does not know is a claim it cannot
+                # check. Taking it quietly moves a real failure out of the unexplained bucket, the
+                # only one anybody reads: measured with a rule reading `out-of-scop`, which was
+                # counted as explained and left the run at rc 0. Refused by name; the rule is
+                # dropped, so the failure stays where it was.
+                print(
+                    f"{path}: '{status}' is not a status this script enforces "
+                    f"({', '.join(sorted(STATUSES))}); the rule is ignored: {line}",
+                    file=sys.stderr,
+                )
+                continue
             parsed.append((status, pattern, reason))
     return parsed
+
+
+# The three words the file's own header defines, and the only ones a rule may carry.
+STATUSES = frozenset({"out-of-scope", "deferred", "defect"})
 
 
 def entries(path: str) -> list[dict]:

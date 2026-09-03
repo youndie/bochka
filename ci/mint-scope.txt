@@ -10,6 +10,11 @@
 #
 # A rule that stops matching is reported as STALE rather than ignored: a reason for a failure that
 # no longer happens reads as true to the next person.
+#
+# Those three words are the whole vocabulary, and `ci/mint_scope.py` refuses any other by name
+# rather than taking it: the status is the claim, and a word the script does not know is a claim it
+# cannot check. Measured before the refusal existed: a rule reading `out-of-scop` was counted as
+# an explanation and the run exited 0 with the typo printed where a verdict belongs.
 
 # --- MinIO's own surface, which is not S3 ------------------------------------------------------
 out-of-scope healthcheck GET /minio/health/live is MinIO's liveness path; ours is /-/healthy and is documented as such
