@@ -76,13 +76,23 @@ val checkProfiles =
         val shipped = tasks.startScripts.map { it.outputDir!!.resolve("bochka-app") }
         val small = smallStartScript.map { it.outputDir!!.resolve("bochka-app-small") }
         doLast {
-            fun flagsOf(file: java.io.File): List<String> =
-                Regex("""-X[^\s"']+""")
-                    .findAll(file.readText())
-                    .map { it.value }
-                    .distinct()
+            // The line the script hands the JVM, read whole rather than searched for a pattern.
+            // What stood here matched `-X…` and nothing else, so a `-D`, an `--add-opens` or an
+            // `-ea` in one arm and not the other passed unseen — and the whole point of this check
+            // is that an arm differing in two things measures neither. Proved by giving the small
+            // profile a `-Dfoo=bar`: the check, and the gate around it, stayed green.
+            fun flagsOf(file: java.io.File): List<String> {
+                val line =
+                    file
+                        .readLines()
+                        .firstOrNull { it.startsWith("DEFAULT_JVM_OPTS=") }
+                        ?: error("no DEFAULT_JVM_OPTS in $file: the generated script changed shape")
+                return Regex("\"([^\"]*)\"")
+                    .findAll(line.substringAfter('='))
+                    .map { it.groupValues[1] }
                     .sorted()
                     .toList()
+            }
 
             val a = flagsOf(shipped.get())
             val b = flagsOf(small.get())
