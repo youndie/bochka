@@ -1,5 +1,6 @@
 package io.github.youndie.bochka.app
 
+import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.Path
 import kotlin.io.path.extension
@@ -46,21 +47,22 @@ class CodeIsEnglishTest {
     @Test
     fun `no Russian prose in the code`() {
         val root = Path.of(System.getProperty("bochka.repoRoot") ?: error("bochka.repoRoot is not set"))
+        // What to walk comes from the build, which declares the very same globs as this task's
+        // inputs. Held in one place because the two drifted once: this file used to carry its own
+        // set of extensions, took every `.py` and `.sh` in the tree, and the build declared only
+        // the ones under `ci/` — so Russian in a generator under `docs/spec` left the run green and
+        // was visible only under `--rerun-tasks`. A check that stops running exactly when its
+        // subject changes reports success, which is worse than not existing.
+        val globs =
+            (System.getProperty("bochka.guardedSources") ?: error("bochka.guardedSources is not set"))
+                .split(" ")
+                .filter { it.isNotEmpty() }
+                .map { FileSystems.getDefault().getPathMatcher("glob:$it") }
         val sources =
             Files.walk(root).use { walk ->
                 walk
-                    .filter {
-                        it.extension in
-                            setOf(
-                                "kt",
-                                "kts",
-                                "py",
-                                "sh",
-                                "toml",
-                                "yml",
-                                "yaml",
-                            ) || it.isScopeFile()
-                    }.filter { path -> path.none { it.toString() == "build" || it.toString() == ".claude" } }
+                    .filter { path -> globs.any { it.matches(root.relativize(path)) } }
+                    .filter { path -> path.none { it.toString() == "build" || it.toString() == ".claude" } }
                     .sorted()
                     .toList()
             }
