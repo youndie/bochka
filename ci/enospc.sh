@@ -70,7 +70,16 @@ status=$?
 # when `BOCHKA_ENOSPC_DIR` does not reach the forked JVM, and that produces the same `tests=1`, the
 # same exit code and — because filling three mebibytes takes milliseconds — the same duration as a
 # real run. So the test leaves a marker on the volume itself, and this refuses a run without it.
-classes=$(find "$root"/bochka-*/src/test -name 'Enospc*Test.kt' | wc -l | tr -d ' ')
+# Counted by what makes a test an ENOSPC test -- it reads the variable naming the prepared volume
+# -- and not by what it is called. The name was the criterion until M40 was gone over again, and a
+# class called anything else was not required to leave a marker: measured with a sixth test that
+# read the variable, never touched the volume, and left this run green at five of five. That is the
+# exact vacuity the markers exist to catch, walking in through the door of the guard itself.
+#
+# A helper that read the variable without being a test would be counted too, and that is the safe
+# direction: a marker demanded and not written is a loud failure, while a test not demanded is a
+# silent pass.
+classes=$(grep -rl 'BOCHKA_ENOSPC_DIR' "$root"/bochka-*/src/test | wc -l | tr -d ' ')
 markers=$(find "$mount_point/exercised" -type f 2>/dev/null | wc -l | tr -d ' ')
 if [ $status -eq 0 ] && [ "$markers" -ne "$classes" ]; then
   echo "$markers of $classes ENOSPC tests reached the volume; the rest returned without touching it" >&2
