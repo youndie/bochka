@@ -1,0 +1,10 @@
+# The same shortened day as `bad-lifecycle-day-values.yaml`, with the reason written down — the
+# form the chart accepts. Its own render exists because the refusal beside it proves only half of
+# the rule: that a shortened day without a reason does not render. What this proves is the rest —
+# that an explained one reaches the pod, and reaches it as the number the operator asked for.
+auth:
+  keys:
+    - id: chartkey
+      secret: chartsecret
+lifecycleDaySeconds: 5
+lifecycleDayShortenedFor: "scoring the compatibility suite, which sleeps rather than waits"
