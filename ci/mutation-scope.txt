@@ -19,6 +19,12 @@
 #
 # Anything a rule does not match stays in SURVIVED, which is the bucket that gets read. Adding a
 # rule here is a claim, and the claim is signed by the reason beside it.
+#
+# Those two words are the whole of the vocabulary, and `ci/mutation.py` refuses any other by name
+# rather than taking it: the status is the claim, a word the script does not know is a claim it
+# cannot check, and accepting one quietly would move a real survivor out of the bucket anybody
+# reads. Measured, before the refusal existed: a rule reading `wontfix / looks harmless to me` was
+# counted as classified without a word.
 
 # A capacity hint for the buffer a document is assembled in. `XmlWriter(1024 + contents.size * 128)`
 # sizes a `ByteArrayOutputStream`; it grows when the estimate is short and wastes a little when the
