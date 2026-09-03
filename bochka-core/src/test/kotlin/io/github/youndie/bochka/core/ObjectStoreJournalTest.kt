@@ -168,6 +168,47 @@ class ObjectStoreJournalTest {
             }
         }
 
+    @Test
+    fun `a completed upload's lock is in the record that creates the version, not a second one`() =
+        runTest {
+            // M-175 states the property as an absence: "one index record instead of two, and no
+            // window". The end state is already checked elsewhere -- the object comes out locked --
+            // and the end state is exactly what a two-record implementation also produces. What
+            // separates them is only visible in the journal: with two records there is a moment,
+            // and a crash inside it, where the object exists and is not protected yet.
+            val until = System.currentTimeMillis() + 3_600_000
+            open().use { store ->
+                store.createBucket("photos")
+                val upload =
+                    store.createUpload(
+                        "photos",
+                        ObjectKey.of("big.bin"),
+                        Metadata(),
+                        retention = ObjectStore.Retention("COMPLIANCE", until),
+                        legalHold = true,
+                    )
+                val part =
+                    store.putPart(
+                        upload.id,
+                        1,
+                    ) { out -> out.write(ByteArray(MINIMUM_PART) { 'a'.code.toByte() }, 0, MINIMUM_PART) }
+                store.completeUpload(upload.id, listOf(1 to part.eTag))
+            }
+
+            val puts = mutableListOf<IndexRecord.Put>()
+            RecordLog(dir.resolve("index.log")).use { log ->
+                log.recover { payload ->
+                    val record = IndexRecord.decode(payload)
+                    if (record is IndexRecord.Put && record.key == ObjectKey.of("big.bin")) puts += record
+                }
+            }
+
+            assertEquals(1, puts.size, "the version was written more than once: $puts")
+            assertEquals("COMPLIANCE", puts.single().retentionMode)
+            assertEquals(until, puts.single().retentionUntilMillis)
+            assertTrue(puts.single().legalHold)
+        }
+
     private companion object {
         const val MINIMUM_PART = 5 * 1024 * 1024
     }
