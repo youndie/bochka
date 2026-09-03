@@ -62,6 +62,34 @@ class CopySourceAccessTest {
     }
 
     @Test
+    fun `nor can a request that named nobody, with the switch on`() {
+        // The same hole one layer down, and the reason it needs its own test: `AnonymousReachTest`
+        // asks every route the blunt question except the two copy routes, which it exempts on the
+        // grounds that their siblings cover them. The siblings cover the **destination**. And the
+        // tests above cover the source for a stranger's key, which is not the same caller — a
+        // stranger has an identity the model can compare against an owner, and an anonymous
+        // request has none.
+        //
+        // The destination is opened as wide as a canned name can open it, so that the write is
+        // certainly allowed and the only thing left to refuse is the read of the source.
+        S3Fixture(anonymous = true).use { open ->
+            open.createBucket("vault")
+            open.put("vault", "secret.txt", "the contents")
+            open.send("PUT", "/mine", headers = listOf("x-amz-acl" to "public-read-write"))
+
+            val answer =
+                open.unsigned(
+                    "PUT",
+                    "/mine/stolen.txt",
+                    headers = listOf("x-amz-copy-source" to "/vault/secret.txt"),
+                )
+
+            assertEquals(403, answer.status, "an unsigned copy read a private object: ${answer.text}")
+            assertEquals(404, open.send("HEAD", "/mine/stolen.txt").status, "the copy landed anyway")
+        }
+    }
+
+    @Test
     fun `a policy on the source bucket is what makes the copy legal`() {
         // `test_bucket_policy_upload_part_copy:12641`: the source bucket grants s3:GetObject on
         // `public/*` to everybody, and the copy then works — from `public/`, and only from there.
