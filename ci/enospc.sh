@@ -66,6 +66,14 @@ BOCHKA_ENOSPC_DIR="$mount_point" "$root/gradlew" -p "$root" --console=plain --re
   :bochka-core:test :bochka-app:test --tests '*Enospc*'
 status=$?
 
+# The build ran as root because this stand needs root, and it leaves `build/` owned by root behind
+# it. The next ordinary `./gradlew check` then fails on `Unable to delete directory`, which reads
+# as a broken build rather than as the tidying this script owes. Given back to whoever invoked
+# `sudo`, and only then -- a run under a real root login has no `SUDO_USER` and nothing to give.
+if [ -n "${SUDO_USER:-}" ]; then
+  chown -R "$SUDO_USER" "$root"/bochka-*/build 2>/dev/null || true
+fi
+
 # A green suite is not evidence that anything was exercised here. The test returns on its first line
 # when `BOCHKA_ENOSPC_DIR` does not reach the forked JVM, and that produces the same `tests=1`, the
 # same exit code and — because filling three mebibytes takes milliseconds — the same duration as a

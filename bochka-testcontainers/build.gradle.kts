@@ -43,12 +43,43 @@ dependencies {
 // Not part of `check`, and the image is named rather than defaulted: the one worth testing is the
 // one this branch would produce, which exists only in the CI job that builds it. Without a name the
 // task refuses instead of passing quietly.
+
+/**
+ * There is something for [containerTest] to run.
+ *
+ * A `Test` task whose class directories are empty is NO-SOURCE: Gradle skips it, `doFirst` never
+ * happens, and the refusal about a missing image name never gets the chance to fire. This is a
+ * whole CI step -- the only thing that starts the shipped image and talks to it -- and with the
+ * single test class moved aside the job's command went green in five seconds. A dependency rather
+ * than a check inside the task, because a dependency runs even when the task it belongs to is
+ * skipped.
+ */
+val hasContainerTests =
+    tasks.register("checkContainerTestsExist") {
+        val sources = containerTest.kotlin.srcDirs
+        doLast {
+            val tests =
+                sources
+                    .filter { it.isDirectory }
+                    .flatMap { it.walkTopDown().filter { file -> file.extension == "kt" } }
+                    .filter { it.readText().contains("@Test") }
+            check(tests.isNotEmpty()) {
+                "no test in $sources: `containerTest` would be skipped as NO-SOURCE and the job " +
+                    "that starts the shipped image would pass without starting it"
+            }
+        }
+    }
+
 tasks.register<Test>("containerTest") {
     group = "verification"
     description = "Starts the shipped image through Testcontainers and talks to it"
     testClassesDirs = containerTest.output.classesDirs
     classpath = containerTest.runtimeClasspath
     useJUnitPlatform()
+    // Discovery finding nothing inside a set that has classes is one way to run nothing; the set
+    // having no classes at all is the other, and only the guard below sees that one.
+    failOnNoDiscoveredTests = true
+    dependsOn(hasContainerTests)
     val image = providers.gradleProperty("bochka.image").orElse(providers.environmentVariable("BOCHKA_IMAGE"))
     doFirst {
         check(image.isPresent && image.get().isNotBlank()) {
