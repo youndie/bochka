@@ -50,6 +50,32 @@ class DurabilityBarrierTest {
         )
 
     @Test
+    fun `a store nobody configured is the one that flushes`() {
+        // The half above this one guards the calls; this one guards the switch in front of them.
+        // Every `force` on the write path stands under `if (durability == Durability.FSYNC)`, so
+        // the bytecode gate is equally happy with a distribution that never reaches the disk — and
+        // so is everything else here. Measured: with the default flipped to `NONE`, the whole gate
+        // stayed green, crash tests included, for the reason this file already names — a process
+        // death leaves the page cache where it was.
+        //
+        // The server builds its store without naming durability (Main.kt), so this default is the
+        // one that ships. Every test that wants the barrier for its own reasons passes `FSYNC`
+        // explicitly, which is why none of them was ever looking at this.
+        val dir = Files.createTempDirectory("bochka-durability-default")
+        try {
+            ObjectStore(dir).use { store ->
+                assertEquals(
+                    ObjectStore.Durability.FSYNC,
+                    store.durability,
+                    "a store built the way the server builds it does not flush",
+                )
+            }
+        } finally {
+            Files.walk(dir).sorted(Comparator.reverseOrder()).forEach(Files::delete)
+        }
+    }
+
+    @Test
     fun `every function that promises durability still calls force`() {
         val classes = Path.of("build/classes/kotlin/main")
         assertTrue(Files.isDirectory(classes), "no compiled classes at $classes; run this through the build")
