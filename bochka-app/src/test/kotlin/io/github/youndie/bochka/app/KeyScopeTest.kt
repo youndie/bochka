@@ -99,6 +99,33 @@ class KeyScopeTest {
     }
 
     @Test
+    fun `owning a bucket is not a way around the scope, in either direction`() {
+        // M-196 settled this before any code was written: the scope narrows first and the ACL
+        // decides inside what it left, and **the owner is not an exception** — otherwise owning a
+        // bucket would be a way around the deployment's own setting. Every other test here reaches
+        // a bucket the key does not own, so the sentence held for want of a case rather than by
+        // being enforced.
+        //
+        // The situation is an ordinary one: a deployment narrows a key that already has buckets.
+        S3Fixture(scope = readOnly()).use { s3 ->
+            // Owned by this very key, and opened as wide as a canned name can open it, so that
+            // nothing but the scope is left to refuse.
+            s3.store.createBucket("photos", owner = S3Fixture.ACCESS_KEY, acl = "public-read-write")
+
+            assertEquals(403, s3.put("photos", "a.txt", "тело").status, "the owner wrote past a read-only scope")
+        }
+
+        // And the other direction, where the scope hides rather than refuses: a bucket the key
+        // owns but which its scope does not name is still not there.
+        S3Fixture(scope = scopedTo("photos")).use { s3 ->
+            s3.store.createBucket("secrets", owner = S3Fixture.ACCESS_KEY, acl = "public-read-write")
+
+            assertEquals(404, s3.send("GET", "/secrets", query = "list-type=2").status)
+            assertTrue("secrets" !in s3.send("GET", "/").text, "an out-of-scope bucket showed to its owner")
+        }
+    }
+
+    @Test
     fun `a key nobody narrowed keeps everything`() {
         // A setting that only narrows cannot lock the owner out of their own store — so the absence
         // of an entry means full access rather than none.
