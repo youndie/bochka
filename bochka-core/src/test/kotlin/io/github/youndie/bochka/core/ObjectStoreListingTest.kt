@@ -100,12 +100,16 @@ class ObjectStoreListingTest {
                 var after: ByteArray? = null
                 var pages = 0
                 var more = true
+                // Bounded, and the bound is part of the check. A token that stops advancing - the
+                // failure the next test exists for - turns this loop into a run that never ends
+                // rather than one that fails, and a suite that hangs says nothing about why.
                 while (more) {
                     val page = s.list("b", startAfter = after, maxKeys = 7)
                     seen += page.keyNames()
                     after = page.nextAfter
                     more = page.isTruncated
                     pages++
+                    assertTrue(pages <= 10, "pagination did not end: $pages pages for 25 keys, last seen $seen")
                 }
 
                 assertEquals(4, pages)

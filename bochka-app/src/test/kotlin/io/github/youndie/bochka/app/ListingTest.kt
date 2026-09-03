@@ -83,6 +83,10 @@ class ListingTest {
             val body = listV2("max-keys=7" + (token?.let { "&continuation-token=$it" } ?: "")).text
             seen += keysOf(body)
             pages++
+            // Bounded on purpose: a token that stops advancing would otherwise make this loop
+            // issue requests for ever, and the run would end on the suite's timeout with nothing
+            // said about which page repeated.
+            assertTrue(pages <= 10, "pagination did not end: $pages pages for 25 keys, seen $seen")
             if (field(body, "IsTruncated") != "true") break
             token =
                 java.net.URLEncoder.encode(
