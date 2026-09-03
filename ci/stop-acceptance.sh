@@ -47,7 +47,13 @@ trap cleanup EXIT
 
 command -v docker >/dev/null || { echo "docker is not installed; there is no container to stop" >&2; exit 3; }
 
-echo "building the image"
+# The distribution first, and this is not boilerplate copied from the neighbours. The `Dockerfile`
+# **copies** `bochka-app/build/install/bochka-app`; it does not build it. Without this line the
+# image is made of whatever happens to be lying in the tree, and a control run that changed the
+# shutdown window silently measured the binary from an earlier harness - reporting the property as
+# holding when the code it was built from no longer had it.
+echo "building the distribution and the image"
+"$root/gradlew" -p "$root" -q :bochka-app:installDist || { echo "build failed" >&2; exit 3; }
 docker build -q -t "$IMAGE" "$root" >/dev/null || { echo "docker build failed" >&2; exit 3; }
 
 cat > "$work/writer.py" <<'PY'
@@ -267,7 +273,11 @@ done < "$work/rows.txt"
 stopped=$(awk '$1 == "stop" { print $NF }' "$work/rows.txt")
 killed=$(awk '$1 == "kill" { print $NF }' "$work/rows.txt")
 echo
-if [ "$stopped" = served ] && [ "$killed" != served ]; then
+if [ -z "$stopped" ] || [ -z "$killed" ]; then
+  # A comparison needs both sides. Running one round used to leave the other variable empty, and
+  # `[ "" != served ]` is true - so a half-run reported that the two stops differ.
+  fail "only one round ran (stop=${stopped:-none}, kill=${killed:-none}); the two stops cannot be compared"
+elif [ "$stopped" = served ] && [ "$killed" != served ]; then
   pass "the two stops differ for clients: docker stop served the upload in flight, docker kill gave the client $killed"
 elif [ "$stopped" != served ]; then
   fail "docker stop cut the upload it had already accepted ($stopped); a graceful stop should serve it"
