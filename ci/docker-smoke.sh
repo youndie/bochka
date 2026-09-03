@@ -146,6 +146,23 @@ else
   fail "the process prints $shipped, README says $published, the chart quotes $charted"
 fi
 
+# The other row of the same table, and it was in the same position: published in four places and
+# compared with a process in none. The small profile is the default list with a quarter of the heap
+# (M33), so a run under `-Xmx128M` derives exactly the ceiling that profile ships -- which is what
+# lets this be asked here, without the cluster the profile's own entry point needs.
+small_published=$(sed -n 's/^| `small` |[^|]*| \*\*\([0-9 ]*\)\*\*.*/\1/p' "$root/README.md" | tr -d ' ')
+small_charted=$(sed -n 's/.*heapProfile "small" }}\([0-9][0-9]*\){{ else }}.*/\1/p' \
+  "$root/deploy/helm/bochka/templates/_helpers.tpl")
+small_run=$(ceiling -e JAVA_OPTS=-Xmx128M)
+
+if [ -z "$small_published" ] || [ -z "$small_charted" ]; then
+  fail "the small profile's published ceiling could not be read back (README '$small_published', chart '$small_charted')"
+elif [ "$small_run" = "$small_published" ] && [ "$small_run" = "$small_charted" ]; then
+  pass "the small profile's ceiling is the one README and the chart publish ($small_run)"
+else
+  fail "a 128M heap derives $small_run, README says $small_published, the chart quotes $small_charted"
+fi
+
 # Not an approval of the override — a record of it, so that the one place it matters is not left to
 # be discovered. Nothing that wraps this image may offer a JAVA_OPTS knob: the object ceiling is
 # derived from the heap, so such a knob reads as "more objects" and is a promise made by the wrapper
