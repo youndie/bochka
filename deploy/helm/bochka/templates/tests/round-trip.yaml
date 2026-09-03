@@ -55,6 +55,10 @@ spec:
         The same Secret the server reads. If it holds nothing — the wrong key name, a value that
         rendered empty — this pod fails to start, and that is itself the finding: it is exactly the
         state in which the server comes up with published credentials and says nothing.
+
+        A variable here and a mounted file on the server, deliberately. The server holds these
+        bytes for as long as it runs, which is why they were moved out of its environment (M-296);
+        this pod lives for one round trip and needs the value in a shell that signs with it.
         */}}
         - name: BOCHKA_KEYS
           valueFrom:

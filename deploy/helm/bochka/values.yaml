@@ -60,7 +60,7 @@ fullnameOverride: ""
 auth:
   # The name of a Secret you already have. Nothing else in this block is used when it is set.
   existingSecret: ""
-  # The key inside that Secret. Its value is passed to BOCHKA_KEYS verbatim, so it has to be
+  # The key inside that Secret. It is mounted as a file and read verbatim, so it has to be
   # `id:secret,id2:secret2` already — pairs separated by commas, id and secret by the first colon
   # (Configuration.kt:73-74, Main.kt:44-46).
   existingSecretKey: keys

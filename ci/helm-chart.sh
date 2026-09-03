@@ -25,6 +25,9 @@ readonly CLUSTER=bochka-chart
 readonly RELEASE=bochka
 readonly KIND_MODE=${BOCHKA_CHART_KIND:-auto}
 readonly IMAGE=${BOCHKA_IMAGE:-bochka:chart}
+# Whether the image was named by the caller. When it was, it is used as given; when it was not, the
+# one this script builds is rebuilt every run - see below for what that cost.
+readonly IMAGE_GIVEN=${BOCHKA_IMAGE:+yes}
 root=$(cd "$(dirname "$0")/.." && pwd)
 chart="$root/$CHART_DIR_NAME"
 
@@ -369,10 +372,20 @@ else
     exit 3
   fi
 
-  if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
-    echo "  building $IMAGE (nothing had it)"
+  # Rebuilt every run, and this used to be "build it if nothing has it". In CI that reads the
+  # same - a fresh runner has nothing - but locally the tag survives, so the chart was being
+  # installed against whatever image happened to be lying around. It cost an afternoon: a chart
+  # change that needed a new setting was tested against a two-week-old image whose server refused
+  # to start on it, and the failure said "the release never became ready".
+  #
+  # A named image is used as given: BOCHKA_IMAGE exists to point this at a published one.
+  if [ -z "$IMAGE_GIVEN" ]; then
+    echo "  building $IMAGE from this tree"
     "$root/gradlew" -p "$root" -q :bochka-app:installDist || { echo "build failed" >&2; exit 3; }
     docker build -q -t "$IMAGE" "$root" >/dev/null || { echo "docker build failed" >&2; exit 3; }
+  elif ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
+    echo "$IMAGE was named but is not here; pull it or drop BOCHKA_IMAGE" >&2
+    exit 3
   fi
 
   kind create cluster --name "$CLUSTER" --wait 120s >"$work/kind.out" 2>&1 || {
@@ -506,6 +519,31 @@ else
       fail "helm test failed"
       sed 's/^/          /' "$work/test.out" | tail -30
     fi
+
+    # M-296: the secret must not be in the process environment, and the pair matters. "No secret
+    # in environ" is also what a broken deployment produces, so it is asserted **beside** the round
+    # trip above, which only passes when the server accepts `chartsecret`.
+    environ=$(kubectl exec "sts/$RELEASE" -- sh -c "tr '\\0' '\\n' < /proc/1/environ" 2>/dev/null)
+    if printf '%s' "$environ" | grep -q chartsecret; then
+      fail "the key secret is in /proc/1/environ, readable by anything that can see the process"
+      printf '%s\n' "$environ" | grep -a chartsecret | sed 's/^/          /'
+    elif printf '%s' "$environ" | grep -q BOCHKA_KEYS_FILE; then
+      pass "the keys reach the server as a mounted file: no secret in /proc/1/environ"
+    else
+      fail "neither the secret nor BOCHKA_KEYS_FILE is in the environment; this check read nothing"
+      printf '%s\n' "$environ" | sed 's/^/          /' | head -20
+    fi
+
+    # The bit that matters is the last one, and asking for an exact mode got this wrong once: the
+    # chart asks for 0400, and a pod with an `fsGroup` gets 0440 - the kubelet adds the group read
+    # so the container's own user can read what root owns. What must stay zero is **other**, which
+    # is the difference from the 0644 a Secret mounts with by default.
+    keysMode=$(kubectl exec "sts/$RELEASE" -- sh -c 'stat -c %a /etc/bochka/keys/..data/* 2>/dev/null | head -1')
+    case "$keysMode" in
+      *0) pass "the mounted key file is $keysMode: no read for anything but the pod's own user" ;;
+      "") fail "the mounted key file could not be read at all; this check read nothing" ;;
+      *)  fail "the mounted key file is mode '$keysMode', readable beyond the pod's own user" ;;
+    esac
 
     uid=$(kubectl exec "sts/$RELEASE" -- id -u 2>/dev/null | tr -d '\r\n')
     if [ "$uid" = "1000" ]; then
