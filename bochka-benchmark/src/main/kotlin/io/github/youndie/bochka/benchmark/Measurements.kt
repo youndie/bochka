@@ -844,6 +844,24 @@ object Measurements {
     }
 
     /**
+     * The spread of a sorted list of per-operation times, as a printable word.
+     *
+     * The ratio of the slowest run to the fastest is only a ratio while the fastest is a number.
+     * On a variant that costs a single map lookup the fastest run rounds to **zero** nanoseconds
+     * per operation, and the division then prints `Infinity` in a column of measurements — a
+     * non-number standing where a reader expects a figure to compare. What the zero means is that
+     * the variant is under the clock's resolution, so that is what it says. Either way the row is
+     * marked as one to draw no conclusion from.
+     */
+    private fun spread(sorted: List<Long>): String =
+        if (sorted.first() <= 0L) {
+            "under the clock  ← at the resolution floor, no conclusion from the figure"
+        } else {
+            val ratio = sorted.last().toDouble() / sorted.first()
+            "%.2f%s".format(ratio, if (ratio > 1.3) "  ← too noisy to conclude from" else "")
+        }
+
+    /**
      * M-178, the half a wire cannot answer: what the lifecycle lookup itself costs a read.
      *
      * The end-to-end run on the two-machine stand could not see it — three variants inside a spread
@@ -915,13 +933,11 @@ object Measurements {
                 nanos += (Measurement.currentThreadCpuNanos() - started) / rounds
             }
             nanos.sort()
-            val spread = nanos.last().toDouble() / nanos.first()
             println(
-                "%-10s %8d ns per read  spread %.2f%s  (checksum %d)".format(
+                "%-10s %8d ns per read  spread %s  (checksum %d)".format(
                     bucket,
                     nanos[nanos.size / 2],
-                    spread,
-                    if (spread > 1.3) "  ← too noisy to conclude from" else "",
+                    spread(nanos),
                     sink,
                 ),
             )
@@ -995,14 +1011,12 @@ object Measurements {
                 nanos += (Measurement.currentThreadCpuNanos() - started) / rounds
             }
             nanos.sort()
-            val spread = nanos.last().toDouble() / nanos.first()
             println(
-                "%-8s as %-9s %6d ns per read  spread %.2f%s  (checksum %d)".format(
+                "%-8s as %-9s %6d ns per read  spread %s  (checksum %d)".format(
                     bucket,
                     requester,
                     nanos[nanos.size / 2],
-                    spread,
-                    if (spread > 1.3) "  ← too noisy to conclude from" else "",
+                    spread(nanos),
                     sink,
                 ),
             )
