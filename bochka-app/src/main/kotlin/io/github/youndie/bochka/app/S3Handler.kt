@@ -4427,7 +4427,7 @@ class S3Handler(
      * lookup in the index, and most statements never mention a tag. Everything else is already in
      * the head.
      */
-    private fun policyKeys(
+    internal fun policyKeys(
         head: HttpRequestParser.Head,
         route: S3Router.Route,
         bucket: String,
