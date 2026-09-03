@@ -247,6 +247,46 @@ class MultipartChecksumTest {
         reopened.close()
     }
 
+    @Test
+    fun `a completion whose checksum does not match the parts is BadDigest`() {
+        // The code, not just the refusal. `CompletionRefused.CHECKSUM_MISMATCH` maps to
+        // `BadDigest`, and until this test nothing said so: changing that line to
+        // `InvalidRequest` left the whole gate green. The two codes send a client to different
+        // places - `BadDigest` says the bytes and the checksum disagree, which is a thing to
+        // retry with a corrected value; `InvalidRequest` says the request was malformed, which
+        // is a thing to fix in the client.
+        //
+        // The undecodable case, which the milestone names, is pinned twice over in
+        // `PayloadChecksumsTest`; this is the other one - a value that decodes cleanly and
+        // describes different bytes.
+        val uploadId =
+            idOf(begin(listOf("x-amz-checksum-algorithm" to "CRC32", "x-amz-checksum-type" to "FULL_OBJECT")))
+        val first = ByteArray(fiveMiB) { 'A'.code.toByte() }
+        val second = "the tail".toByteArray()
+        val a = uploadPart(uploadId, 1, first)
+        val b = uploadPart(uploadId, 2, second)
+
+        val body =
+            buildString {
+                append("<CompleteMultipartUpload>")
+                append("<Part><PartNumber>1</PartNumber><ETag>${a.header("ETag")}</ETag></Part>")
+                append("<Part><PartNumber>2</PartNumber><ETag>${b.header("ETag")}</ETag></Part>")
+                append("</CompleteMultipartUpload>")
+            }.toByteArray()
+        // A checksum of something else entirely, in the right shape and the right length.
+        val refused =
+            s3.send(
+                "POST",
+                "/photos/big.bin",
+                query = "uploadId=$uploadId",
+                headers = listOf("x-amz-checksum-crc32" to crc32("not these bytes".toByteArray())),
+                body = body,
+            )
+
+        assertEquals(400, refused.status, refused.text)
+        assertContains(refused.text, "BadDigest")
+    }
+
     private fun uploadPart(
         uploadId: String,
         number: Int,
