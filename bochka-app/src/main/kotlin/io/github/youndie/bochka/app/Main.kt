@@ -232,6 +232,19 @@ object Main {
     }
 
     /**
+     * How often to sweep, given how long a "day" lasts. A tenth of it, between a second and an
+     * hour.
+     *
+     * Its own function because both examples the paragraph below gives land on a clamp — a
+     * twenty-four-hour day would be swept every 2.4 hours and is held at one, a five-second day
+     * every half second and is held at one second — so a check made of them alone says nothing
+     * about the tenth: any divisor from five to twenty-four gives both of them the same answer.
+     * Between the clamps is where the derivation is visible, and that is what the test pins.
+     */
+    internal fun sweepPeriod(day: Duration): Duration =
+        day.dividedBy(10).coerceIn(Duration.ofSeconds(1), Duration.ofHours(1))
+
+    /**
      * The lifecycle sweep, on a thread of its own separate from housekeeping — and here is why.
      *
      * Housekeeping tends to its own affairs and is allowed to be late: an orphan collected an hour
@@ -245,12 +258,13 @@ object Main {
      * the two disagree: a "day" of one second with a sweep once an hour means rules that are not
      * carried out, and neither of the two settings looks wrong on its own.
      */
+
     private fun startLifecycle(
         store: ObjectStore,
         day: Duration,
     ) {
         val sweep = LifecycleSweep(store, Lifecycles(store), day)
-        val period = day.dividedBy(10).coerceIn(Duration.ofSeconds(1), Duration.ofHours(1))
+        val period = sweepPeriod(day)
         println("lifecycle: a day lasts ${day.toSeconds()}s, sweeping every ${period.toSeconds()}s")
 
         Thread {
