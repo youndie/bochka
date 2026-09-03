@@ -91,6 +91,11 @@ def parse(path: Path) -> list[dict]:
     return out
 
 
+# What a rule may claim. Two words, because there are two ways a survivor can be explained without
+# a missing test, and anything else is a judgement this script cannot check.
+STATUSES = frozenset({"equivalent", "unobservable"})
+
+
 def read_scope(near: Path) -> list[tuple[str, str, str]]:
     """The rules explaining survivors, if the file is where it usually is.
 
@@ -108,7 +113,21 @@ def read_scope(near: Path) -> list[tuple[str, str, str]]:
                 if len(parts) < 3:
                     print(f"{candidate}: a rule needs three tab-separated columns: {line}", file=sys.stderr)
                     continue
-                rules.append((parts[0].strip(), parts[1].strip(), parts[2].strip()))
+                status = parts[0].strip()
+                if status not in STATUSES:
+                    # The status is the whole claim: `equivalent` says no test could see it,
+                    # `unobservable` says another instrument holds it. A word this script does not
+                    # know is a claim it cannot check, and accepting one quietly moves a real
+                    # survivor out of the only bucket anybody reads -- measured with a rule reading
+                    # `wontfix / looks harmless to me`, which the report counted as classified
+                    # without a word. Refused by name, and the mutation stays where it was.
+                    print(
+                        f"{candidate}: '{status}' is not a status this script enforces "
+                        f"({', '.join(sorted(STATUSES))}); the rule is ignored: {line}",
+                        file=sys.stderr,
+                    )
+                    continue
+                rules.append((status, parts[1].strip(), parts[2].strip()))
             return rules
     return []
 

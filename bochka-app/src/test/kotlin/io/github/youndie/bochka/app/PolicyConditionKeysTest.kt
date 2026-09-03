@@ -5,7 +5,7 @@ import io.github.youndie.bochka.core.ObjectKey
 import io.github.youndie.bochka.http.HttpRequestParser
 import io.github.youndie.bochka.s3.BucketPolicy
 import io.github.youndie.bochka.s3.S3Router
-import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.runBlocking
 import kotlin.test.AfterTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -81,9 +81,16 @@ class PolicyConditionKeysTest {
                 ),
         )
 
+    // `runBlocking` and not `runTest`, and the reason is a CI failure of this very test. `runTest`
+    // reports exceptions the platform delivered **before it started** and fails whichever test is
+    // the first to use it afterwards — so a coroutine leaking anywhere in this module lands here,
+    // under a name that has nothing to do with it and with no stack of the actual throw. A report
+    // nobody can act on is not a guard; what stopping is worth asserting about is asserted where it
+    // belongs, in `StopLeavesNothingUncaughtTest`. Nothing here needs a test scheduler: the only
+    // suspending call is one write to the store.
     @Test
     fun `every key a policy may name is answered from the request`() =
-        runTest {
+        runBlocking {
             s3.store.createBucket("photos")
             s3.store.put(
                 "photos",
