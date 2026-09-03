@@ -429,6 +429,30 @@ class MinioClientTest {
     }
 
     @Test
+    fun `the heap those eleven mebibytes are measured against is the small one`() {
+        // The test below says an eleven-mebibyte upload fits in a 64 MiB heap, and that sentence is
+        // worth exactly the heap it ran under. Nothing in this module checked it: the profile is
+        // applied to every `Test` task from the root build, and the guard that it arrived lives in
+        // `bochka-core` alone, so a heap widened here — by an override, or by a line in this
+        // module's build file — leaves the claim standing and untested. Measured: appending
+        // `-Xmx1G` to this module's test task left the whole gate green.
+        //
+        // The effect and not the argument, which is the older of the two lessons: `-Xmx64M` stays
+        // on the command line when a second `-Xmx` follows it, and HotSpot honours the last one, so
+        // a check reading the arguments passes while the heap it names is gone (M-139 paid for this
+        // once already, in the image). 128 rather than 64 for the same reason `bochka-core` uses
+        // it: Gradle's own default for a forked test JVM is 512 MiB, and a bound above that passes
+        // whether or not any profile was delivered.
+        val maxHeapMib = Runtime.getRuntime().maxMemory() / (1024 * 1024)
+
+        assertTrue(
+            maxHeapMib <= 128,
+            "the foreign client's part buffers are measured against a $maxHeapMib MiB heap, " +
+                "which is not the profile the claim was made under",
+        )
+    }
+
+    @Test
     fun `a multipart upload the client cut into three parts comes back whole`() {
         // The half of the client's work that a small body never exercises: over the part size it
         // stops sending a PUT and runs the four-call dance itself — create, three uploads,
