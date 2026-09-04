@@ -34,6 +34,15 @@ cleanup() {
   local status=$?
   [ -n "${server_pid:-}" ] && kill "$server_pid" 2>/dev/null
   chmod -R u+w "$work" 2>/dev/null
+  # Kept, the way `ci/s3-tests.sh` keeps its own: an unclassified failure is a question about one
+  # case, and without the log the only way to ask it is another fifteen-minute run. Measured --
+  # that is what the first classification of `test_presigned_post_policy_error` cost.
+  if [ -f "$work/log/log.json" ] || [ -f "$log" ]; then
+    mkdir -p "$root/build/mint"
+    cp -f "$work/log/log.json" "$root/build/mint/log.json" 2>/dev/null
+    cp -f "$log" "$root/build/mint/bochka.log" 2>/dev/null
+    echo "kept mint's log and the server log in $root/build/mint"
+  fi
   rm -rf "$work" 2>/dev/null
   # In the trap, where an edit above cannot step over it: a run that executed no case at all exits
   # zero on its own and reads exactly like a pass.

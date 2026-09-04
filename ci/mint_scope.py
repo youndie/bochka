@@ -88,8 +88,23 @@ def main() -> int:
         under the SDK's own name and put the case in `function`, so a rule matched on the name
         either explains one thing or thirteen. The message is in here too, because two suites name
         nothing at all and only their text says which case it was.
+
+        `args` is in here for one reason, and it is the reason this paragraph exists: two minio-js
+        failures say only "listObjects lists 3 objects, expected 0", and what tells them apart from
+        any other listing failure is the bucket the suite made -- `minio-js-fd-…`, its own prefix
+        for the force-deletion cases. Without it the only rule that can explain them is one
+        matching `listObjects`, which is a rule about a method rather than about a case; and a rule
+        that broad cannot be reported stale, because it goes on matching after its subject has been
+        fixed. That is not hypothetical: `aws-sdk-go` and `versioning` -- two suite names -- kept
+        explaining failures for two releases after the defects they named were closed.
         """
-        parts = (failure.get("name"), failure.get("function"), failure.get("message"), failure.get("error"))
+        parts = (
+            failure.get("name"),
+            failure.get("function"),
+            failure.get("args"),
+            failure.get("message"),
+            failure.get("error"),
+        )
         # Lowercased, because the same case appears as `uploadSnowballObjects` in one SDK and
         # `test_upload_snowball_objects` in another, and a rule that depends on somebody else's
         # naming convention explains one of the two and reads as if it explained both.

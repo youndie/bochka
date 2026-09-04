@@ -31,19 +31,13 @@ out-of-scope snowball snowball is MinIO's upload extension: a tar arrives with a
 out-of-scope testFunctionalV2 signature version 2, which S3 retired; this server implements v4 only
 out-of-scope s3select S3 Select is out of scope for v1 and answered NotImplemented on purpose
 out-of-scope selectObjectContent S3 Select is out of scope for v1 and answered NotImplemented on purpose
+out-of-scope testSelectObject S3 Select through the Go SDK: the same decision, and it arrives as 501 on purpose
 out-of-scope abortMultipartupload mint expects an abort of an upload that does not exist to succeed; S3 documents NoSuchUpload, which is what this server answers
 
-# --- S3 has it, we do not: tasks ---------------------------------------------------------------
-deferred storage_class object storage classes are not implemented (M-301)
-deferred head-object object storage classes are not implemented (M-301)
-
 # --- our answer is wrong: tasks ----------------------------------------------------------------
-defect aws-sdk-go a presigned PUT whose body does not match its declared x-amz-content-sha256 is answered SignatureDoesNotMatch where S3 answers XAmzContentSHA256Mismatch (M-300)
-out-of-scope force-delete `x-minio-force-delete` is MinIO's own header for "delete every version"; without it a DELETE in a versioned bucket leaves a tombstone and the versions, which is S3
-defect listObjects a listing counted more than the suite expected because two earlier cases left their objects behind (M-303, M-304); the listing itself was right
-defect removeIncompleteUploads ListMultipartUploads is missing a field the client dereferences: Initiator or Owner (M-303)
-defect fPutObject ListMultipartUploads is missing a field the client dereferences: Initiator or Owner (M-303)
-defect copyObject a copy that mint expects to be refused succeeds (M-304)
-defect versioning a PUT carrying x-amz-tagging with versioning on gives an unexpected result (M-305)
+defect head-object a copy loses the storage class: it is stored on a write (M-301) and CopyObject does not carry it, so a HEAD of the copy answers without the header (M-311)
+out-of-scope minio-js-fd- what the client asked MinIO's `x-minio-force-delete` to remove is still there, so the listing after it is not empty: without that header a DELETE in a versioned bucket leaves a tombstone and the versions, which is S3
+defect test_presigned_post_policy_error a POST form addressed to an object key rather than to the bucket answers NotImplemented where S3 answers 405 MethodNotAllowed (M-309)
+defect testListObjectVersions `version-id-marker` without `key-marker` is accepted and answered with a listing, where S3 refuses it with InvalidArgument (M-310)
 out-of-scope removeBucket the bucket still holds versions, because the client asked to remove them with MinIO's force-delete header rather than by version id
 out-of-scope after all the bucket still holds versions, because the client asked to remove them with MinIO's force-delete header rather than by version id
