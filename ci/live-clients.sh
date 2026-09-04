@@ -21,6 +21,9 @@ readonly ENDPOINT="http://127.0.0.1:${PORT}"
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 log="$work/bochka.log"
+# Why the TLS terminator case did not run, empty when it did. Read by the framing check at the
+# bottom: one of the four framings can only come from that case.
+tls_skipped=""
 passed=0; failed=0; skipped=0
 
 pass()  { printf '  PASS    %s\n' "$1"; passed=$((passed+1)); }
@@ -319,12 +322,15 @@ NGINX
       docker rm -f bochka-tls >/dev/null 2>&1
     else
       skip "TLS terminator" "nginx would not start"
+      tls_skipped="nginx would not start"
     fi
   else
     skip "TLS terminator" "the certificate could not be generated"
+    tls_skipped="the certificate could not be generated"
   fi
 else
   skip "TLS terminator" "image unavailable"
+  tls_skipped="image unavailable"
 fi
 
 # --- what the server actually saw --------------------------------------------------------------
@@ -337,6 +343,17 @@ grep -E 'bochka handled (PUT|POST)' "$log" | grep -o 'framing=[A-Z0-9-]*' | sort
 for framing in SIGNED-PAYLOAD UNSIGNED-PAYLOAD STREAMING-AWS4-HMAC-SHA256-PAYLOAD STREAMING-UNSIGNED-PAYLOAD-TRAILER; do
   if grep -E 'bochka handled (PUT|POST)' "$log" | grep "framing=$framing\b" >/dev/null; then
     pass "framing $framing was exercised"
+  elif [ "$framing" = STREAMING-UNSIGNED-PAYLOAD-TRAILER ] && [ -n "$tls_skipped" ]; then
+    # STILL A FAILURE, AND THE MESSAGE IS THE WHOLE POINT. botocore sends this framing only over
+    # TLS, so the terminator case above is the only thing in this harness that can produce it: when
+    # that case is skipped the framing cannot appear, and the plain message sends the next reader
+    # to look for a client that stopped sending it. The cause was a `docker pull` that did not
+    # answer.
+    #
+    # Not turned into a skip. A run that could not exercise one of the four framings has not
+    # checked it, and a check that did not run must not read as one that passed -- which is the
+    # rule this harness exists to hold.
+    fail "framing $framing was never sent: the TLS terminator case is the only one that can send it, and it was skipped ($tls_skipped)"
   else
     fail "framing $framing was never sent by any client"
   fi
