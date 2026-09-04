@@ -56,6 +56,35 @@ jobs:
             ghcr.io/youndie/bochka:${{ github.ref_name }}
             ghcr.io/youndie/bochka:latest
 
+  # DOCKER HUB, AFTER GHCR AND SEPARATELY FROM IT.
+  #
+  # Not a second tag on the push above, and not a second build. A tag in the same push would tie the
+  # release to a registry that can refuse it for reasons of its own — an expired token, a pull limit
+  # — and take the whole publish down with it; a second build would produce different bytes under
+  # one number, and nothing would say which of the two anybody had.
+  #
+  # So this copies the manifest by digest and then asks both registries whether the two names point
+  # at the same thing. `ci/push-dockerhub.sh` is the same script the dispatchable workflow runs, so
+  # a release that failed here can be finished by a button rather than by a new tag.
+  dockerhub:
+    needs: image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      # Reading ghcr needs a login too: the package is public, but an anonymous pull of an index is
+      # rate limited on a shared runner, and that failure looks like a missing image.
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - run: ./ci/push-dockerhub.sh "$GITHUB_REF_NAME"
+
   maven:
     needs: gate
     runs-on: ubuntu-latest
