@@ -111,14 +111,21 @@ class S3Fixture(
      * test does not have. One CI run failed on exactly that: the same tree, green here five times
      * in a row.
      */
-    fun sweepLifecycle(now: java.time.Instant = store.clock()): io.github.youndie.bochka.s3.LifecycleSweep.Report =
-        io.github.youndie.bochka.s3
-            .LifecycleSweep(
-                store,
-                io.github.youndie.bochka.s3
-                    .Lifecycles(store),
-                lifecycleDay,
-            ).sweep(now)
+    fun sweepLifecycle(now: java.time.Instant? = null): io.github.youndie.bochka.s3.LifecycleSweep.Report {
+        val sweep =
+            io.github.youndie.bochka.s3
+                .LifecycleSweep(
+                    store,
+                    io.github.youndie.bochka.s3
+                        .Lifecycles(store),
+                    lifecycleDay,
+                )
+        // Nullable rather than defaulted, and a mutation is why: a fixture that filled the instant
+        // in itself would call `sweep(now)` even when the test named nothing, and the sweep's own
+        // default -- the one the server's background thread runs on -- would never be exercised at
+        // all. A test about that default passed with the default broken.
+        return if (now == null) sweep.sweep() else sweep.sweep(now)
+    }
 
     private val client: HttpClient = HttpClient.newBuilder().build()
 
