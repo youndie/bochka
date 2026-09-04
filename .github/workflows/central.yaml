@@ -18,8 +18,13 @@ name: central
 on:
   workflow_dispatch:
     inputs:
-      tag:
-        description: The released tag to upload, for example v0.6.0
+      ref:
+        description: The tree to build, a tag or a branch
+        required: true
+        default: main
+        type: string
+      version:
+        description: The Maven version to publish it as, without the v — for example 0.6.0
         required: true
         type: string
 
@@ -27,11 +32,51 @@ jobs:
   upload:
     runs-on: ubuntu-latest
     steps:
-      # THE TAG, not the branch. What goes to Central has to be the tree that was released, and the
-      # only thing that says which tree that was is the tag.
+      # THE TREE AND THE VERSION ARE TWO INPUTS, and the first release is why. `v0.6.0` was tagged
+      # before this workflow existed, so its tree has neither `sborka.central` nor the sborka
+      # version that reads it — checking the tag out would look right and fail with the publish
+      # task simply not being there.
+      #
+      # What makes publishing another tree under that number honest is a fact that can be checked
+      # rather than asserted, and the step below checks it: no file under `bochka-*/src` differs
+      # between the two. The artefact is built from the same sources; what differs is the build
+      # configuration that makes publishing possible at all.
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.ref }}
+          # The tags come too, so the step below can diff against one.
+          fetch-depth: 0
+
+      # REFUSED HERE RATHER THAN BY A MISSING TASK. Without the switch the publish plugin is not
+      # applied, `publishToMavenCentral` does not exist, and Gradle's answer is "task not found" —
+      # which reads as a typo in this file rather than as a tree that cannot publish.
+      - name: The tree being built can publish to Central
+        run: |
+          grep -q '^sborka.central=true' gradle.properties || {
+            echo "sborka.central is not set in ${{ inputs.ref }}, so nothing here can publish to" >&2
+            echo "Central. Build a tree that has it." >&2
+            exit 3
+          }
+
+      # WHAT IS ACTUALLY GOING OUT, said out loud before it goes. A version on Central can never be
+      # rewritten, so if the sources under this ref differ from the tag of the same name, that is
+      # worth reading in the log rather than discovering from a decompiler.
+      - name: Say how this tree relates to the tag of the same version
+        run: |
+          tag=v${{ inputs.version }}
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            changed=$(git diff --name-only "$tag"..HEAD -- 'bochka-*/src' | wc -l)
+            if [ "$changed" -eq 0 ]; then
+              echo "sources identical to $tag; the difference is build and CI configuration:"
+              git diff --stat "$tag"..HEAD | tail -20
+            else
+              echo "WARNING: $changed source files differ from $tag, and this will publish as" >&2
+              echo "${{ inputs.version }} anyway. A version on Central cannot be replaced." >&2
+              git diff --stat "$tag"..HEAD -- 'bochka-*/src' >&2
+            fi
+          else
+            echo "there is no tag $tag; publishing ${{ inputs.version }} from ${{ inputs.ref }}"
+          fi
 
       - uses: youndie/sborka/.github/actions/setup-kotlin@main
 
@@ -58,7 +103,7 @@ jobs:
           ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
           # Through the environment rather than spliced into the script: an input is text somebody
           # typed, and text pasted into a shell body is a command as much as it is a value.
-          TAG: ${{ inputs.tag }}
+          VERSION: ${{ inputs.version }}
         run: |
           # Refused here rather than by the portal after a ten-minute build: an unset secret arrives
           # as an empty string, the plugin sends no credentials, and the failure that comes back
@@ -76,7 +121,12 @@ jobs:
             fi
           done
 
-          VERSION=${TAG#v}
+          # The `v` is not accepted quietly: `vX.Y.Z` is a git tag and `X.Y.Z` is a Maven
+          # coordinate, and a bundle uploaded under the first is a version nobody asked for that
+          # can never be reused.
+          case $VERSION in
+            v*) echo "the version is a Maven coordinate, without the v: ${VERSION#v}" >&2; exit 3 ;;
+          esac
           echo "uploading $VERSION as a staged deployment; releasing it is a click in the portal"
           ./gradlew -PVERSION="$VERSION" publishToMavenCentral
 
