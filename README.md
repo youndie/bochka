@@ -4,6 +4,7 @@
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
 [![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-519%2F744-green)](ci/s3-tests.sh)
+[![maven central](https://img.shields.io/badge/maven%20central-0.7.0-blue)](https://central.sonatype.com/artifact/io.github.youndie.bochka/bochka-embedded)
 [![license](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![release](https://img.shields.io/badge/release-v0.7.0-blue)](https://github.com/youndie/bochka/releases/tag/v0.7.0)
 
@@ -27,6 +28,10 @@ docker run -d --name bochka -u 1000:1000 \
   ghcr.io/youndie/bochka:v0.7.0
 ```
 
+The same image is on Docker Hub as `youndie/bochka:v0.7.0` — the same digest, copied rather than
+built a second time. `ghcr.io` is what the Helm chart defaults to, because Docker Hub's anonymous
+pull limits are the stricter of the two.
+
 Bound to the loopback on purpose, with your own TLS terminator in front — terminating TLS inside
 the JVM would cost the read path this whole project is built around. [deploy/](deploy/) has the
 configuration and the reasoning, including what changes if you put nginx there.
@@ -49,7 +54,7 @@ mock, and a mock answers what it was told to answer. This is the same server the
 signature verification, same four body framings, same storage.
 
 ```kotlin
-repositories { maven("https://reposilite.kotlin.website/snapshots") }
+repositories { mavenCentral() }
 dependencies { testImplementation("io.github.youndie.bochka:bochka-embedded:0.7.0") }
 ```
 
