@@ -68,6 +68,19 @@ class ObjectStore(
      * The default comes from the measurement in `docs/measurements.md`, not from taste.
      */
     val maxObjects: Int = ceilingForHeap(),
+    /**
+     * The clock this store stamps with.
+     *
+     * Every `lastModified`, every bucket's creation time, every retention comparison and the
+     * moment an upload was started come from here, and it is a parameter so that a caller can
+     * hold time still. An expiry decided by "how long the machine took between the write and the
+     * sweep" is a property of the machine, and the lifecycle tests already paid for that once.
+     *
+     * [WALL_CLOCK] unless a caller says otherwise, and everything downstream — the handler's
+     * POST policy expiry, the lifecycle sweep's idea of "now" — asks the store rather than the
+     * JVM, so that handing one store a clock moves the whole server's.
+     */
+    val clock: () -> Instant = WALL_CLOCK,
 ) : Closeable {
     /**
      * Whether a write is on the disk before it is acknowledged.
@@ -553,7 +566,7 @@ class ObjectStore(
         owner: String? = null,
         acl: String? = null,
     ): Boolean {
-        val createdAt = Instant.now()
+        val createdAt = clock()
         if (buckets.putIfAbsent(name, BucketState(createdAt, owner, acl)) != null) return false
         write(IndexRecord.BucketCreated(name, createdAt.toEpochMilli(), owner, acl))
         return true
@@ -815,7 +828,7 @@ class ObjectStore(
         versionId: String?,
         retention: Retention?,
         bypass: Boolean = false,
-        now: Instant = Instant.now(),
+        now: Instant = clock(),
     ): Boolean =
         writing.withLock {
             val entry = versionEntry(bucket, key, versionId) ?: return@withLock false
@@ -1115,7 +1128,7 @@ class ObjectStore(
                     fileId = staged.fileId,
                     size = staged.size,
                     eTag = staged.eTag,
-                    lastModified = Instant.now(),
+                    lastModified = clock(),
                     metadata = metadata,
                     parts = parts,
                     versionId = if (state == Versioning.ENABLED) mintVersionId() else NULL_VERSION,
@@ -1444,7 +1457,7 @@ class ObjectStore(
                     fileId = "",
                     size = 0,
                     eTag = "",
-                    lastModified = Instant.now(),
+                    lastModified = clock(),
                     metadata = Metadata(),
                     versionId = if (state == Versioning.ENABLED) mintVersionId() else NULL_VERSION,
                     deleteMarker = true,
@@ -1467,7 +1480,7 @@ class ObjectStore(
         key: ObjectKey,
         versionId: String,
         bypass: Boolean = false,
-        now: Instant = Instant.now(),
+        now: Instant = clock(),
     ): Stored? =
         writing.withLock {
             val entry =
@@ -1874,7 +1887,7 @@ class ObjectStore(
                 bucket = bucket,
                 key = key,
                 metadata = metadata,
-                startedAt = Instant.now(),
+                startedAt = clock(),
                 checksumAlgorithm = checksumAlgorithm,
                 checksumType = checksumType,
                 retention = retention,
@@ -1936,7 +1949,7 @@ class ObjectStore(
         iv: ByteArray? = null,
     ): Part {
         val state = uploads[uploadId] ?: throw CompletionRefused(CompletionRefused.Reason.NO_SUCH_UPLOAD, uploadId)
-        val part = Part(number, staged.fileId, staged.size, staged.eTag, Instant.now(), checksum, iv)
+        val part = Part(number, staged.fileId, staged.size, staged.eTag, clock(), checksum, iv)
         val previous = state.parts.put(number, part)
         this.write(
             IndexRecord.UploadPart(
@@ -2175,7 +2188,10 @@ class ObjectStore(
      * moment to notice: a client that stops calling says nothing (M-57).
      */
     fun sweepUploads(olderThanMillis: Long = 7 * 24 * 60 * 60 * 1000L): Int {
-        val cutoff = System.currentTimeMillis() - olderThanMillis
+        // The store's clock and not the JVM's, because the other side of the comparison below is
+        // `startedAt` — a stamp this store made. Two clocks either side of a `>` is how an upload
+        // gets swept a week early on a host whose time was corrected.
+        val cutoff = clock().toEpochMilli() - olderThanMillis
         var removed = 0
         for (state in uploads.values.toList()) {
             if (state.upload.startedAt.toEpochMilli() > cutoff) continue
@@ -2372,7 +2388,7 @@ class ObjectStore(
             syncDirectory()
             log = RecordLog(logPath).also { it.recover { } }
             recordsSinceCompaction.set(records)
-            lastCompactionAt = Instant.now()
+            lastCompactionAt = clock()
             Compaction(before, after, records)
         }
 
@@ -2390,6 +2406,10 @@ class ObjectStore(
      * power cut still naming the old inode. Best-effort because opening a directory as a channel
      * is a POSIX thing and this project is also edited on a Mac; the run that matters is Linux.
      */
+    @Suppress(
+        "ktlint:kapkan:swallowed-failure",
+        "best effort by design: opening a directory as a channel is POSIX-only and this tree is also edited on a Mac",
+    )
     private fun syncDirectory() {
         runCatching {
             FileChannel.open(root, StandardOpenOption.READ).use { it.force(true) }
@@ -2408,6 +2428,13 @@ class ObjectStore(
         // A part of an upload in progress is pointed at by the upload rather than by an object,
         // and a sweep that did not know about them would collect a client's work mid-upload.
         for (state in uploads.values) for (part in state.parts.values) referenced.add(part.fileId)
+        // The JVM's clock here and the store's everywhere else, because what this cutoff is
+        // compared against is `Files.getLastModifiedTime` — a stamp the filesystem made. A clock
+        // somebody handed the store would be compared against a clock nobody handed the disk.
+        @Suppress(
+            "ktlint:kapkan:wall-clock",
+            "compared against the filesystem's own mtimes, so it has to be the clock the filesystem stamps with",
+        )
         val cutoff = System.currentTimeMillis() - olderThanMillis
         var removed = 0
         Files.walk(data).use { walk ->
@@ -2421,7 +2448,7 @@ class ObjectStore(
         }
         // Remembered, because "how many orphans were there" is a question an operator asks after
         // the fact and the sweep is the only thing that knows (M-291).
-        lastSweep = Sweep(removed, Instant.now())
+        lastSweep = Sweep(removed, clock())
         return removed
     }
 
@@ -2495,6 +2522,10 @@ class ObjectStore(
 
         // Best effort, and deliberately after the lock rather than before it: this is a courtesy to
         // whoever is refused, not part of the claim. A failure to write it costs a worse message.
+        @Suppress(
+            "ktlint:kapkan:swallowed-failure",
+            "a courtesy to whoever is refused, not part of the claim: failing to write it costs a worse message",
+        )
         runCatching {
             channel.truncate(0)
             channel.write(java.nio.ByteBuffer.wrap(holderName().toByteArray()))
@@ -2585,6 +2616,23 @@ class ObjectStore(
     ) : RuntimeException(message)
 
     companion object {
+        /**
+         * The clock a store reads unless it was handed another one.
+         *
+         * The one place a bochka server asks the machine what time it is, and the reason the
+         * exemption is written here rather than at each of the ten stamps: `Last-Modified`, a
+         * bucket's creation, a retention deadline and an upload's age all come from [clock], the
+         * lifecycle sweep and the POST policy's expiry ask the store rather than the JVM, and so
+         * one line decides what "now" means for the whole of it.
+         *
+         * [sweepOrphans] is the exception, and it says why on its own line.
+         */
+        @Suppress(
+            "ktlint:kapkan:wall-clock",
+            "the server's clock port: everything that stamps or compares a time reads it through the store",
+        )
+        val WALL_CLOCK: () -> Instant = { Instant.now() }
+
         /**
          * The version id of anything written to a bucket that is not versioning.
          *

@@ -123,6 +123,10 @@ class IndexLinearizabilityTest {
         // Lincheck builds an instance per invocation and never disposes of one, so the store's
         // channels and its directory would otherwise be left to the end of the JVM. Thousands of
         // open journals is how a run that measures the index ends up measuring file descriptors.
+        @Suppress(
+            "ktlint:kapkan:swallowed-failure",
+            "cleanup after a Lincheck invocation nobody owns: a failure here must not become the run's verdict",
+        )
         runCatching {
             store.close()
             home.deleteRecursively()

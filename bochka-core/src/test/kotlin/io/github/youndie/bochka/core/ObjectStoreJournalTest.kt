@@ -176,24 +176,28 @@ class ObjectStoreJournalTest {
             // and the end state is exactly what a two-record implementation also produces. What
             // separates them is only visible in the journal: with two records there is a moment,
             // and a crash inside it, where the object exists and is not protected yet.
-            val until = System.currentTimeMillis() + 3_600_000
-            open().use { store ->
-                store.createBucket("photos")
-                val upload =
-                    store.createUpload(
-                        "photos",
-                        ObjectKey.of("big.bin"),
-                        Metadata(),
-                        retention = ObjectStore.Retention("COMPLIANCE", until),
-                        legalHold = true,
-                    )
-                val part =
-                    store.putPart(
-                        upload.id,
-                        1,
-                    ) { out -> out.write(ByteArray(MINIMUM_PART) { 'a'.code.toByte() }, 0, MINIMUM_PART) }
-                store.completeUpload(upload.id, listOf(1 to part.eTag))
-            }
+            // The store's clock, because what the retention is compared against is a stamp the
+            // store made: an hour by two different clocks is not an hour.
+            val until =
+                open().use { store ->
+                    val deadline = store.clock().toEpochMilli() + 3_600_000
+                    store.createBucket("photos")
+                    val upload =
+                        store.createUpload(
+                            "photos",
+                            ObjectKey.of("big.bin"),
+                            Metadata(),
+                            retention = ObjectStore.Retention("COMPLIANCE", deadline),
+                            legalHold = true,
+                        )
+                    val part =
+                        store.putPart(
+                            upload.id,
+                            1,
+                        ) { out -> out.write(ByteArray(MINIMUM_PART) { 'a'.code.toByte() }, 0, MINIMUM_PART) }
+                    store.completeUpload(upload.id, listOf(1 to part.eTag))
+                    deadline
+                }
 
             val puts = mutableListOf<IndexRecord.Put>()
             RecordLog(dir.resolve("index.log")).use { log ->

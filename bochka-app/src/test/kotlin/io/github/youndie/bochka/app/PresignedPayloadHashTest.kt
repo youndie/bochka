@@ -42,7 +42,7 @@ class PresignedPayloadHashTest {
         declaredHash: String,
         body: ByteArray,
     ): HttpResponse<String> {
-        val timestamp = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").format(ZonedDateTime.now(ZoneOffset.UTC))
+        val timestamp = S3Fixture.signingTimestamp()
         val scope = "${timestamp.take(8)}/$REGION/s3/aws4_request"
         val signedHeaders = "host;x-amz-content-sha256"
         val host = "127.0.0.1:${s3.port}"

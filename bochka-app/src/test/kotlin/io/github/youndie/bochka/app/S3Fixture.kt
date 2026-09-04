@@ -66,8 +66,16 @@ class S3Fixture(
      * one.
      */
     maxObjects: Int = ObjectStore.ceilingForHeap(),
+    /**
+     * The clock the whole fixture runs on, the machine's unless a test holds it still.
+     *
+     * A test that hands over a constant is asking a different question from the ones here: not
+     * "what does the server answer" but "which clock did that answer come from" — and the two are
+     * only ever told apart by a clock that disagrees with the machine's.
+     */
+    clock: () -> java.time.Instant = ObjectStore.WALL_CLOCK,
 ) : AutoCloseable {
-    val store = ObjectStore(root, durability, maxObjects)
+    val store = ObjectStore(root, durability, maxObjects, clock)
 
     /**
      * The handler itself, for the one thing a socket cannot show: which read path a response chose.
@@ -103,16 +111,21 @@ class S3Fixture(
      * test does not have. One CI run failed on exactly that: the same tree, green here five times
      * in a row.
      */
-    fun sweepLifecycle(
-        now: java.time.Instant = java.time.Instant.now(),
-    ): io.github.youndie.bochka.s3.LifecycleSweep.Report =
-        io.github.youndie.bochka.s3
-            .LifecycleSweep(
-                store,
-                io.github.youndie.bochka.s3
-                    .Lifecycles(store),
-                lifecycleDay,
-            ).sweep(now)
+    fun sweepLifecycle(now: java.time.Instant? = null): io.github.youndie.bochka.s3.LifecycleSweep.Report {
+        val sweep =
+            io.github.youndie.bochka.s3
+                .LifecycleSweep(
+                    store,
+                    io.github.youndie.bochka.s3
+                        .Lifecycles(store),
+                    lifecycleDay,
+                )
+        // Nullable rather than defaulted, and a mutation is why: a fixture that filled the instant
+        // in itself would call `sweep(now)` even when the test named nothing, and the sweep's own
+        // default -- the one the server's background thread runs on -- would never be exercised at
+        // all. A test about that default passed with the default broken.
+        return if (now == null) sweep.sweep() else sweep.sweep(now)
+    }
 
     private val client: HttpClient = HttpClient.newBuilder().build()
 
@@ -176,7 +189,7 @@ class S3Fixture(
          */
         duringBody: (() -> Unit)? = null,
     ): Answer {
-        val timestamp = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").format(ZonedDateTime.now(ZoneOffset.UTC))
+        val timestamp = signingTimestamp()
         val hash = payloadHash ?: Sigv4.sha256Hex(body)
 
         val signed =
@@ -446,5 +459,21 @@ class S3Fixture(
 
         const val OTHER_SECRET = "bochkaothersecret"
         const val REGION = "us-east-1"
+
+        /**
+         * The moment a hand-signed request claims to have been made at.
+         *
+         * The one reading of the wall clock in the tests, and the tests that sign for themselves
+         * call it rather than formatting a `now()` of their own: a signature carries the time it
+         * was minted at, the verifier refuses one outside its skew window, and so the clock this
+         * side has to be the clock that side reads. Nothing about it is the subject of a test —
+         * which is exactly why it should be written once.
+         */
+        @Suppress(
+            "ktlint:kapkan:wall-clock",
+            "a signature is refused outside a skew window, so it is minted at the clock the verifier reads",
+        )
+        fun signingTimestamp(): String =
+            DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").format(ZonedDateTime.now(ZoneOffset.UTC))
     }
 }

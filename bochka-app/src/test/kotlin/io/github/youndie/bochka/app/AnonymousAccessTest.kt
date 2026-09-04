@@ -112,10 +112,7 @@ class AnonymousAccessTest {
             // Now, and of the right shape: a stale date would be refused as a clock difference
             // before the signature is ever compared, and the assertion below would then be about
             // skew rather than about the thing this test exists for.
-            val now =
-                java.time.format.DateTimeFormatter
-                    .ofPattern("yyyyMMdd'T'HHmmss'Z'")
-                    .format(java.time.ZonedDateTime.now(java.time.ZoneOffset.UTC))
+            val now = S3Fixture.signingTimestamp()
             val wrong =
                 s3.unsigned(
                     "GET",

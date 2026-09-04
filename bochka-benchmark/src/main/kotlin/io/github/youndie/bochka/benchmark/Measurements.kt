@@ -155,6 +155,10 @@ object Measurements {
             // Guarded, and not out of tidiness: an exception thrown while cleaning up **replaces**
             // the one being cleaned up after, and the report becomes `NoSuchFileException` from
             // the walk instead of whatever actually broke the measurement. Cost me a run.
+            @Suppress(
+                "ktlint:kapkan:swallowed-failure",
+                "reading it is what this guard exists to prevent: it would replace the failure being cleaned up after",
+            )
             runCatching {
                 if (Files.exists(dir)) {
                     Files.walk(dir).use { walk ->
