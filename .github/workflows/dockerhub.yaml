@@ -41,3 +41,22 @@ jobs:
       - env:
           TAG: ${{ inputs.tag }}
         run: ./ci/push-dockerhub.sh "$TAG"
+
+      # THE PAGE, AND NOT THIS REPOSITORY'S README. That one is written for GitHub and is full of
+      # relative links -- `BACKLOG.md`, `deploy/`, `ci/` -- every one of which is a dead link on a
+      # registry that has no repository behind it. `deploy/docker-hub.md` is the page: the same
+      # facts, absolute links, and the things somebody reads on the way to `docker run`.
+      #
+      # After the copy rather than before it: a description pushed for an image that failed to
+      # arrive describes nothing.
+      - name: The page people land on
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          # The description API does not take the pull token: it needs a password or a personal
+          # access token with write scope. Kept as its own secret so that a token good only for
+          # pushing images is not quietly expected to do this too.
+          password: ${{ secrets.DOCKERHUB_DESCRIPTION_TOKEN || secrets.DOCKERHUB_TOKEN }}
+          repository: youndie/bochka
+          short-description: An S3-compatible object store in one process, on one disk. Small enough to start inside a test.
+          readme-filepath: deploy/docker-hub.md

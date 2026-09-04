@@ -418,6 +418,33 @@ else
   fail "a fresh container did not find the objects on the volume"
 fi
 
+# --- one release, said in more than one file ---------------------------------------------------
+#
+# The chart's `appVersion` is the only version this repository already enforces: `publish.yml`
+# refuses to publish a chart whose appVersion is not the tag. Everything else that names the
+# release -- the badge, the `docker run` line, the Maven coordinate, and now the page Docker Hub
+# shows -- is written by hand at release time by whoever remembered, which is how the same number
+# comes to mean two things (M-184, and the ceiling checks above exist for the same reason).
+#
+# So they are compared against that one, rather than against each other.
+echo
+echo "the release named in the docs against the one the chart publishes"
+release=$(sed -n 's/^appVersion: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' "$root/deploy/helm/bochka/Chart.yaml")
+coordinate=${release#v}
+
+for file in README.md deploy/docker-hub.md; do
+  # Two shapes, and neither of them matches the chart's OWN version (`--version 0.4.1`), which is a
+  # different number on purpose: an image tag carries the `v`, and the Maven coordinate is only
+  # ever written after `bochka-embedded:`.
+  wrong_tag=$(grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' "$root/$file" | sort -u | grep -vx "$release")
+  wrong_coord=$(grep -oE 'bochka-embedded:[0-9]+\.[0-9]+\.[0-9]+' "$root/$file" | sed 's/.*://' | sort -u | grep -vx "$coordinate")
+  if [ -z "$wrong_tag$wrong_coord" ]; then
+    pass "$file names $release and nothing else"
+  else
+    fail "$file names $(echo $wrong_tag $wrong_coord) where the chart publishes $release"
+  fi
+done
+
 echo
 printf 'passed %d, failed %d\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]
