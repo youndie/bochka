@@ -1422,7 +1422,10 @@ class S3Handler(
                     PostPolicy.decode(policyField),
                     checked,
                     form.fileLength.toLong(),
-                    java.time.Instant.now(),
+                    // The store's clock, because it is the clock everything else this server says
+                    // about time comes from — the `Last-Modified` of the object this very form is
+                    // about, among them.
+                    store.clock(),
                 )
             }
         } catch (e: PostForm.Malformed) {

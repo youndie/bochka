@@ -131,6 +131,10 @@ object Main {
         // part of what an operator waits through, and leaving it out would publish a number
         // smaller than the one they see. Falls back to this function's own start where the
         // platform does not say when the process began.
+        @Suppress(
+            "ktlint:kapkan:wall-clock",
+            "the other end of this subtraction is ProcessHandle's start instant, which is a wall-clock reading too",
+        )
         val processStart =
             ProcessHandle
                 .current()

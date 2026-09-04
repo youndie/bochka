@@ -51,7 +51,12 @@ class LifecycleSweep(
                 "aborted $uploads uploads"
     }
 
-    fun sweep(now: Instant = Instant.now()): Report {
+    /**
+     * [now] defaults to the **store's** clock rather than to this JVM's: a term is measured from a
+     * `lastModified` the store stamped, and the two sides of that subtraction have to be the same
+     * clock.
+     */
+    fun sweep(now: Instant = store.clock()): Report {
         var report = Report()
         for (bucket in store.bucketNames()) {
             val lifecycle = lifecycles.of(bucket) ?: continue

@@ -117,6 +117,10 @@ object Startup {
     }
 
     /** A signed `PUT` of a bucket: the whole path a test's first call takes. */
+    @Suppress(
+        "ktlint:kapkan:wall-clock",
+        "a signature is refused outside a skew window, so it has to be minted at the clock the server checks it against",
+    )
     private fun createBucket(
         client: HttpClient,
         bochka: Bochka,
