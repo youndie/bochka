@@ -16,6 +16,11 @@ set -uo pipefail
 readonly IMAGE=${BOCHKA_IMAGE:?set BOCHKA_IMAGE to the published image}
 readonly VERSION=${BOCHKA_VERSION:-${IMAGE##*:}}
 readonly PORT=${BOCHKA_PORT:-19003}
+# Where the jar is resolved from. `central` means Maven Central and NOTHING ELSE, which is the only
+# way this script can say anything about a Central release: the consumer project below lists
+# `mavenCentral()` unconditionally, so with a second repository beside it a green run proves the
+# artefact exists in one of the two and cannot say which. That is the shape of check that passes
+# for the wrong reason -- and the reason to have a mode with one repository in it.
 readonly REPO=${BOCHKA_REPO_URL:-https://reposilite.kotlin.website/snapshots}
 readonly NAME=bochka-consume
 
@@ -28,6 +33,15 @@ work=$(mktemp -d)
 # really a version that cannot compile against this artefact at all. Hardcoding a version here
 # made this script assert something about a Kotlin nobody uses.
 readonly KOTLIN=${BOCHKA_KOTLIN:-$(sed -n 's/^kotlin *= *"\(.*\)"/\1/p' "$root/gradle/libs.versions.toml" | head -1)}
+# Empty when the answer has to come from Central, so that the consumer has exactly one place to
+# find the artefact and a resolution failure means what it says.
+if [ "$REPO" = central ]; then
+  EXTRA_REPO=""
+  echo "resolving from Maven Central only: nothing else is on the consumer's repository list"
+else
+  EXTRA_REPO="    maven { url = uri(\"$REPO\") }"
+fi
+
 passed=0; failed=0
 pass() { printf '  PASS    %s\n' "$1"; passed=$((passed+1)); }
 fail() { printf '  FAIL    %s\n' "$1"; failed=$((failed+1)); }
@@ -81,7 +95,7 @@ rootProject.name = "consumer"
 dependencyResolutionManagement {
   repositories {
     mavenCentral()
-    maven { url = uri("$REPO") }
+$EXTRA_REPO
   }
 }
 EOF

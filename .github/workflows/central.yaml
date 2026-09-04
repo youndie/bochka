@@ -1,0 +1,87 @@
+# Uploads a released version to Maven Central, by hand and on purpose.
+#
+# Not part of `publish.yml`, and not triggered by the tag. Three reasons, and the first one is the
+# only one that would matter on its own:
+#
+#   * **a tag is spent once.** The rest of the release — the image, the chart, the Reposilite
+#     modules — is refused a second time by the registries themselves, so a Central upload failing
+#     inside that workflow would leave a version published everywhere but here and no way to retry
+#     without a new number. Here the run is a button, and a failed attempt costs nothing;
+#   * **the portal refuses for reasons only it knows** — a namespace not verified yet, a signature
+#     it cannot check, a POM field it reads differently. Those are worth meeting on a re-runnable
+#     job rather than on a tag;
+#   * **the release itself stays a click.** `publishToMavenCentral` uploads the bundle and leaves it
+#     staged; `publishAndReleaseToMavenCentral` would release it automatically, and a Central
+#     release can never be rewritten or taken back. The last step belongs to a person.
+name: central
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The released tag to upload, for example v0.6.0
+        required: true
+        type: string
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      # THE TAG, not the branch. What goes to Central has to be the tree that was released, and the
+      # only thing that says which tree that was is the tag.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag }}
+
+      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+
+      # The gate first, on the tree being uploaded. `publish.yml` ran it on this same commit at the
+      # tag; running it again costs a minute and is the difference between "it passed once" and "it
+      # passes on what is going out".
+      - run: ./gradlew check
+
+      # The version without the `v`: the git tag is `v0.6.0` and the Maven coordinate is `0.6.0`.
+      # Getting that wrong publishes a version nobody asked for, under a number that can never be
+      # reused.
+      #
+      # The property names are the plugin's, read out of its jar rather than remembered:
+      # `mavenCentralUsername`, `mavenCentralPassword`, `signingInMemoryKey`,
+      # `signingInMemoryKeyPassword`. Gradle takes each as ORG_GRADLE_PROJECT_<name>.
+      #
+      # The username and password are a **user token** from the portal, not the account's own
+      # credentials.
+      - name: Upload the bundle, staged
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+          # Through the environment rather than spliced into the script: an input is text somebody
+          # typed, and text pasted into a shell body is a command as much as it is a value.
+          TAG: ${{ inputs.tag }}
+        run: |
+          # Refused here rather than by the portal after a ten-minute build: an unset secret arrives
+          # as an empty string, the plugin sends no credentials, and the failure that comes back
+          # says nothing about which of the four is missing.
+          for name in MAVEN_CENTRAL_USERNAME MAVEN_CENTRAL_PASSWORD SIGNING_KEY SIGNING_PASSWORD; do
+            case $name in
+              MAVEN_CENTRAL_USERNAME) value=$ORG_GRADLE_PROJECT_mavenCentralUsername ;;
+              MAVEN_CENTRAL_PASSWORD) value=$ORG_GRADLE_PROJECT_mavenCentralPassword ;;
+              SIGNING_KEY) value=$ORG_GRADLE_PROJECT_signingInMemoryKey ;;
+              SIGNING_PASSWORD) value=$ORG_GRADLE_PROJECT_signingInMemoryKeyPassword ;;
+            esac
+            if [ -z "$value" ]; then
+              echo "the repository secret $name is empty or not set; nothing was uploaded" >&2
+              exit 3
+            fi
+          done
+
+          VERSION=${TAG#v}
+          echo "uploading $VERSION as a staged deployment; releasing it is a click in the portal"
+          ./gradlew -PVERSION="$VERSION" publishToMavenCentral
+
+      - name: What to do next
+        run: |
+          echo "The bundle is staged at https://central.sonatype.com/publishing/deployments"
+          echo "Check it, then press Publish. Nothing is resolvable until you do, and nothing can be"
+          echo "changed after you have."
