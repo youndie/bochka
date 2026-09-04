@@ -1,0 +1,43 @@
+# Copies an already published image to Docker Hub, by hand.
+#
+# The same script `publish.yml` runs after the ghcr push, on the same terms, for the two cases a
+# tag-triggered job cannot cover: a release published before this existed, and a release whose
+# Docker Hub half failed for a reason of the registry's own. Neither is worth a new version number,
+# and both are worth a button.
+name: dockerhub
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The published image tag to copy, for example v0.7.0
+        required: true
+        type: string
+
+jobs:
+  copy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      # Refused before the copy rather than by a registry that answers 401 to an empty password:
+      # that answer names nothing, and this one names the secret.
+      - name: The credentials exist
+        env:
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          [ -n "$USERNAME" ] || { echo "the repository secret DOCKERHUB_USERNAME is not set" >&2; exit 3; }
+          [ -n "$TOKEN" ] || { echo "the repository secret DOCKERHUB_TOKEN is not set" >&2; exit 3; }
+      - env:
+          TAG: ${{ inputs.tag }}
+        run: ./ci/push-dockerhub.sh "$TAG"
