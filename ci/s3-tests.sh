@@ -164,6 +164,18 @@ trap cleanup EXIT
 command -v docker >/dev/null || { echo "docker is not installed; the suite cannot run" >&2; exit 3; }
 
 if [ -z "$ENDPOINT" ]; then
+  # The port has to be free before anything is started, and this is not tidiness. The readiness
+  # loop below asks whether *something* accepts a connection, which is a question a stranger can
+  # answer: on a shared build box `127.0.0.1:19001` was held by another project's container, the
+  # server this script started died with `Address already in use`, and the run went on to score the
+  # stranger — printing "0 of 837 passed" and a full classification of somebody else's answers.
+  if (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
+    echo "something is already listening on 127.0.0.1:$PORT, and this script is about to start a" >&2
+    echo "server there: whatever it scored would be that other thing. Free the port, or name" >&2
+    echo "another one with BOCHKA_PORT." >&2
+    exit 3
+  fi
+
   "$root/gradlew" -p "$root" -q :bochka-app:installDist || { echo "build failed" >&2; exit 3; }
 
   # `BOCHKA_LOG=1` is on for the whole run, and it is the half of this that matters: a preserved log
@@ -190,12 +202,25 @@ else
 fi
 
 for _ in $(seq 1 50); do
+  # The server this script started, when it started one, and not only the socket: a process that
+  # died between the check above and this loop leaves the port to whoever takes it next, and a
+  # connection that succeeds says nothing about whose it is.
+  if [ -n "${server_pid:-}" ] && ! kill -0 "$server_pid" 2>/dev/null; then
+    echo "the server this script started is gone before it answered:" >&2
+    cat "$log" >&2
+    exit 3
+  fi
   (exec 3<>/dev/tcp/"$HOST"/"$TARGET_PORT") 2>/dev/null && break
   sleep 0.2
 done
 if ! (exec 3<>/dev/tcp/"$HOST"/"$TARGET_PORT") 2>/dev/null; then
   echo "nothing is answering on $HOST:$TARGET_PORT" >&2
   [ -z "$ENDPOINT" ] && cat "$log" >&2
+  exit 3
+fi
+if [ -n "${server_pid:-}" ] && ! kill -0 "$server_pid" 2>/dev/null; then
+  echo "$HOST:$TARGET_PORT answers, but the server this script started is not the one answering:" >&2
+  cat "$log" >&2
   exit 3
 fi
 

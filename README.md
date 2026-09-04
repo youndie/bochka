@@ -115,10 +115,13 @@ with what came out differently than planned.
 > that ran is printed beside the percentage — a rising score and a shrinking suite look identical
 > otherwise.
 
-> **334 of 381** cases of MinIO's `mint` across fifteen SDK suites, six of them clean. Fifteen of
-> the 34 failures are MinIO's own surface — its admin API, its notification stream, snowball,
-> signature v2 — and every failure has a reason on file; the image is pinned by digest, because a
-> suite whose upstream has been wound down is a number that can stop being reproducible.
+> **362 of 404** cases of MinIO's `mint` across fifteen SDK suites, six of them clean. Both halves
+> of that fraction moved since the last release — the suite itself grew — which is why the harness
+> prints the number of cases beside the score. Twenty-six of the 29 failures are MinIO's own
+> surface (its admin API, its notification stream, snowball, signature v2, S3 Select) or its own
+> `x-minio-force-delete`; the other three are ours and each names a task. The image is pinned by
+> digest, because a suite whose upstream has been wound down is a number that can stop being
+> reproducible.
 
 > **Reading into the heap costs 7.6–8.0× the processor per byte that `transferTo` does**, across a
 > real network card between two machines. Over loopback the same comparison says 5.3×, and the
