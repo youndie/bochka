@@ -1,6 +1,6 @@
 [versions]
 # The shared build conventions. One number: every sborka plugin below takes its version from here.
-sborka = "0.2.0.29"
+sborka = "0.2.0.30"
 # Checked against maven-metadata.xml of org.jetbrains.kotlin:kotlin-stdlib on 2026-08-17: 2.4.10 is
 # the last stable, 2.4.20-RC is a release candidate.
 kotlin = "2.4.10"
