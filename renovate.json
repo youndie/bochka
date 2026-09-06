@@ -1,6 +1,8 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": [
-    "config:recommended"
-  ]
+  "description": [
+    "The portfolio's Renovate configuration lives in sborka and is extended by name. What was here before was `config:recommended` and nothing else, and #157 and #158 are what that costs: one sborka release, 0.2.0.30, as two pull requests. The version is named in settings.gradle.kts and again in the catalog, and only a grouping rule makes them one change.",
+    "Automerge is a separate preset (`github>youndie/sborka:automerge-harness`) and is not extended here: nothing merges itself in this repository today. Its precondition holds — check.yml runs on `pull_request` — so it can be added as its own change, and this is the repository where that is worth thinking about: publish.yml runs on push to main, so what merges here reaches a release path quickly."
+  ],
+  "extends": ["github>youndie/sborka"]
 }
