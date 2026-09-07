@@ -120,7 +120,7 @@ extra["bochkaShippedJvmArgs"] = if (footprintOverridden) jvmArgs else shippedJvm
 extra["bochkaSmallJvmArgs"] = if (footprintOverridden) jvmArgs else smallJvmArgs
 
 // The group, the version, the toolchain, the ktlint wiring, the JUnit platform, the test logging and
-// the whole pitest harness came from here. They come from `ru.workinprogress.sborka` now, applied per
+// the whole pitest harness came from here. They come from `io.github.youndie.sborka` now, applied per
 // module, with the numbers in `gradle.properties`.
 //
 // What stays is what is bochka's: the JVM-argument profiles above, the ABI dump of the one module
@@ -147,10 +147,10 @@ subprojects {
         // The same arguments, to the JVMs pitest forks. A minion is not the `Test` task and gets
         // nothing from it: without this the suite fails inside one with no mutation applied, pitest
         // refuses to mutate a suite that fails on its own, and `mutationTest` stops before it starts.
-        plugins.withId("ru.workinprogress.sborka.mutation") {
+        plugins.withId("io.github.youndie.sborka.mutation") {
             @Suppress("UNCHECKED_CAST")
             val profile = rootProject.extra["bochkaJvmArgs"] as List<String>
-            extensions.configure<ru.workinprogress.sborka.MutationOptions>("sborkaMutation") {
+            extensions.configure<io.github.youndie.sborka.MutationOptions>("sborkaMutation") {
                 forkJvmArgs.addAll(profile)
                 forkJvmArgs.add("-Dbochka.expectedJvmArgs=${profile.joinToString(" ")}")
                 forkJvmArgs.add(
