@@ -1,9 +1,9 @@
 plugins {
     id("org.jetbrains.kotlin.jvm")
-    id("ru.workinprogress.sborka.jvm")
-    id("ru.workinprogress.sborka.lint")
-    id("ru.workinprogress.sborka.publish")
-    id("ru.workinprogress.sborka.mutation")
+    id("io.github.youndie.sborka.jvm")
+    id("io.github.youndie.sborka.lint")
+    id("io.github.youndie.sborka.publish")
+    id("io.github.youndie.sborka.mutation")
 }
 
 dependencies {
