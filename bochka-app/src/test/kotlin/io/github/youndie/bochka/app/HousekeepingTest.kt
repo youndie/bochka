@@ -22,6 +22,10 @@ import kotlin.test.assertTrue
  */
 class HousekeepingTest {
     @Test
+    @Suppress(
+        "ktlint:kapkan:cancellation-swallowed",
+        "cleanup in a finally: deleting files is synchronous and this test cancels nothing",
+    )
     fun `a round that throws is printed and does not escape`() =
         runBlocking {
             val dir: Path = Files.createTempDirectory("bochka-housekeeping")
