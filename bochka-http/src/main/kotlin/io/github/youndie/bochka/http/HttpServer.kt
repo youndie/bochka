@@ -3,6 +3,7 @@ package io.github.youndie.bochka.http
 import io.github.youndie.bochka.http.nio.Connection
 import io.github.youndie.bochka.http.nio.SelectorConnection
 import io.github.youndie.bochka.http.nio.SelectorLoop
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -127,6 +128,10 @@ public class HttpServer(
                 scope.launch {
                     try {
                         respond(connection, unsentRequest, HttpResponse(503, "Service Unavailable", close = true))
+                    } catch (e: CancellationException) {
+                        // The server shutting down is not this connection dying. Without this, every
+                        // refusal in flight at shutdown is reported to `abandoned` as its own failure.
+                        throw e
                     } catch (e: Throwable) {
                         handler.abandoned(e)
                     } finally {
@@ -140,6 +145,10 @@ public class HttpServer(
             scope.launch {
                 try {
                     session(connection)
+                } catch (e: CancellationException) {
+                    // Shutdown cancels this scope, and a cancelled session is not an abandoned one:
+                    // reporting it as such turns an orderly stop into a burst of connection failures.
+                    throw e
                 } catch (e: Throwable) {
                     // One connection dying is not the server dying, so the loop goes on — but it
                     // used to go on in silence, with a comment saying logging would arrive with the

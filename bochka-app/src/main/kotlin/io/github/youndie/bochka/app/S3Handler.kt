@@ -697,6 +697,10 @@ public class S3Handler(
 
         // The key travels on every part and is checked in `screen`, before a byte of the part is
         // read — see the note there. Here it is only unpacked again, and it cannot refuse.
+        @Suppress(
+            "ktlint:kapkan:cancellation-swallowed",
+            "unpacking headers already in memory: no suspension point, so no cancellation to lose",
+        )
         val presented = runCatching { SseC.of { name -> head.header(name) } }.getOrNull()
         val wanted = store.upload(route.uploadId)?.encryption
         // An IV of this part's own. The alternative — one IV for the object, with each part
