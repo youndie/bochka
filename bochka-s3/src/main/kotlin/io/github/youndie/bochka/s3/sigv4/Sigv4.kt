@@ -14,18 +14,18 @@ import javax.crypto.spec.SecretKeySpec
  * No crypto dependency: `MessageDigest` and `Mac` are in the JDK, and on this path they are also
  * intrinsified, which a Kotlin implementation of SHA-256 would not be.
  */
-object Sigv4 {
-    const val ALGORITHM: String = "AWS4-HMAC-SHA256"
+public object Sigv4 {
+    public const val ALGORITHM: String = "AWS4-HMAC-SHA256"
 
     /** sha256 of the empty string, and S3 sends it for every request with no body. */
-    const val EMPTY_PAYLOAD_SHA256: String = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    public const val EMPTY_PAYLOAD_SHA256: String = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
     private const val HMAC = "HmacSHA256"
     private val HEX = "0123456789abcdef".toCharArray()
 
-    fun sha256Hex(data: ByteArray): String = hex(MessageDigest.getInstance("SHA-256").digest(data))
+    public fun sha256Hex(data: ByteArray): String = hex(MessageDigest.getInstance("SHA-256").digest(data))
 
-    fun sha256Hex(text: String): String = sha256Hex(text.toByteArray(StandardCharsets.UTF_8))
+    public fun sha256Hex(text: String): String = sha256Hex(text.toByteArray(StandardCharsets.UTF_8))
 
     /**
      * `AWS4-HMAC-SHA256\n<timestamp>\n<scope>\n<hex(sha256(canonicalRequest))>`
@@ -34,7 +34,7 @@ object Sigv4 {
      * The scope date is the first eight characters of [timestamp] rather than a separately
      * formatted date. Computing it apart is correct 86 399 seconds a day and wrong at midnight.
      */
-    fun stringToSign(
+    public fun stringToSign(
         timestamp: String,
         scope: String,
         canonicalRequest: String,
@@ -60,10 +60,10 @@ object Sigv4 {
      * (`test_object_set_get_unicode_metadata`), where the client signed the bytes it sent and this
      * server signed twice as many.
      */
-    fun sha256HexOfBytes(text: String): String = sha256Hex(text.toByteArray(StandardCharsets.ISO_8859_1))
+    public fun sha256HexOfBytes(text: String): String = sha256Hex(text.toByteArray(StandardCharsets.ISO_8859_1))
 
     /** `HMAC(HMAC(HMAC(HMAC("AWS4"+secret, date), region), service), "aws4_request")`, `:417`. */
-    fun signingKey(
+    public fun signingKey(
         secret: String,
         date: String,
         region: String,
@@ -76,7 +76,7 @@ object Sigv4 {
         return hmac(kService, "aws4_request")
     }
 
-    fun signature(
+    public fun signature(
         signingKey: ByteArray,
         stringToSign: String,
     ): String = hex(hmac(signingKey, stringToSign))
@@ -88,7 +88,7 @@ object Sigv4 {
      * question "how many leading characters are right", which is enough to walk a signature out of
      * a server one character at a time. Cheap to do properly, so it is done properly.
      */
-    fun signaturesMatch(
+    public fun signaturesMatch(
         expected: String,
         actual: String,
     ): Boolean =

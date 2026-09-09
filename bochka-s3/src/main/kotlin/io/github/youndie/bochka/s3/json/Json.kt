@@ -7,31 +7,31 @@ package io.github.youndie.bochka.s3.json
  * would turn a document the client wrote into `Infinity` on the way in and something else on the
  * way out. A policy is compared, matched and stored — never computed with.
  */
-sealed interface JsonValue {
-    data class Str(
+public sealed interface JsonValue {
+    public data class Str(
         val value: String,
     ) : JsonValue
 
-    data class Num(
+    public data class Num(
         val literal: String,
     ) : JsonValue
 
-    data class Bool(
+    public data class Bool(
         val value: Boolean,
     ) : JsonValue
 
-    data object Null : JsonValue
+    public data object Null : JsonValue
 
-    data class Arr(
+    public data class Arr(
         val items: List<JsonValue>,
     ) : JsonValue
 
-    data class Obj(
+    public data class Obj(
         val members: Map<String, JsonValue>,
     ) : JsonValue
 }
 
-class JsonSyntaxException(
+public class JsonSyntaxException(
     override val message: String,
 ) : IllegalArgumentException(message)
 
@@ -48,11 +48,11 @@ class JsonSyntaxException(
  * an error no `catch` in this codebase is written for. Bounded here, at the only place that reads
  * client-supplied JSON.
  */
-object Json {
+public object Json {
     /** Deeper than any policy AWS documents, shallower than anything that threatens the stack. */
-    const val MAX_DEPTH = 32
+    public const val MAX_DEPTH: Int = 32
 
-    fun parse(text: String): JsonValue {
+    public fun parse(text: String): JsonValue {
         val reader = Reader(text)
         reader.skipSpace()
         val value = reader.value(depth = 0)

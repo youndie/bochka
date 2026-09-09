@@ -16,16 +16,16 @@ package io.github.youndie.bochka.s3
  * Characters and not bytes, because that is what the restriction says. The difference shows up
  * only outside ASCII, which is to say only where nobody tests.
  */
-object TagRules {
+public object TagRules {
     /** Ten per object (`s3-service-2.json:1463`, prose). */
-    const val MAX_TAGS: Int = 10
+    public const val MAX_TAGS: Int = 10
 
-    const val MAX_KEY_CHARACTERS: Int = 128
+    public const val MAX_KEY_CHARACTERS: Int = 128
 
-    const val MAX_VALUE_CHARACTERS: Int = 256
+    public const val MAX_VALUE_CHARACTERS: Int = 256
 
-    enum class Rejection(
-        val message: String,
+    public enum class Rejection(
+        public val message: String,
     ) {
         TOO_MANY("a tag set holds at most $MAX_TAGS tags"),
         KEY_TOO_LONG("a tag key holds at most $MAX_KEY_CHARACTERS characters"),
@@ -33,7 +33,7 @@ object TagRules {
         EMPTY_KEY("a tag key may not be empty"),
     }
 
-    fun check(tags: Map<String, String>): Rejection? {
+    public fun check(tags: Map<String, String>): Rejection? {
         if (tags.size > MAX_TAGS) return Rejection.TOO_MANY
         for ((key, value) in tags) {
             if (key.isEmpty()) return Rejection.EMPTY_KEY

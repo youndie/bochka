@@ -31,9 +31,9 @@ import javax.crypto.spec.SecretKeySpec
  * everybody; since M27 it does (`public-read-write` is stored and enforced), and since M28 such a
  * request reaches the access model at all.
  */
-object PostSignature {
-    class Refused(
-        val error: S3Error,
+public object PostSignature {
+    public class Refused(
+        public val error: S3Error,
         override val message: String,
     ) : RuntimeException(message)
 
@@ -43,7 +43,7 @@ object PostSignature {
      * @param fields the form's fields, names lower-cased
      * @param policy the base64 string exactly as it arrived in the `policy` field
      */
-    fun verify(
+    public fun verify(
         fields: Map<String, String>,
         policy: String,
         credentials: Credentials,

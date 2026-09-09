@@ -35,7 +35,7 @@ import kotlin.concurrent.thread
  *
  * `BOCHKA_MEASURE_DIR` chooses where files go; it must not be a memory filesystem ([MeasurementDir]).
  */
-object Measurements {
+public object Measurements {
     /** How many times each variant runs; the median is kept and the spread is printed. */
     private var repeats = 3
 
@@ -56,7 +56,7 @@ object Measurements {
     private const val FORCED_COLLECTIONS = 5
 
     @JvmStatic
-    fun main(args: Array<String>) {
+    public fun main(args: Array<String>) {
         val what = args.firstOrNull() ?: "all"
         val dir =
             MeasurementDir.of(

@@ -23,12 +23,12 @@ package io.github.youndie.bochka.http
  * Chunk extensions are skipped rather than parsed: at this level `;chunk-signature=…` is somebody
  * else's business. Trailers after the final chunk are collected and handed over.
  */
-class HttpChunkedDecoder(
+public class HttpChunkedDecoder(
     private val maxChunkBytes: Long = 64L * 1024 * 1024,
     private val maxLineBytes: Int = 8 * 1024,
     private val sink: (ByteArray, Int, Int) -> Unit,
 ) {
-    class Malformed(
+    public class Malformed(
         message: String,
     ) : IllegalArgumentException(message)
 
@@ -39,12 +39,12 @@ class HttpChunkedDecoder(
     private var remaining = 0L
     private val collectedTrailers = LinkedHashMap<String, String>()
 
-    val trailers: Map<String, String> get() = collectedTrailers
+    public val trailers: Map<String, String> get() = collectedTrailers
 
-    val isComplete: Boolean get() = state == State.DONE
+    public val isComplete: Boolean get() = state == State.DONE
 
     /** Returns how many bytes it consumed; anything left belongs to the next request. */
-    fun feed(
+    public fun feed(
         bytes: ByteArray,
         offset: Int = 0,
         length: Int = bytes.size,

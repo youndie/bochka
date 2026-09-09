@@ -9,10 +9,10 @@ package io.github.youndie.bochka.s3
  * Storing and parsing them is dull. One thing here is interesting — **matching the origin** — and
  * it is written by hand on purpose rather than as a regular expression.
  */
-data class CorsRules(
+public data class CorsRules(
     val rules: List<Rule>,
 ) {
-    data class Rule(
+    public data class Rule(
         val id: String? = null,
         val allowedMethods: List<String> = emptyList(),
         val allowedOrigins: List<String> = emptyList(),
@@ -33,7 +33,7 @@ data class CorsRules(
      * Names are compared case-insensitively because that is how HTTP compares them, and a pattern
      * with an asterisk is matched by the same [matches] the origin is.
      */
-    fun matching(
+    public fun matching(
         origin: String,
         method: String,
         requestedHeaders: List<String> = emptyList(),
@@ -46,7 +46,7 @@ data class CorsRules(
                 }
         }
 
-    companion object {
+    public companion object {
         /**
          * Matching an origin against a pattern in which `*` means "any sequence".
          *
@@ -63,7 +63,7 @@ data class CorsRules(
          * S3 allows exactly one asterisk in a pattern; everything else is compared literally, the
          * scheme and the dots included.
          */
-        fun matches(
+        public fun matches(
             pattern: String,
             origin: String,
         ): Boolean {

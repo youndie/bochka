@@ -46,13 +46,13 @@ import org.testcontainers.utility.DockerImageName
  * open — that says the socket is bound, not that the server will answer, which is a distinction
  * this project has already paid for twice.
  */
-class BochkaContainer(
+public class BochkaContainer(
     image: DockerImageName = DEFAULT_IMAGE,
 ) : GenericContainer<BochkaContainer>(image) {
-    var accessKeyId: String = DEFAULT_ACCESS_KEY_ID
+    public var accessKeyId: String = DEFAULT_ACCESS_KEY_ID
         private set
 
-    var secretKey: String = DEFAULT_SECRET_KEY
+    public var secretKey: String = DEFAULT_SECRET_KEY
         private set
 
     init {
@@ -65,7 +65,7 @@ class BochkaContainer(
     }
 
     /** Names the one key this container will accept, instead of the two defaults it ships with. */
-    fun withCredentials(
+    public fun withCredentials(
         accessKeyId: String,
         secretKey: String,
     ): BochkaContainer {
@@ -76,27 +76,27 @@ class BochkaContainer(
     }
 
     /** Where a client points, once [start] has returned. */
-    val endpoint: String get() = "http://$host:${getMappedPort(PORT)}"
+    public val endpoint: String get() = "http://$host:${getMappedPort(PORT)}"
 
     private fun applyKeys() {
         addEnv("BOCHKA_KEYS", "$accessKeyId:$secretKey")
     }
 
-    companion object {
+    public companion object {
         /** What the image exposes; the mapped one is what a client uses. */
-        const val PORT = 9000
+        public const val PORT: Int = 9000
 
         /** `GET` here answers 200 when the server is able to serve, and 503 while it is not. */
-        const val HEALTH_PATH = "/-/healthy"
+        public const val HEALTH_PATH: String = "/-/healthy"
 
-        const val DEFAULT_ACCESS_KEY_ID = "bochkaadmin"
-        const val DEFAULT_SECRET_KEY = "bochkasecret"
+        public const val DEFAULT_ACCESS_KEY_ID: String = "bochkaadmin"
+        public const val DEFAULT_SECRET_KEY: String = "bochkasecret"
 
         /**
          * A tag rather than `latest`, and that is the whole of the argument: a test suite pinned to
          * `latest` changes what it tests when somebody else publishes, and the failure arrives on a
          * morning when nothing in the repository changed.
          */
-        val DEFAULT_IMAGE: DockerImageName = DockerImageName.parse("ghcr.io/youndie/bochka:v0.5.0")
+        public val DEFAULT_IMAGE: DockerImageName = DockerImageName.parse("ghcr.io/youndie/bochka:v0.5.0")
     }
 }

@@ -54,7 +54,7 @@ import java.time.format.DateTimeFormatter
  * object shared by every connection, so it holds nothing between the two calls. Re-deriving a route
  * costs a string split; a field would cost a race.
  */
-class S3Handler(
+public class S3Handler(
     private val store: ObjectStore,
     private val verifier: SignatureVerifier,
     private val router: S3Router,

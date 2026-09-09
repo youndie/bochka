@@ -15,9 +15,9 @@ package io.github.youndie.bochka.s3
  * legacy set — the relaxed set exists for buckets made before 2018 and permits names that cannot
  * be addressed virtual-hosted at all.
  */
-object BucketNameRules {
-    enum class Rejection(
-        val message: String,
+public object BucketNameRules {
+    public enum class Rejection(
+        public val message: String,
     ) {
         TOO_SHORT("bucket names must be at least 3 characters"),
         TOO_LONG("bucket names must be no more than 63 characters"),
@@ -30,7 +30,7 @@ object BucketNameRules {
         RESERVED_SUFFIX("bucket names may not end with -s3alias or --ol-s3"),
     }
 
-    fun check(name: String): Rejection? =
+    public fun check(name: String): Rejection? =
         when {
             name.length < 3 -> Rejection.TOO_SHORT
 

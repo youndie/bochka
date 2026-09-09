@@ -16,12 +16,12 @@ import io.github.youndie.bochka.core.ObjectKey
  * deployments that are not AWS, and the cost of being wrong is the `Host` header signing something
  * different from what was routed.
  */
-class S3Router(
+public class S3Router(
     private val virtualHostSuffixes: List<String> = emptyList(),
 ) {
-    sealed interface Route {
+    public sealed interface Route {
         /** `GET /` */
-        data object ListBuckets : Route
+        public data object ListBuckets : Route
 
         /**
          * `GET /-/healthy` — the one handle that answers without a signature and without a bucket.
@@ -45,7 +45,7 @@ class S3Router(
          * been replayed — the handler holds a store, and a store is not constructed until recovery
          * finishes. It does not prove the disk is writable.
          */
-        data object Health : Route
+        public data object Health : Route
 
         /**
          * `GET /-/stats` — the numbers an operator watches, and the ones the log answers `507`
@@ -57,33 +57,33 @@ class S3Router(
          * costs the operator nothing — they already have a key — and it keeps this off the list of
          * things a stranger can ask.
          */
-        data object Stats : Route
+        public data object Stats : Route
 
-        data class CreateBucket(
+        public data class CreateBucket(
             val bucket: String,
         ) : Route
 
-        data class DeleteBucket(
+        public data class DeleteBucket(
             val bucket: String,
         ) : Route
 
-        data class HeadBucket(
+        public data class HeadBucket(
             val bucket: String,
         ) : Route
 
-        data class GetBucketLocation(
+        public data class GetBucketLocation(
             val bucket: String,
         ) : Route
 
-        data class ListObjectsV2(
+        public data class ListObjectsV2(
             val bucket: String,
         ) : Route
 
-        data class ListObjects(
+        public data class ListObjects(
             val bucket: String,
         ) : Route
 
-        data class ListMultipartUploads(
+        public data class ListMultipartUploads(
             val bucket: String,
         ) : Route
 
@@ -94,7 +94,7 @@ class S3Router(
          * version `null`. Refusing it is what makes a store unusable rather than unversioned:
          * the compatibility suite calls it before every test to clean up.
          */
-        data class ListObjectVersions(
+        public data class ListObjectVersions(
             val bucket: String,
         ) : Route
 
@@ -105,15 +105,15 @@ class S3Router(
          * nothing to route on beyond the method — everything else is decided after the form is
          * parsed. That inversion is the whole point of the operation, not an omission here.
          */
-        data class PostObject(
+        public data class PostObject(
             val bucket: String,
         ) : Route
 
-        data class DeleteObjects(
+        public data class DeleteObjects(
             val bucket: String,
         ) : Route
 
-        data class PutObject(
+        public data class PutObject(
             val bucket: String,
             val key: ObjectKey,
         ) : Route
@@ -127,7 +127,7 @@ class S3Router(
          * answer, it produces a `PutObject` with an empty body: the object is created, it is zero
          * bytes long, and the client is told it succeeded.
          */
-        data class CopyObject(
+        public data class CopyObject(
             val bucket: String,
             val key: ObjectKey,
             val sourceBucket: String,
@@ -136,7 +136,7 @@ class S3Router(
             val sourceVersionId: String? = null,
         ) : Route
 
-        data class GetObject(
+        public data class GetObject(
             val bucket: String,
             val key: ObjectKey,
             /**
@@ -163,7 +163,7 @@ class S3Router(
          * has no header for: how many parts the object has and how long each one was. Which of
          * them to answer is `x-amz-object-attributes`, a header rather than a query parameter.
          */
-        data class GetObjectAttributes(
+        public data class GetObjectAttributes(
             val bucket: String,
             val key: ObjectKey,
             val versionId: String? = null,
@@ -176,7 +176,7 @@ class S3Router(
          * them is which document to parse — and that is a question for the layer that knows
          * documents.
          */
-        data class BucketSubresource(
+        public data class BucketSubresource(
             val bucket: String,
             val name: String,
             val method: String,
@@ -189,7 +189,7 @@ class S3Router(
          * named version, or the current one — and differ only in which document they carry. Two
          * routes would mean two copies of the version lookup.
          */
-        data class ObjectLockSubresource(
+        public data class ObjectLockSubresource(
             val bucket: String,
             val key: ObjectKey,
             val name: String,
@@ -203,7 +203,7 @@ class S3Router(
          * Two methods and not three — S3 has no `DeleteObjectAcl`, because an object always has an
          * ACL; "none" is spelled `private`.
          */
-        data class ObjectAcl(
+        public data class ObjectAcl(
             val bucket: String,
             val key: ObjectKey,
             val method: String,
@@ -212,7 +212,7 @@ class S3Router(
 
         /** `?tagging` on an object: the same three methods, with the tags living in the object's
          *  metadata. */
-        data class ObjectTagging(
+        public data class ObjectTagging(
             val bucket: String,
             val key: ObjectKey,
             val method: String,
@@ -234,11 +234,11 @@ class S3Router(
          * a key nor a reason to present one. Signature checking is switched off for it **per
          * route** rather than per method, so that "unsigned" does not spread.
          */
-        data class Preflight(
+        public data class Preflight(
             val bucket: String,
         ) : Route
 
-        data class HeadObject(
+        public data class HeadObject(
             val bucket: String,
             val key: ObjectKey,
             /**
@@ -260,19 +260,19 @@ class S3Router(
             val versionId: String? = null,
         ) : Route
 
-        data class DeleteObject(
+        public data class DeleteObject(
             val bucket: String,
             val key: ObjectKey,
             /** Naming a version deletes **that** version for good, rather than laying a tombstone. */
             val versionId: String? = null,
         ) : Route
 
-        data class CreateMultipartUpload(
+        public data class CreateMultipartUpload(
             val bucket: String,
             val key: ObjectKey,
         ) : Route
 
-        data class UploadPart(
+        public data class UploadPart(
             val bucket: String,
             val key: ObjectKey,
             val uploadId: String,
@@ -287,7 +287,7 @@ class S3Router(
          * range of it, which is also how a client makes parts of a size the server will accept out
          * of an object that has none.
          */
-        data class UploadPartCopy(
+        public data class UploadPartCopy(
             val bucket: String,
             val key: ObjectKey,
             val uploadId: String,
@@ -298,19 +298,19 @@ class S3Router(
             val sourceVersionId: String? = null,
         ) : Route
 
-        data class CompleteMultipartUpload(
+        public data class CompleteMultipartUpload(
             val bucket: String,
             val key: ObjectKey,
             val uploadId: String,
         ) : Route
 
-        data class AbortMultipartUpload(
+        public data class AbortMultipartUpload(
             val bucket: String,
             val key: ObjectKey,
             val uploadId: String,
         ) : Route
 
-        data class ListParts(
+        public data class ListParts(
             val bucket: String,
             val key: ObjectKey,
             val uploadId: String,
@@ -329,12 +329,12 @@ class S3Router(
          * (every object at version `null`). Refusing it made 837 of 838 tests error in a cleanup
          * fixture before reaching anything they were about.
          */
-        data class NotImplemented(
+        public data class NotImplemented(
             val what: String,
         ) : Route
     }
 
-    fun route(
+    public fun route(
         method: String,
         host: String,
         path: String,

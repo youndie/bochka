@@ -19,12 +19,12 @@ import java.nio.charset.StandardCharsets
  * response structs (`minio/minio`, `cmd/api-response.go`), which is the only place they are written
  * down formally — the machine model names the *members* of each shape but not the root element.
  */
-class XmlWriter(
+public class XmlWriter(
     expectedSize: Int = 256,
 ) {
     private val out = ByteArrayOutputStream(expectedSize)
 
-    fun document(
+    public fun document(
         root: String,
         namespace: String? = S3_NAMESPACE,
         body: XmlWriter.() -> Unit,
@@ -45,7 +45,7 @@ class XmlWriter(
         return out.toByteArray()
     }
 
-    fun element(
+    public fun element(
         name: String,
         body: XmlWriter.() -> Unit,
     ) {
@@ -71,7 +71,7 @@ class XmlWriter(
      * and are written as such rather than escaped: a caller passing anything else is a bug in this
      * file rather than data from a client.
      */
-    fun element(
+    public fun element(
         name: String,
         attributes: List<Pair<String, String>>,
         body: XmlWriter.() -> Unit,
@@ -93,7 +93,7 @@ class XmlWriter(
     }
 
     /** Writes nothing when [value] is null — S3 leaves absent members out rather than empty. */
-    fun text(
+    public fun text(
         name: String,
         value: String?,
     ) {
@@ -101,15 +101,15 @@ class XmlWriter(
         raw(name, value.toByteArray(StandardCharsets.UTF_8))
     }
 
-    fun text(
+    public fun text(
         name: String,
         value: Long,
-    ) = raw(name, value.toString().toByteArray(StandardCharsets.US_ASCII))
+    ): Unit = raw(name, value.toString().toByteArray(StandardCharsets.US_ASCII))
 
-    fun text(
+    public fun text(
         name: String,
         value: Boolean,
-    ) = raw(name, value.toString().toByteArray(StandardCharsets.US_ASCII))
+    ): Unit = raw(name, value.toString().toByteArray(StandardCharsets.US_ASCII))
 
     /**
      * The one that matters: bytes go out as they came in, with only the five entities escaped.
@@ -123,7 +123,7 @@ class XmlWriter(
      * Substituting bytes here would hand them a wrong key instead of a broken document — quieter,
      * and much worse.
      */
-    fun raw(
+    public fun raw(
         name: String,
         value: ByteArray,
     ) {
@@ -152,11 +152,11 @@ class XmlWriter(
         for (c in s) out.write(c.code)
     }
 
-    companion object {
-        const val DECLARATION: String = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+    public companion object {
+        public const val DECLARATION: String = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
 
         /** `cmd/api-response.go`: every result element carries it. `<Error>` is the exception. */
-        const val S3_NAMESPACE: String = "http://s3.amazonaws.com/doc/2006-03-01/"
+        public const val S3_NAMESPACE: String = "http://s3.amazonaws.com/doc/2006-03-01/"
 
         private const val AMP = '&'.code.toByte()
         private const val LT = '<'.code.toByte()

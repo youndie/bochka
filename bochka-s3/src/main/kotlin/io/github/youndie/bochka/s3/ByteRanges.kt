@@ -16,10 +16,10 @@ package io.github.youndie.bochka.s3
  * multiple ranges of data per GET request", `GetObject` documentation). A server that answered
  * `416` here would fail requests that S3 serves.
  */
-object ByteRanges {
-    sealed interface Resolved {
+public object ByteRanges {
+    public sealed interface Resolved {
         /** `206`, with `Content-Range: bytes <start>-<endInclusive>/<size>`. */
-        data class Satisfiable(
+        public data class Satisfiable(
             val start: Long,
             val endInclusive: Long,
         ) : Resolved {
@@ -27,13 +27,13 @@ object ByteRanges {
         }
 
         /** `416`, with a `Content-Range` that names the size and no range — see [unsatisfiedRange]. */
-        data object Unsatisfiable : Resolved
+        public data object Unsatisfiable : Resolved
 
         /** `200` with everything, as if no range had been asked for. */
-        data object Whole : Resolved
+        public data object Whole : Resolved
     }
 
-    fun resolve(
+    public fun resolve(
         header: String?,
         size: Long,
     ): Resolved {
@@ -72,13 +72,13 @@ object ByteRanges {
         return Resolved.Satisfiable(first, minOf(last, size - 1))
     }
 
-    fun contentRange(
+    public fun contentRange(
         resolved: Resolved.Satisfiable,
         size: Long,
     ): String = "bytes ${resolved.start}-${resolved.endInclusive}/$size"
 
     /** What a `416` says instead: the range is unknown, the size is not. */
-    fun unsatisfiedRange(size: Long): String = "bytes */$size"
+    public fun unsatisfiedRange(size: Long): String = "bytes */$size"
 
     private const val UNIT = "bytes="
 }

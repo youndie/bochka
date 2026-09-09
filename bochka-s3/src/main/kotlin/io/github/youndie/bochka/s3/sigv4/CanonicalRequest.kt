@@ -15,13 +15,13 @@ import io.github.youndie.bochka.s3.UriCodec
  * the 34 official vectors describe **generic** SigV4, and without [PathMode.NORMALISED] there would
  * be nothing to run them against — the only check left would be "it agrees with one server".
  */
-object CanonicalRequest {
+public object CanonicalRequest {
     /**
      * How the path reaches the canonical request. The single difference between generic SigV4 and
      * S3, and the reason the official `normalize-path/` vectors must give a *different* answer in
      * S3 mode (`botocore-auth.py:538`).
      */
-    enum class PathMode {
+    public enum class PathMode {
         /** S3: the path is signed exactly as it travelled. */
         VERBATIM,
 
@@ -45,14 +45,14 @@ object CanonicalRequest {
      * [headers] keeps arrival order and allows repeats: both matter, because duplicate values are
      * joined in the order they arrived.
      */
-    data class Request(
+    public data class Request(
         val method: String,
         val path: String,
         val query: String,
         val headers: List<Pair<String, String>>,
     )
 
-    fun build(
+    public fun build(
         request: Request,
         signedHeaders: List<String>,
         payloadHash: String,
@@ -67,7 +67,7 @@ object CanonicalRequest {
             append(payloadHash)
         }
 
-    fun canonicalUri(
+    public fun canonicalUri(
         path: String,
         mode: PathMode,
     ): String {
@@ -94,7 +94,7 @@ object CanonicalRequest {
      *
      * `+` decodes to a space here, because in a query it is one; a literal plus arrives as `%2B`.
      */
-    fun canonicalQuery(query: String): String {
+    public fun canonicalQuery(query: String): String {
         if (query.isEmpty()) return ""
         val pairs =
             query
@@ -120,7 +120,7 @@ object CanonicalRequest {
      * `get-header-key-duplicate` pins this: three values `value2`, `value2`, `value1` come out as
      * `value2,value2,value1`.
      */
-    fun canonicalHeaders(
+    public fun canonicalHeaders(
         headers: List<Pair<String, String>>,
         signedHeaders: List<String>,
     ): String {

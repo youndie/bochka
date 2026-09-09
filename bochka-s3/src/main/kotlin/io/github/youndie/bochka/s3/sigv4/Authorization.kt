@@ -16,7 +16,7 @@ package io.github.youndie.bochka.s3.sigv4
  * `AuthorizationHeaderMalformed`, because telling an unauthenticated caller *which* part they got
  * wrong is free reconnaissance.
  */
-data class Authorization(
+public data class Authorization(
     val accessKeyId: String,
     val date: String,
     val region: String,
@@ -27,14 +27,14 @@ data class Authorization(
     /** `<date>/<region>/<service>/aws4_request`, the third line of the string to sign. */
     val scope: String get() = "$date/$region/$service/aws4_request"
 
-    class Malformed(
+    public class Malformed(
         message: String,
     ) : IllegalArgumentException(message)
 
-    companion object {
+    public companion object {
         private const val PREFIX = "${Sigv4.ALGORITHM} "
 
-        fun parse(header: String): Authorization {
+        public fun parse(header: String): Authorization {
             if (!header.startsWith(PREFIX)) throw Malformed("not $PREFIX")
 
             val parts = HashMap<String, String>(3)

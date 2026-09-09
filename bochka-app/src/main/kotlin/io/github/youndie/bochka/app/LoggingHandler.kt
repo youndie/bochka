@@ -16,7 +16,7 @@ import io.github.youndie.bochka.http.HttpResponse
  * Real logging — levels, structure, somewhere to send it — is M11 along with everything else about
  * running this thing.
  */
-class LoggingHandler(
+public class LoggingHandler(
     private val delegate: HttpHandler,
     private val enabled: Boolean,
 ) : HttpHandler {

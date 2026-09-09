@@ -12,10 +12,10 @@ package io.github.youndie.bochka.s3.sigv4
  * unauthenticated caller gets one answer for a malformed header regardless of which part was
  * malformed — the reason goes to the log, not on the wire.
  */
-enum class S3Error(
-    val code: String,
-    val message: String,
-    val status: Int,
+public enum class S3Error(
+    public val code: String,
+    public val message: String,
+    public val status: Int,
 ) {
     /** `cmd/api-errors.go:594`. */
     INVALID_ACCESS_KEY_ID(

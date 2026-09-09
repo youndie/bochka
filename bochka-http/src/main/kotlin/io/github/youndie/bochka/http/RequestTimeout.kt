@@ -7,6 +7,6 @@ package io.github.youndie.bochka.http
  * the client's timing and the second is our bug, and telling a client to retry something it never
  * finished sending is how a stalled upload becomes a storm.
  */
-class RequestTimeout(
+public class RequestTimeout(
     message: String,
 ) : Exception(message)

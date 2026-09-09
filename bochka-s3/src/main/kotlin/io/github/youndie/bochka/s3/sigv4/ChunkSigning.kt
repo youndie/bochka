@@ -26,7 +26,7 @@ package io.github.youndie.bochka.s3.sigv4
  * last frame of an upload that otherwise went perfectly, which is the most expensive place to be
  * wrong.
  */
-class ChunkSigning(
+public class ChunkSigning(
     private val secret: String,
     private val timestamp: String,
     private val date: String,
@@ -34,13 +34,13 @@ class ChunkSigning(
     seedSignature: String,
 ) {
     /** The signature of the previous frame; the seed for the first one. */
-    var previousSignature: String = seedSignature
+    public var previousSignature: String = seedSignature
         private set
 
     private val signingKey: ByteArray = Sigv4.signingKey(secret, date, region, SERVICE)
     private val scope: String get() = "$date/$region/$SERVICE/aws4_request"
 
-    fun chunkSignature(chunkSha256Hex: String): String =
+    public fun chunkSignature(chunkSha256Hex: String): String =
         Sigv4.signature(
             signingKey,
             buildString {
@@ -53,7 +53,7 @@ class ChunkSigning(
             },
         )
 
-    fun trailerSignature(trailerSha256Hex: String): String =
+    public fun trailerSignature(trailerSha256Hex: String): String =
         Sigv4.signature(
             signingKey,
             buildString {
@@ -65,13 +65,13 @@ class ChunkSigning(
             },
         )
 
-    fun accept(signature: String) {
+    public fun accept(signature: String) {
         previousSignature = signature
     }
 
-    companion object {
-        const val CHUNK_ALGORITHM: String = "AWS4-HMAC-SHA256-PAYLOAD"
-        const val TRAILER_ALGORITHM: String = "AWS4-HMAC-SHA256-TRAILER"
+    public companion object {
+        public const val CHUNK_ALGORITHM: String = "AWS4-HMAC-SHA256-PAYLOAD"
+        public const val TRAILER_ALGORITHM: String = "AWS4-HMAC-SHA256-TRAILER"
         private const val SERVICE = "s3"
     }
 }

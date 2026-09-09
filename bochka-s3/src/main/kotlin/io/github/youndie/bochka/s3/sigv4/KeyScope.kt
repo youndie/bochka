@@ -12,19 +12,19 @@ package io.github.youndie.bochka.s3.sigv4
  * Deliberately absent: anything per-object, anything per-user, anything that grants **more** than
  * the key already has. A scope only ever narrows.
  */
-data class KeyScope(
+public data class KeyScope(
     val mode: Mode = Mode.RW,
     /** Empty means every bucket. A non-empty list is exhaustive: nothing outside it exists. */
     val buckets: Set<String> = emptySet(),
 ) {
-    enum class Mode {
+    public enum class Mode {
         RO,
         RW,
     }
 
-    fun sees(bucket: String): Boolean = buckets.isEmpty() || bucket in buckets
+    public fun sees(bucket: String): Boolean = buckets.isEmpty() || bucket in buckets
 
-    fun allows(need: Need): Boolean =
+    public fun allows(need: Need): Boolean =
         when (need) {
             Need.READ -> true
             Need.WRITE -> mode == Mode.RW
@@ -37,12 +37,12 @@ data class KeyScope(
      * the same requirement here, because a key that may do one and not the other is a policy
      * language, and the milestone exists precisely to not become one.
      */
-    enum class Need {
+    public enum class Need {
         READ,
         WRITE,
     }
 
-    companion object {
+    public companion object {
         /**
          * Parses `id=ro`, `id=rw`, `id=ro@photos|reports`.
          *
@@ -55,7 +55,7 @@ data class KeyScope(
          * A key absent from this setting keeps everything it had. Configuration that only ever
          * narrows cannot lock an operator out of a store by being written wrong.
          */
-        fun parse(entries: List<String>): Map<String, KeyScope> =
+        public fun parse(entries: List<String>): Map<String, KeyScope> =
             entries.filter { it.isNotBlank() }.associate { entry ->
                 val equals = entry.indexOf('=')
                 require(equals > 0) { "a key scope looks like id=ro or id=rw@bucket|bucket, got '$entry'" }

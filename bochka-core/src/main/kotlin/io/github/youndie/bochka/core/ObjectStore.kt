@@ -46,7 +46,7 @@ import kotlin.concurrent.withLock
  * been measured (M-64). What it buys is a listing that is a walk of a sorted structure rather than
  * a scan of a disk.
  */
-class ObjectStore(
+public class ObjectStore(
     private val root: Path,
     internal val durability: Durability = Durability.FSYNC,
     /**
@@ -67,7 +67,7 @@ class ObjectStore(
      *
      * The default comes from the measurement in `docs/measurements.md`, not from taste.
      */
-    val maxObjects: Int = ceilingForHeap(),
+    public val maxObjects: Int = ceilingForHeap(),
     /**
      * The clock this store stamps with.
      *
@@ -80,7 +80,7 @@ class ObjectStore(
      * POST policy expiry, the lifecycle sweep's idea of "now" — asks the store rather than the
      * JVM, so that handing one store a clock moves the whole server's.
      */
-    val clock: () -> Instant = WALL_CLOCK,
+    public val clock: () -> Instant = WALL_CLOCK,
 ) : Closeable {
     /**
      * Whether a write is on the disk before it is acknowledged.
@@ -91,9 +91,9 @@ class ObjectStore(
      * difference between the two is four orders of magnitude and a number without it is not
      * imprecise, it is about something else.
      */
-    enum class Durability { FSYNC, NONE }
+    public enum class Durability { FSYNC, NONE }
 
-    data class Stored(
+    public data class Stored(
         val fileId: String,
         val size: Long,
         val eTag: String,
@@ -168,7 +168,7 @@ class ObjectStore(
      * rejected, because the file id's job is to be a name, and a name that is also a cryptographic
      * input can never be changed afterwards.
      */
-    data class Encryption(
+    public data class Encryption(
         val algorithm: String,
         val keyMd5: String,
         val iv: ByteArray,
@@ -192,7 +192,7 @@ class ObjectStore(
      * one does not, because the bytes are in the assembled object. Sharing a type would invite
      * code that asks a finished object for a part's `fileId`.
      */
-    data class PartSummary(
+    public data class PartSummary(
         val number: Int,
         val size: Long,
         val eTag: String,
@@ -210,8 +210,8 @@ class ObjectStore(
      * had a second description of the same thing, with a hand-rolled one-byte array in it for a
      * `write(Int)` nobody calls.
      */
-    fun interface Sink {
-        fun write(
+    public fun interface Sink {
+        public fun write(
             bytes: ByteArray,
             offset: Int,
             length: Int,
@@ -303,7 +303,7 @@ class ObjectStore(
      * nulls is load-bearing: it is how an upgraded store keeps answering the keys that were using
      * it yesterday, instead of locking them out of buckets nobody is recorded as owning.
      */
-    data class BucketState(
+    public data class BucketState(
         val createdAt: Instant,
         val owner: String? = null,
         val acl: String? = null,
@@ -378,7 +378,7 @@ class ObjectStore(
             .AtomicLong()
 
     /** What the log said when it was opened. Worth printing at startup rather than discarding. */
-    val recovery: RecordLog.Recovery
+    public val recovery: RecordLog.Recovery
 
     init {
         recovery =
@@ -559,9 +559,9 @@ class ObjectStore(
         }
     }
 
-    val objectCount: Int get() = objects.size
+    public val objectCount: Int get() = objects.size
 
-    fun createBucket(
+    public fun createBucket(
         name: String,
         owner: String? = null,
         acl: String? = null,
@@ -573,10 +573,10 @@ class ObjectStore(
     }
 
     /** Who created the bucket, or `null` for one created before owners were recorded (M-192). */
-    fun bucketOwner(name: String): String? = buckets[name]?.owner
+    public fun bucketOwner(name: String): String? = buckets[name]?.owner
 
     /** The canned ACL of the bucket, or `null` while nobody has named one. */
-    fun bucketAcl(name: String): String? = buckets[name]?.acl
+    public fun bucketAcl(name: String): String? = buckets[name]?.acl
 
     /**
      * Changes the canned ACL of an existing bucket. `false` when there is no such bucket.
@@ -584,7 +584,7 @@ class ObjectStore(
      * Its own log record rather than a rewritten creation, for the reason [IndexRecord.BucketAcl]
      * gives: this call knows the new ACL and nothing else about the bucket.
      */
-    fun setBucketAcl(
+    public fun setBucketAcl(
         name: String,
         acl: String,
     ): Boolean {
@@ -600,7 +600,7 @@ class ObjectStore(
      * because an ACL says what may be done with a version rather than which version is current.
      * A new sequence would make `PutObjectAcl` quietly promote an old version over a newer one.
      */
-    fun setObjectAcl(
+    public fun setObjectAcl(
         bucket: String,
         key: ObjectKey,
         acl: String,
@@ -612,10 +612,10 @@ class ObjectStore(
         return true
     }
 
-    fun hasBucket(name: String): Boolean = buckets.containsKey(name)
+    public fun hasBucket(name: String): Boolean = buckets.containsKey(name)
 
     /** A bucket and the moment it was created, which is the pair a listing has to answer with. */
-    data class Bucket(
+    public data class Bucket(
         val name: String,
         val createdAt: Instant,
     )
@@ -630,7 +630,7 @@ class ObjectStore(
      *
      * `false` means there is no object; tags exist only on one.
      */
-    fun setTags(
+    public fun setTags(
         bucket: String,
         key: ObjectKey,
         tags: Map<String, String>,
@@ -671,7 +671,7 @@ class ObjectStore(
      * point of a reset is that there is no state any more, and a journal of a million deletions is
      * state that will have to be replayed at the next open.
      */
-    fun reset() {
+    public fun reset() {
         writing.withLock {
             for (stored in objects.values) runCatching { Files.deleteIfExists(pathOf(stored.fileId)) }
             for (state in uploads.values) {
@@ -694,7 +694,7 @@ class ObjectStore(
     }
 
     /** A setting's document, or `null` if it was never put or has been removed. */
-    fun bucketSubresource(
+    public fun bucketSubresource(
         bucket: String,
         name: String,
     ): ByteArray? = subresources[bucket]?.get(name)
@@ -705,7 +705,7 @@ class ObjectStore(
      * Written to the journal, because this is state of the bucket: a configuration that survives a
      * restart only in memory is a configuration the client was told an untruth about.
      */
-    fun putBucketSubresource(
+    public fun putBucketSubresource(
         bucket: String,
         name: String,
         document: ByteArray?,
@@ -726,13 +726,13 @@ class ObjectStore(
      * load-bearing, because a suspended bucket may still hold versions made while it was enabled.
      * S3 has no way back to [NONE] once versioning has been switched on, and neither has this.
      */
-    enum class Versioning {
+    public enum class Versioning {
         NONE,
         ENABLED,
         SUSPENDED,
     }
 
-    fun versioning(bucket: String): Versioning = versioningStates[bucket] ?: Versioning.NONE
+    public fun versioning(bucket: String): Versioning = versioningStates[bucket] ?: Versioning.NONE
 
     /**
      * A fresh version id: opaque to the client, unique to this store.
@@ -750,7 +750,7 @@ class ObjectStore(
      * "never configured", and a store that pretended otherwise would answer an empty document for
      * a bucket that still holds versions.
      */
-    fun setVersioning(
+    public fun setVersioning(
         bucket: String,
         state: Versioning,
     ) {
@@ -766,7 +766,7 @@ class ObjectStore(
      * neither does this. It also forces versioning on, because a retention on something that can
      * be overwritten in place protects nothing.
      */
-    data class ObjectLock(
+    public data class ObjectLock(
         val defaultMode: String? = null,
         val days: Int? = null,
         val years: Int? = null,
@@ -780,17 +780,17 @@ class ObjectStore(
      * account that set it, and that is the entire point of it — a promise that is breakable by its
      * author is not a promise a regulator accepts.
      */
-    data class Retention(
+    public data class Retention(
         val mode: String,
         val untilMillis: Long,
     )
 
     /** Refused because a version is under retention or a legal hold. */
-    class Locked(
+    public class Locked(
         override val message: String,
     ) : RuntimeException(message)
 
-    fun objectLock(bucket: String): ObjectLock? = objectLocks[bucket]
+    public fun objectLock(bucket: String): ObjectLock? = objectLocks[bucket]
 
     /**
      * Turns object lock on for a bucket, or replaces its default rule.
@@ -799,7 +799,7 @@ class ObjectStore(
      * than left to the caller, so a locked bucket cannot exist in a state where a write silently
      * replaces the version somebody locked.
      */
-    fun setObjectLock(
+    public fun setObjectLock(
         bucket: String,
         lock: ObjectLock,
     ) {
@@ -822,7 +822,7 @@ class ObjectStore(
      * promise nobody can break into one anybody can. The date was unchanged in both, which is
      * exactly why comparing dates saw nothing.
      */
-    fun setRetention(
+    public fun setRetention(
         bucket: String,
         key: ObjectKey,
         versionId: String?,
@@ -848,7 +848,7 @@ class ObjectStore(
             true
         }
 
-    fun setLegalHold(
+    public fun setLegalHold(
         bucket: String,
         key: ObjectKey,
         versionId: String?,
@@ -896,11 +896,12 @@ class ObjectStore(
     }
 
     /** Every bucket, in name order — which is the order `ListBuckets` pages through. */
-    fun bucketList(): List<Bucket> = buckets.entries.map { Bucket(it.key, it.value.createdAt) }.sortedBy { it.name }
+    public fun bucketList(): List<Bucket> =
+        buckets.entries.map { Bucket(it.key, it.value.createdAt) }.sortedBy { it.name }
 
-    fun bucketNames(): List<String> = buckets.keys.sorted()
+    public fun bucketNames(): List<String> = buckets.keys.sorted()
 
-    fun deleteBucket(name: String): Boolean =
+    public fun deleteBucket(name: String): Boolean =
         // Under [writing] because "is it empty" and "it is gone" have to be one step against a
         // commit that is deciding the same thing (M-220). Uncontended and rare either way.
         writing.withLock {
@@ -924,7 +925,7 @@ class ObjectStore(
      * dispatcher thread for the length of an upload, and a handful of slow clients would be
      * indistinguishable from a hung server.
      */
-    suspend fun put(
+    public suspend fun put(
         bucket: String,
         key: ObjectKey,
         metadata: Metadata,
@@ -944,13 +945,13 @@ class ObjectStore(
      * Deleting the key afterwards would be the wrong repair — it destroys the object that was
      * already there, so a refused overwrite would cost the client the version it had.
      */
-    data class Staged(
+    public data class Staged(
         val fileId: String,
         val size: Long,
         val eTag: String,
     )
 
-    suspend fun stage(write: suspend (Sink) -> Unit): Staged {
+    public suspend fun stage(write: suspend (Sink) -> Unit): Staged {
         val fileId = UUID.randomUUID().toString()
         val target = pathOf(fileId)
         Files.createDirectories(target.parent)
@@ -987,7 +988,7 @@ class ObjectStore(
      * pass their check and one loses. The comparison and the write are one step or the header is
      * a race with a promise attached.
      */
-    data class Precondition(
+    public data class Precondition(
         /** The object must exist, and its `ETag` must be one of these. `*` means "must exist". */
         val ifMatch: List<String>? = null,
         /** `*` means "must not exist"; a tag means "must not be this one". */
@@ -1036,8 +1037,8 @@ class ObjectStore(
          */
         val needsTheObject: Boolean get() = ifMatch != null || size != null || lastModifiedMillis != null
 
-        companion object {
-            val NONE = Precondition()
+        public companion object {
+            public val NONE: Precondition = Precondition()
         }
     }
 
@@ -1051,10 +1052,10 @@ class ObjectStore(
      * object doesn't exist, the operation returns 204"* — and a model with two answers cannot
      * express that without the caller guessing.
      */
-    enum class Outcome { HELD, MISMATCH, ABSENT }
+    public enum class Outcome { HELD, MISMATCH, ABSENT }
 
-    class PreconditionFailed(
-        val outcome: Outcome,
+    public class PreconditionFailed(
+        public val outcome: Outcome,
         override val message: String,
     ) : RuntimeException(message)
 
@@ -1071,7 +1072,7 @@ class ObjectStore(
      * called, so what it serialises is a map insert and a journal append.
      */
     @Suppress("LongParameterList")
-    fun commit(
+    public fun commit(
         bucket: String,
         key: ObjectKey,
         metadata: Metadata,
@@ -1216,7 +1217,7 @@ class ObjectStore(
     )
 
     /** Throws away bytes that were written and turned out not to be wanted. */
-    fun discard(staged: Staged) {
+    public fun discard(staged: Staged) {
         Files.deleteIfExists(pathOf(staged.fileId))
     }
 
@@ -1259,7 +1260,7 @@ class ObjectStore(
             .toList()
 
     /** Every version of a key, newest first — the order `ListObjectVersions` is defined in. */
-    fun versions(
+    public fun versions(
         bucket: String,
         key: ObjectKey,
     ): List<Stored> =
@@ -1277,13 +1278,13 @@ class ObjectStore(
      * object and gets nothing already knows what to do, and a caller that has to remember to check
      * a flag is a caller that will forget once.
      */
-    fun get(
+    public fun get(
         bucket: String,
         key: ObjectKey,
     ): Stored? = currentEntry(bucket, key)?.value?.takeIf { !it.deleteMarker }
 
     /** The current version whether or not it is a tombstone — for the answer that says so. */
-    fun currentVersion(
+    public fun currentVersion(
         bucket: String,
         key: ObjectKey,
     ): Stored? = currentEntry(bucket, key)?.value
@@ -1295,7 +1296,7 @@ class ObjectStore(
      * and a second index would have to be kept true through every write and every compaction, to
      * make a lookup faster that is bounded by how many versions one key has.
      */
-    fun get(
+    public fun get(
         bucket: String,
         key: ObjectKey,
         versionId: String,
@@ -1314,7 +1315,7 @@ class ObjectStore(
      * (§1.6.2): the source is a real `FileChannelImpl` here, which is exactly what it is not on
      * the upload path.
      */
-    fun copy(
+    public fun copy(
         source: Stored,
         bucket: String,
         key: ObjectKey,
@@ -1354,7 +1355,7 @@ class ObjectStore(
      * re-uploading them. The `ETag` is recomputed rather than carried across, unlike [copy] —
      * a slice of an object hashes to something the source's `ETag` says nothing about.
      */
-    fun stagePartFrom(
+    public fun stagePartFrom(
         source: Stored,
         offset: Long,
         length: Long,
@@ -1393,7 +1394,7 @@ class ObjectStore(
     }
 
     /** Where the bytes are, for a reader that wants the file rather than a copy of it (M-59). */
-    fun pathOf(stored: Stored): Path = pathOf(stored.fileId)
+    public fun pathOf(stored: Stored): Path = pathOf(stored.fileId)
 
     /**
      * The directory every object file sits under.
@@ -1403,7 +1404,7 @@ class ObjectStore(
      * the terminator also knows. The absolute path from [pathOf] is this server's view of it, and
      * the two are the same directory only by arrangement.
      */
-    val dataRoot: Path get() = data
+    public val dataRoot: Path get() = data
 
     /**
      * What a `DELETE` did, which in a versioning bucket is not what the word suggests.
@@ -1411,7 +1412,7 @@ class ObjectStore(
      * [existed] answers the batch delete, which reports per key. [marker] is the tombstone that was
      * laid down, and it is `null` in a bucket without versioning — there the bytes really are gone.
      */
-    data class Deletion(
+    public data class Deletion(
         val existed: Boolean,
         val marker: Stored? = null,
     )
@@ -1424,7 +1425,7 @@ class ObjectStore(
      * to be named. Suspended sits between the two — a marker is laid down, but it is the `null`
      * version, so it replaces the previous `null` one instead of stacking.
      */
-    fun delete(
+    public fun delete(
         bucket: String,
         key: ObjectKey,
         precondition: Precondition = Precondition.NONE,
@@ -1475,7 +1476,7 @@ class ObjectStore(
      * bucket has for it. Deleting a delete marker by id is how a key is brought back: the version
      * underneath becomes current again.
      */
-    fun deleteVersion(
+    public fun deleteVersion(
         bucket: String,
         key: ObjectKey,
         versionId: String,
@@ -1504,7 +1505,7 @@ class ObjectStore(
      * [nextAfter] is what a continuation token carries: the last thing on this page, whether that
      * was a key or a rolled-up prefix. It is `null` when the page is the last one.
      */
-    data class Page(
+    public data class Page(
         val keys: List<Pair<ObjectKey, Stored>>,
         val commonPrefixes: List<ByteArray>,
         val isTruncated: Boolean,
@@ -1542,7 +1543,7 @@ class ObjectStore(
      * prefix as its marker, and the prefix sorts **before** every key under it — so resuming
      * without the rule would roll the same group up again, for ever.
      */
-    fun list(
+    public fun list(
         bucket: String,
         prefix: ByteArray = ByteArray(0),
         delimiter: ByteArray? = null,
@@ -1611,13 +1612,13 @@ class ObjectStore(
      * one row per version and must mention them, since a tombstone is what a client is looking for
      * when it wants to know why its object is gone.
      */
-    data class VersionEntry(
+    public data class VersionEntry(
         val key: ObjectKey,
         val stored: Stored,
         val isLatest: Boolean,
     )
 
-    data class VersionPage(
+    public data class VersionPage(
         val versions: List<VersionEntry>,
         val commonPrefixes: List<ByteArray>,
         val isTruncated: Boolean,
@@ -1637,7 +1638,7 @@ class ObjectStore(
      * key's versions, and `key-marker` alone could only resume at a key boundary, which would
      * either repeat versions or skip them.
      */
-    fun versionPage(
+    public fun versionPage(
         bucket: String,
         prefix: ByteArray = ByteArray(0),
         delimiter: ByteArray? = null,
@@ -1770,7 +1771,7 @@ class ObjectStore(
      * five-gigabyte object runs for minutes and a restart in the middle must not silently discard
      * the parts a client has already been told were accepted.
      */
-    data class Upload(
+    public data class Upload(
         val id: String,
         val bucket: String,
         val key: ObjectKey,
@@ -1811,7 +1812,7 @@ class ObjectStore(
         val acl: String? = null,
     )
 
-    data class Part(
+    public data class Part(
         val number: Int,
         val fileId: String,
         val size: Long,
@@ -1839,7 +1840,7 @@ class ObjectStore(
      * object is the largest thing in the index, and none of it is in the response. What a repeat
      * of `CompleteMultipartUpload` has to be told is where the object went and what it hashed to.
      */
-    data class Completion(
+    public data class Completion(
         val bucket: String,
         val key: ObjectKey,
         val eTag: String,
@@ -1847,11 +1848,11 @@ class ObjectStore(
     )
 
     /** Why a completion cannot happen. The S3 layer turns each of these into a code and a status. */
-    class CompletionRefused(
-        val reason: Reason,
+    public class CompletionRefused(
+        public val reason: Reason,
         override val message: String,
     ) : RuntimeException(message) {
-        enum class Reason {
+        public enum class Reason {
             NO_SUCH_UPLOAD,
             NO_PARTS,
             INVALID_PART,
@@ -1869,7 +1870,7 @@ class ObjectStore(
         val parts = ConcurrentSkipListMap<Int, Part>()
     }
 
-    fun createUpload(
+    public fun createUpload(
         bucket: String,
         key: ObjectKey,
         metadata: Metadata,
@@ -1918,15 +1919,15 @@ class ObjectStore(
         return upload
     }
 
-    fun upload(id: String): Upload? = uploads[id]?.upload
+    public fun upload(id: String): Upload? = uploads[id]?.upload
 
-    fun uploads(bucket: String): List<Upload> =
+    public fun uploads(bucket: String): List<Upload> =
         uploads.values
             .map { it.upload }
             .filter { it.bucket == bucket }
             .sortedWith(compareBy({ it.key }, { it.id }))
 
-    fun parts(id: String): List<Part> = uploads[id]?.parts?.values?.toList() ?: emptyList()
+    public fun parts(id: String): List<Part> = uploads[id]?.parts?.values?.toList() ?: emptyList()
 
     /**
      * Writes one part.
@@ -1934,14 +1935,14 @@ class ObjectStore(
      * A part with a number that is already there replaces it — that is S3's rule, and the file of
      * the old one goes only after the index stops pointing at it, exactly as for an object.
      */
-    suspend fun putPart(
+    public suspend fun putPart(
         uploadId: String,
         number: Int,
         write: suspend (Sink) -> Unit,
     ): Part = commitPart(uploadId, number, stage(write))
 
     /** The same, for bytes already staged — the request path checks them before keeping them. */
-    fun commitPart(
+    public fun commitPart(
         uploadId: String,
         number: Int,
         staged: Staged,
@@ -1968,7 +1969,7 @@ class ObjectStore(
         return part
     }
 
-    fun abortUpload(uploadId: String): Boolean {
+    public fun abortUpload(uploadId: String): Boolean {
         val state = uploads.remove(uploadId) ?: return false
         write(IndexRecord.UploadEnded(state.upload.bucket, uploadId))
         for (part in state.parts.values) Files.deleteIfExists(pathOf(part.fileId))
@@ -1988,7 +1989,7 @@ class ObjectStore(
      * takes a fast path: the JDK requires the **source** to be a real `FileChannelImpl` (§1.6.2),
      * which is exactly a part on disk and is exactly not a socket.
      */
-    fun completeUpload(
+    public fun completeUpload(
         uploadId: String,
         requested: List<Pair<Int, String>>,
         /**
@@ -2168,7 +2169,7 @@ class ObjectStore(
      * deleted since, and this still says what the upload produced. That is the right claim to
      * make: the question a retry asks is "did my completion happen", not "what is there".
      */
-    fun completion(uploadId: String): Completion? = completions[uploadId]
+    public fun completion(uploadId: String): Completion? = completions[uploadId]
 
     private fun remember(
         uploadId: String,
@@ -2187,7 +2188,7 @@ class ObjectStore(
      * An abandoned upload holds its parts on the disk for ever otherwise, and there is no other
      * moment to notice: a client that stops calling says nothing (M-57).
      */
-    fun sweepUploads(olderThanMillis: Long = 7 * 24 * 60 * 60 * 1000L): Int {
+    public fun sweepUploads(olderThanMillis: Long = 7 * 24 * 60 * 60 * 1000L): Int {
         // The store's clock and not the JVM's, because the other side of the comparison below is
         // `startedAt` — a stamp this store made. Two clocks either side of a `>` is how an upload
         // gets swept a week early on a host whose time was corrected.
@@ -2219,7 +2220,7 @@ class ObjectStore(
     // --- compaction (M9) ----------------------------------------------------------------------
 
     /** How large the log is right now, and how much of it is worth keeping. */
-    val logSizeBytes: Long get() = log.sizeBytes
+    public val logSizeBytes: Long get() = log.sizeBytes
 
     /**
      * What one compaction would leave: one record per bucket, object and upload with its parts.
@@ -2228,20 +2229,20 @@ class ObjectStore(
      * what says whether a store is about to spend a minute recovering (M-291). On its own the log
      * size says nothing: two megabytes is small for a million objects and large for ten.
      */
-    val liveRecordCount: Long get() = liveRecords()
+    public val liveRecordCount: Long get() = liveRecords()
 
     /** When the last compaction finished, or `null` if none has run in this process (M-291). */
     @Volatile
-    var lastCompactionAt: Instant? = null
+    public var lastCompactionAt: Instant? = null
         private set
 
     /** What the last orphan sweep collected, and when — `null` until one has run (M-291). */
     @Volatile
-    var lastSweep: Sweep? = null
+    public var lastSweep: Sweep? = null
         private set
 
     /** One orphan sweep: how many files it removed and when it finished. */
-    data class Sweep(
+    public data class Sweep(
         val removed: Int,
         val at: Instant,
     )
@@ -2260,7 +2261,7 @@ class ObjectStore(
      * The floor exists so an empty store does not compact on every housekeeping tick, where the
      * ratio between one record and two is infinite and meaningless.
      */
-    fun compactIfWorthwhile(
+    public fun compactIfWorthwhile(
         factor: Double = 3.0,
         floor: Long = 1000,
     ): Compaction? {
@@ -2299,7 +2300,7 @@ class ObjectStore(
      * ignore; a kill after it leaves the new log, complete and `fsync`ed. There is no moment at
      * which the store's own state is half of each (M-65).
      */
-    fun compact(): Compaction =
+    public fun compact(): Compaction =
         writing.withLock {
             val before = log.sizeBytes
             val temp = root.resolve("index.log.compacting")
@@ -2392,7 +2393,7 @@ class ObjectStore(
             Compaction(before, after, records)
         }
 
-    data class Compaction(
+    public data class Compaction(
         val bytesBefore: Long,
         val bytesAfter: Long,
         val records: Long,
@@ -2423,7 +2424,7 @@ class ObjectStore(
      * file, and nothing will ever mention it again. [olderThanMillis] keeps the sweep off files
      * that are being written right now — an upload in flight looks exactly like an orphan.
      */
-    fun sweepOrphans(olderThanMillis: Long = 60 * 60 * 1000): Int {
+    public fun sweepOrphans(olderThanMillis: Long = 60 * 60 * 1000): Int {
         val referenced = objects.values.mapTo(HashSet()) { it.fileId }
         // A part of an upload in progress is pointed at by the upload rather than by an object,
         // and a sweep that did not know about them would collect a client's work mid-upload.
@@ -2570,8 +2571,8 @@ class ObjectStore(
      * Thrown from [commit], which is the one place both the ordinary write and the multipart
      * completion pass through.
      */
-    class BucketGone(
-        val bucket: String,
+    public class BucketGone(
+        public val bucket: String,
     ) : RuntimeException("the bucket $bucket was deleted while this was being written")
 
     /**
@@ -2587,8 +2588,8 @@ class ObjectStore(
      * somebody who has just made a change and is deciding whether they have lost data, and the
      * answer is no: roll forward and the same directory opens.
      */
-    class JournalFromNewerVersion(
-        val kind: Int,
+    public class JournalFromNewerVersion(
+        public val kind: Int,
         override val message: String,
     ) : RuntimeException(message)
 
@@ -2604,18 +2605,18 @@ class ObjectStore(
      * A refusal at startup rather than a warning, because everything after this point is a write
      * somebody will be told succeeded.
      */
-    class DirectoryInUse(
+    public class DirectoryInUse(
         override val message: String,
     ) : RuntimeException(message)
 
     /** Refused because the index is full — at startup, or at the write that would overflow it. */
-    class CeilingExceeded(
-        val objects: Int,
-        val ceiling: Int,
+    public class CeilingExceeded(
+        public val objects: Int,
+        public val ceiling: Int,
         override val message: String,
     ) : RuntimeException(message)
 
-    companion object {
+    public companion object {
         /**
          * The clock a store reads unless it was handed another one.
          *
@@ -2631,7 +2632,7 @@ class ObjectStore(
             "ktlint:kapkan:wall-clock",
             "the server's clock port: everything that stamps or compares a time reads it through the store",
         )
-        val WALL_CLOCK: () -> Instant = { Instant.now() }
+        public val WALL_CLOCK: () -> Instant = { Instant.now() }
 
         /**
          * The version id of anything written to a bucket that is not versioning.
@@ -2640,13 +2641,13 @@ class ObjectStore(
          * clients pass it back, and `?versionId=null` deletes it permanently. A sentinel that
          * looked like a Kotlin `null` would collapse "has no version" into "has no value".
          */
-        const val NULL_VERSION: String = "null"
+        public const val NULL_VERSION: String = "null"
 
         /**
          * What an object is stored as unless somebody says otherwise, and what every object
          * written before M-301 is.
          */
-        const val STANDARD_STORAGE_CLASS: String = "STANDARD"
+        public const val STANDARD_STORAGE_CLASS: String = "STANDARD"
 
         /**
          * The floor on every part but the last, from the AWS documentation's own table
@@ -2672,7 +2673,7 @@ class ObjectStore(
          * the two is taken, because a ceiling derived from the cheaper case is a ceiling that is
          * wrong for the customer who has long keys.
          */
-        const val BYTES_PER_OBJECT = 650
+        public const val BYTES_PER_OBJECT: Int = 650
 
         /**
          * How much of the heap the index is allowed to be.
@@ -2681,11 +2682,11 @@ class ObjectStore(
          * headroom a collector needs to not spend the process's life collecting. A store sized so
          * that the index alone fits works right up to the moment it has traffic.
          */
-        const val INDEX_HEAP_FRACTION = 0.5
+        public const val INDEX_HEAP_FRACTION: Double = 0.5
 
-        fun heapMiB(): Long = Runtime.getRuntime().maxMemory() / (1024 * 1024)
+        public fun heapMiB(): Long = Runtime.getRuntime().maxMemory() / (1024 * 1024)
 
-        fun ceilingForHeap(heapBytes: Long = Runtime.getRuntime().maxMemory()): Int =
+        public fun ceilingForHeap(heapBytes: Long = Runtime.getRuntime().maxMemory()): Int =
             (heapBytes * INDEX_HEAP_FRACTION / BYTES_PER_OBJECT)
                 .toLong()
                 .coerceAtMost(Int.MAX_VALUE.toLong())

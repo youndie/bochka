@@ -24,13 +24,13 @@ import io.github.youndie.bochka.s3.sigv4.S3Error
  * condition it does not implement are all `MalformedPolicy` **naming the offending text**, never a
  * silently ignored member.
  */
-object BucketPolicy {
-    class Refused(
-        val error: S3Error,
+public object BucketPolicy {
+    public class Refused(
+        public val error: S3Error,
         override val message: String,
     ) : RuntimeException(message)
 
-    enum class Effect { ALLOW, DENY }
+    public enum class Effect { ALLOW, DENY }
 
     /**
      * One test inside a `Condition` block: an operator, a key of the request, and the values.
@@ -40,7 +40,7 @@ object BucketPolicy {
      * `StringLikeIfExists` is [glob] and [ifExists]; `Null` is none of them and is handled apart,
      * because it asks about the key's presence rather than about its value.
      */
-    data class Condition(
+    public data class Condition(
         val operator: String,
         val key: String,
         val values: List<String>,
@@ -49,7 +49,7 @@ object BucketPolicy {
         val ifExists: Boolean,
     )
 
-    data class Statement(
+    public data class Statement(
         val sid: String?,
         val effect: Effect,
         /** Access key ids, or `*`. An empty set is impossible: a statement without a principal is refused. */
@@ -62,7 +62,7 @@ object BucketPolicy {
         val conditions: List<Condition> = emptyList(),
     )
 
-    data class Policy(
+    public data class Policy(
         val version: String?,
         val statements: List<Statement>,
     )
@@ -73,7 +73,7 @@ object BucketPolicy {
      * AWS documents 20 KB for a bucket policy; this is that number, and it is enforced because the
      * document is held in memory per bucket for the life of the process, not because S3 says so.
      */
-    const val MAX_BYTES = 20 * 1024
+    public const val MAX_BYTES: Int = 20 * 1024
 
     /**
      * Every action this server can decide, and the whole reason [decode] can refuse by name.
@@ -82,7 +82,7 @@ object BucketPolicy {
      * and matched against this set at decision time, because `s3:*` is how most real policies are
      * written and refusing it would refuse the common case to catch the rare typo.
      */
-    val KNOWN_ACTIONS =
+    public val KNOWN_ACTIONS: Set<String> =
         setOf(
             "s3:AbortMultipartUpload",
             "s3:CreateBucket",
@@ -146,7 +146,7 @@ object BucketPolicy {
      * `s3:ExistingObjectTag/<name>` and `s3:RequestObjectTag/<name>` carry the tag's name after
      * the slash, so they are matched by prefix rather than by equality.
      */
-    val KNOWN_CONDITION_KEYS =
+    public val KNOWN_CONDITION_KEYS: Set<String> =
         setOf(
             "s3:prefix",
             "s3:delimiter",
@@ -182,21 +182,21 @@ object BucketPolicy {
      */
 
     /** Prefixed keys: everything after the slash names a tag rather than a key of its own. */
-    val KNOWN_CONDITION_KEY_PREFIXES = setOf("s3:ExistingObjectTag/", "s3:RequestObjectTag/")
+    public val KNOWN_CONDITION_KEY_PREFIXES: Set<String> = setOf("s3:ExistingObjectTag/", "s3:RequestObjectTag/")
 
     /** The prefix every S3 resource ARN carries; there is no account or region in an S3 ARN. */
-    const val ARN_PREFIX = "arn:aws:s3:::"
+    public const val ARN_PREFIX: String = "arn:aws:s3:::"
 
     /**
      * How a `{"Service": …}` principal is spelled inside a statement, so that no access key can
      * ever equal one: a key id is a word, and this is a word with a colon in front of it.
      */
-    const val SERVICE_PREFIX = "service:"
+    public const val SERVICE_PREFIX: String = "service:"
 
     /** The one service this server ever acts as: the delivery of a bucket's access log. */
-    const val LOGGING_SERVICE = SERVICE_PREFIX + "logging.s3.amazonaws.com"
+    public const val LOGGING_SERVICE: String = SERVICE_PREFIX + "logging.s3.amazonaws.com"
 
-    fun decode(text: String): Policy {
+    public fun decode(text: String): Policy {
         if (text.toByteArray().size > MAX_BYTES) {
             refuse("the policy is longer than $MAX_BYTES bytes")
         }
@@ -423,7 +423,7 @@ object BucketPolicy {
      * from "denied" and the ACL still decides. [DENY] is stronger than any [ALLOW], including one
      * in the same document — that is the whole reason an explicit deny is worth writing.
      */
-    enum class Decision { ALLOW, DENY, NEUTRAL }
+    public enum class Decision { ALLOW, DENY, NEUTRAL }
 
     /**
      * Whether [policy] says anything about [principal] doing [action] to [resource].
@@ -435,7 +435,7 @@ object BucketPolicy {
      * [resource] is the full ARN: `arn:aws:s3:::bucket` for the bucket itself,
      * `arn:aws:s3:::bucket/key` for one of its objects.
      */
-    fun evaluate(
+    public fun evaluate(
         policy: Policy,
         principal: String?,
         action: String,
@@ -520,7 +520,7 @@ object BucketPolicy {
      * enough to look identical and different enough to disagree about a statement carrying a
      * condition.
      */
-    fun isPublic(policy: Policy): Boolean = policy.statements.any { isPublic(it) }
+    public fun isPublic(policy: Policy): Boolean = policy.statements.any { isPublic(it) }
 
     /**
      * Whether one statement, by itself, makes the bucket public. Four things, all of them required.
@@ -549,7 +549,7 @@ object BucketPolicy {
      * policy carries `IpAddress` over `aws:SourceIp`, both refused by name since M-201в because
      * nothing here can evaluate them (§3.8). The rule is enforced on the conditions that can be.
      */
-    fun isPublic(statement: Statement): Boolean =
+    public fun isPublic(statement: Statement): Boolean =
         statement.effect == BucketPolicy.Effect.ALLOW &&
             "*" in statement.principals &&
             statement.actions.isNotEmpty() &&
@@ -563,7 +563,7 @@ object BucketPolicy {
      * hold any byte — and a key holding `.*(a+)+` handed to a regex engine is a request that never
      * ends. Linear, backtracking only on `*`, which cannot blow up: the classic two-pointer glob.
      */
-    fun matches(
+    public fun matches(
         pattern: String,
         text: String,
     ): Boolean {

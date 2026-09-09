@@ -27,7 +27,7 @@ import java.time.Duration
  * request with the first one's status.
  */
 
-class HttpServer(
+public class HttpServer(
     private val handler: HttpHandler,
     bindAddress: String = "127.0.0.1",
     port: Int = 0,
@@ -102,7 +102,7 @@ class HttpServer(
      * another process already holds the specific address, and then quietly receives none of the
      * connections — the neighbouring broker lost a day to that one (its §1.16).
      */
-    val boundPort: Int get() = (serverChannel.localAddress as InetSocketAddress).port
+    public val boundPort: Int get() = (serverChannel.localAddress as InetSocketAddress).port
 
     init {
         serverChannel.bind(InetSocketAddress(bindAddress, port))
@@ -504,7 +504,7 @@ class HttpServer(
         }
     }
 
-    companion object {
+    public companion object {
         // Not private, and only because some of these are part of the surface: the defaults are
         // named in the constructor and a test names them to shorten them. The rest stays private.
 
@@ -514,7 +514,7 @@ class HttpServer(
          * Half the window on purpose: a stop that used all ten would be killed while still
          * finishing, and the difference between stopping and being killed is what this is for.
          */
-        val DEFAULT_SHUTDOWN_GRACE: Duration = Duration.ofSeconds(5)
+        public val DEFAULT_SHUTDOWN_GRACE: Duration = Duration.ofSeconds(5)
 
         /** How often the stop looks to see whether the last request has finished. */
         private const val POLL_MILLIS = 5L
@@ -527,14 +527,14 @@ class HttpServer(
          * no intention of finishing. nginx ships sixty for the same limit and sits on the public
          * internet, where a slower link is likelier than an attack.
          */
-        val DEFAULT_HEAD_TIMEOUT: Duration = Duration.ofSeconds(20)
+        public val DEFAULT_HEAD_TIMEOUT: Duration = Duration.ofSeconds(20)
 
         /**
          * A minute of silence inside a body, and it is a gap rather than a total: a five-gibibyte
          * upload over a slow link is legitimate and takes as long as it takes. A total would be a
          * size limit with a clock on it, and would refuse exactly the uploads this store exists for.
          */
-        val DEFAULT_BODY_IDLE_TIMEOUT: Duration = Duration.ofSeconds(60)
+        public val DEFAULT_BODY_IDLE_TIMEOUT: Duration = Duration.ofSeconds(60)
 
         /**
          * What one live connection costs while it is reading a request.
@@ -544,7 +544,7 @@ class HttpServer(
          * of a connection that is *serving* an object, and deliberately: what this bounds is how
          * many can be waiting at once, which is the number an idle-connection flood drives up.
          */
-        const val BYTES_PER_CONNECTION: Int = 32 * 1024 + 64 * 1024
+        public const val BYTES_PER_CONNECTION: Int = 32 * 1024 + 64 * 1024
 
         /** What fraction of the heap connections may hold before the ceiling is reached. */
         private const val CONNECTION_HEAP_FRACTION = 0.25
@@ -556,7 +556,7 @@ class HttpServer(
          * connections are the transient part: a server that spent its whole heap on sockets would
          * be refusing writes long before it refused a connection.
          */
-        fun ceilingForHeap(heapBytes: Long = Runtime.getRuntime().maxMemory()): Int =
+        public fun ceilingForHeap(heapBytes: Long = Runtime.getRuntime().maxMemory()): Int =
             ((heapBytes * CONNECTION_HEAP_FRACTION) / BYTES_PER_CONNECTION)
                 .toLong()
                 .coerceIn(16L, Int.MAX_VALUE.toLong())

@@ -12,17 +12,17 @@ package io.github.youndie.bochka.http
  * a body it must read to reach the code that would have refused, and a `403` for bad credentials
  * ends up costing the five gigabytes it is refusing.
  */
-interface HttpHandler {
+public interface HttpHandler {
     /**
      * Decide from the head alone.
      *
      * Return a response to answer immediately and never read the body — signature failures,
      * unknown buckets, routes that do not exist. Return `null` to accept the body.
      */
-    fun screen(head: HttpRequestParser.Head): HttpResponse?
+    public fun screen(head: HttpRequestParser.Head): HttpResponse?
 
     /** Called with the body once it has been accepted. */
-    suspend fun handle(
+    public suspend fun handle(
         head: HttpRequestParser.Head,
         body: RequestBody,
     ): HttpResponse
@@ -39,7 +39,7 @@ interface HttpHandler {
      * The handler answers rather than the server because the shape of an error is the protocol's
      * business, and this layer does not know what one looks like.
      */
-    fun failed(
+    public fun failed(
         head: HttpRequestParser.Head,
         cause: Throwable,
     ): HttpResponse
@@ -57,7 +57,7 @@ interface HttpHandler {
      * around, and putting an S3 `<Error>` behind a request that is not yet S3 would be inventing a
      * context. The default does nothing, so a handler that does not care stays as it was.
      */
-    fun malformed(
+    public fun malformed(
         status: Int,
         cause: Throwable,
     ) {
@@ -71,18 +71,18 @@ interface HttpHandler {
      * app module. It has arrived; this is the way through. Nothing is written to the client,
      * because by this point there is usually no client left to write to.
      */
-    fun abandoned(cause: Throwable) {
+    public fun abandoned(cause: Throwable) {
     }
 
     /**
      * The body, handed over as it arrives rather than as one array: an object can be five
      * gigabytes, and the point of the whole design is never to hold one.
      */
-    interface RequestBody {
+    public interface RequestBody {
         /**
          * Calls [consume] with each piece as it arrives, until the body ends. The arrays passed in
          * are reused — copy anything kept beyond the call.
          */
-        suspend fun forEach(consume: (ByteArray, Int, Int) -> Unit)
+        public suspend fun forEach(consume: (ByteArray, Int, Int) -> Unit)
     }
 }

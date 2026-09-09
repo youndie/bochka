@@ -31,7 +31,7 @@ import java.time.format.DateTimeFormatter
  * ./gradlew :bochka-benchmark:measure -Pbochka.measure=startup
  * ```
  */
-object Startup {
+public object Startup {
     private const val ACCESS_KEY = "bochkaadmin"
     private const val SECRET = "bochkasecret"
     private const val REGION = "us-east-1"
@@ -39,7 +39,7 @@ object Startup {
     /** How long an idle server is left alone before its footprint is read. */
     private const val SETTLE_MILLIS = 2_000L
 
-    fun measure(
+    public fun measure(
         directory: Path,
         repeats: Int,
     ) {

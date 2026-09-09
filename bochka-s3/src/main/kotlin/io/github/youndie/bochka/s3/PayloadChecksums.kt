@@ -29,7 +29,7 @@ import java.util.zip.Checksum
  * `xxhash` variants. Refused, not ignored: a stated checksum nobody verifies is worse than none,
  * because the client believes the bytes were checked.
  */
-class PayloadChecksums private constructor(
+public class PayloadChecksums private constructor(
     private val md5Expected: String?,
     private var algorithm: Algorithm?,
     private var stated: String?,
@@ -39,10 +39,10 @@ class PayloadChecksums private constructor(
      * Carried on the object rather than returned beside it, because this is read during screening
      * and the whole point of screening is that the refusal exists before the body does (§1.2).
      */
-    val rejection: Rejection? = null,
+    public val rejection: Rejection? = null,
 ) {
-    enum class Algorithm(
-        val header: String,
+    public enum class Algorithm(
+        public val header: String,
     ) {
         CRC32("x-amz-checksum-crc32"),
         CRC32C("x-amz-checksum-crc32c"),
@@ -52,10 +52,10 @@ class PayloadChecksums private constructor(
         ;
 
         /** The suffix as it appears in the header name and is stored: `crc32c`, `sha256`. */
-        val id: String get() = header.removePrefix("x-amz-checksum-")
+        public val id: String get() = header.removePrefix("x-amz-checksum-")
     }
 
-    data class Rejection(
+    public data class Rejection(
         val error: S3Error,
         val detail: String,
     )
@@ -67,7 +67,7 @@ class PayloadChecksums private constructor(
      * about the store — and the length is here because `FULL_OBJECT` cannot be computed without
      * it, which is not obvious from the name of a checksum.
      */
-    data class Piece(
+    public data class Piece(
         val size: Long,
         val checksum: Metadata.Checksum?,
     )
@@ -75,7 +75,7 @@ class PayloadChecksums private constructor(
     private val md5 = if (md5Expected != null) MessageDigest.getInstance("MD5") else null
     private val running: Running? = algorithm?.let(::runningFor)
 
-    fun update(
+    public fun update(
         bytes: ByteArray,
         offset: Int,
         length: Int,
@@ -85,7 +85,7 @@ class PayloadChecksums private constructor(
     }
 
     /** `null` when everything the client stated about the body turned out to be true. */
-    fun verify(): Rejection? {
+    public fun verify(): Rejection? {
         if (md5 != null) {
             val expected = decodeBase64(md5Expected!!, 16) ?: return Rejection(S3Error.INVALID_DIGEST, "Content-MD5")
             if (!MessageDigest.isEqual(expected, md5.digest())) {
@@ -122,7 +122,7 @@ class PayloadChecksums private constructor(
      * the one this class hashed the body against, so keeping it keeps the value that was checked
      * here rather than one that was checked elsewhere.
      */
-    fun statedInTrailer(trailers: Map<String, String>) {
+    public fun statedInTrailer(trailers: Map<String, String>) {
         if (algorithm != null) return
         for ((name, value) in trailers) {
             val known = Algorithm.entries.firstOrNull { it.header.equals(name, ignoreCase = true) } ?: continue
@@ -133,7 +133,7 @@ class PayloadChecksums private constructor(
     }
 
     /** What goes into the index, so a later `GET` can answer with it without rereading the object. */
-    fun stored(): Metadata.Checksum? = algorithm?.let { Metadata.Checksum(it.id, stated!!) }
+    public fun stored(): Metadata.Checksum? = algorithm?.let { Metadata.Checksum(it.id, stated!!) }
 
     private interface Running {
         fun update(
@@ -145,9 +145,9 @@ class PayloadChecksums private constructor(
         fun digest(): ByteArray
     }
 
-    companion object {
+    public companion object {
         /** Reads what the head states; [rejection] says why it cannot be honoured, when it cannot. */
-        fun of(header: (String) -> String?): PayloadChecksums {
+        public fun of(header: (String) -> String?): PayloadChecksums {
             fun refused(
                 error: S3Error,
                 detail: String,
@@ -209,7 +209,7 @@ class PayloadChecksums private constructor(
          * digest. Answering anyway is the failure mode this whole class exists to avoid — a stated
          * checksum nobody can reproduce is worse than none, because the client believes it.
          */
-        fun ofParts(
+        public fun ofParts(
             parts: List<Piece>,
             checksumType: String?,
         ): Metadata.Checksum? {
@@ -252,7 +252,7 @@ class PayloadChecksums private constructor(
         }
 
         /** Whether the request stated a checksum of any kind — what `DeleteObjects` requires (M-45). */
-        fun anyStated(header: (String) -> String?): Boolean =
+        public fun anyStated(header: (String) -> String?): Boolean =
             header("content-md5") != null ||
                 Algorithm.entries.any { header(it.header) != null } ||
                 UNSUPPORTED.any { header(it) != null }

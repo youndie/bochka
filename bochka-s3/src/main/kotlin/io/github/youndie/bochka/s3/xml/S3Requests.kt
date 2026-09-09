@@ -16,9 +16,9 @@ import java.time.Instant
  * unauthenticated-shaped input path, and "the client would not send more" is not a property of the
  * client (Риск 3).
  */
-object S3Requests {
+public object S3Requests {
     /** `shapes.Delete.members`: `Objects` is flattened as `Object`, plus an optional `Quiet`. */
-    data class DeleteRequest(
+    public data class DeleteRequest(
         val targets: List<Target>,
         val quiet: Boolean,
     )
@@ -32,7 +32,7 @@ object S3Requests {
      * what a timestamp is, and answering it in the parser would make an unreadable date a
      * malformed **document**, which fails the whole batch instead of the one key it is about.
      */
-    data class Target(
+    public data class Target(
         val key: ObjectKey,
         val eTag: String? = null,
         val lastModifiedTime: String? = null,
@@ -49,16 +49,16 @@ object S3Requests {
     )
 
     /** `shapes.CompletedMultipartUpload.members`: `Parts` flattened as `Part`. */
-    data class CompletedPart(
+    public data class CompletedPart(
         val partNumber: Int,
         val eTag: String,
     )
 
     /** A batch delete takes at most 1000 objects per request. */
-    const val MAX_DELETE_KEYS: Int = 1000
+    public const val MAX_DELETE_KEYS: Int = 1000
 
     /** Part numbers run 1..10 000 (`docs/spec/s3-service-2.json:1604`), so a list cannot be longer. */
-    const val MAX_PARTS: Int = 10_000
+    public const val MAX_PARTS: Int = 10_000
 
     /**
      * `<Tagging><TagSet><Tag><Key/><Value/>` — `s3-service-2.json:13301`, `:13294`, `:13272`.
@@ -67,7 +67,7 @@ object S3Requests {
      * put two values under one key — something everybody reading this would otherwise have to
      * remember.
      */
-    fun parseTagging(body: ByteArray): Map<String, String> {
+    public fun parseTagging(body: ByteArray): Map<String, String> {
         val tags = LinkedHashMap<String, String>()
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
         reader.root("Tagging") { name ->
@@ -104,7 +104,7 @@ object S3Requests {
      * `screen`, and an exception thrown there escaped the request loop — the client got a closed
      * socket without a single byte of answer and went off to diagnose the network.
      */
-    fun parseTaggingHeader(value: String): Map<String, String> {
+    public fun parseTaggingHeader(value: String): Map<String, String> {
         val tags = LinkedHashMap<String, String>()
         for (pair in value.split('&')) {
             if (pair.isEmpty()) continue
@@ -128,7 +128,7 @@ object S3Requests {
      * for something no server does. Accepting it and storing nothing would leave the client
      * believing its versions had stopped being kept.
      */
-    fun parseVersioning(body: ByteArray): ObjectStore.Versioning {
+    public fun parseVersioning(body: ByteArray): ObjectStore.Versioning {
         var status: String? = null
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
         reader.root("VersioningConfiguration") { name ->
@@ -150,7 +150,7 @@ object S3Requests {
      * document is well-formed and the number is nonsense, `InvalidRetentionPeriod`
      * (`test_object_lock_put_obj_lock_invalid_days:13378`).
      */
-    fun parseObjectLock(body: ByteArray): ObjectStore.ObjectLock {
+    public fun parseObjectLock(body: ByteArray): ObjectStore.ObjectLock {
         var status: String? = null
         var mode: String? = null
         var days: Int? = null
@@ -185,14 +185,14 @@ object S3Requests {
     }
 
     /** A period that parses and cannot be meant: separate from a malformed document on purpose. */
-    class InvalidRetentionPeriod(
+    public class InvalidRetentionPeriod(
         override val message: String,
     ) : RuntimeException(message)
 
-    val RETENTION_MODES = setOf("GOVERNANCE", "COMPLIANCE")
+    public val RETENTION_MODES: Set<String> = setOf("GOVERNANCE", "COMPLIANCE")
 
     /** `<Retention><Mode>…<RetainUntilDate>…` — an empty document means "take the retention off". */
-    fun parseRetention(body: ByteArray): ObjectStore.Retention? {
+    public fun parseRetention(body: ByteArray): ObjectStore.Retention? {
         var mode: String? = null
         var until: String? = null
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
@@ -224,7 +224,7 @@ object S3Requests {
     }
 
     /** `<LegalHold><Status>ON|OFF</Status></LegalHold>`. */
-    fun parseLegalHold(body: ByteArray): Boolean {
+    public fun parseLegalHold(body: ByteArray): Boolean {
         var status: String? = null
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
         reader.root("LegalHold") { name ->
@@ -247,7 +247,7 @@ object S3Requests {
      * `test_lifecycle_invalid_status:9037` expects the first, `test_lifecycle_id_too_long:9012` and
      * `test_lifecycle_same_id:9024` the second.
      */
-    fun parseLifecycle(body: ByteArray): Lifecycle {
+    public fun parseLifecycle(body: ByteArray): Lifecycle {
         val rules = ArrayList<Lifecycle.Rule>()
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
         reader.root("LifecycleConfiguration") { name ->
@@ -487,12 +487,12 @@ object S3Requests {
             .replace("-", "")
 
     /** The document parsed, and what it says cannot be carried out. `400 InvalidArgument`. */
-    class InvalidArgument(
+    public class InvalidArgument(
         override val message: String,
     ) : RuntimeException(message)
 
     /** `<CORSConfiguration><CORSRule>…` — `s3-service-2.json:2241`, `:2253`. */
-    fun parseCors(body: ByteArray): CorsRules {
+    public fun parseCors(body: ByteArray): CorsRules {
         val rules = ArrayList<CorsRules.Rule>()
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
         reader.root("CORSConfiguration") { name ->
@@ -521,7 +521,7 @@ object S3Requests {
         return CorsRules(rules)
     }
 
-    fun parseDelete(body: ByteArray): DeleteRequest {
+    public fun parseDelete(body: ByteArray): DeleteRequest {
         val targets = ArrayList<Target>()
         var quiet = false
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
@@ -568,7 +568,7 @@ object S3Requests {
      * `InvalidPartOrder` — but that is a 400 with a code, not a malformed document, and the
      * difference is what the client sees. Checked where the upload is completed (M-55).
      */
-    fun parseCompleteMultipartUpload(body: ByteArray): List<CompletedPart> {
+    public fun parseCompleteMultipartUpload(body: ByteArray): List<CompletedPart> {
         val parts = ArrayList<CompletedPart>()
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
 

@@ -33,14 +33,14 @@ import java.util.zip.CRC32C
  * unauthenticated-shaped input path even when the request is signed — the frames arrive before
  * they are verified.
  */
-class AwsChunkedDecoder(
+public class AwsChunkedDecoder(
     private val decodedLength: Long,
     private val signing: ChunkSigning?,
     private val expectedTrailers: List<String> = emptyList(),
     private val sink: (ByteArray, Int, Int) -> Unit,
 ) {
-    class MalformedBody(
-        val error: S3Error,
+    public class MalformedBody(
+        public val error: S3Error,
         message: String,
     ) : IllegalArgumentException(message)
 
@@ -57,11 +57,11 @@ class AwsChunkedDecoder(
     private val collectedTrailers = LinkedHashMap<String, String>()
     private val checksum = ObjectChecksum()
 
-    val trailers: Map<String, String> get() = collectedTrailers
+    public val trailers: Map<String, String> get() = collectedTrailers
 
-    val isComplete: Boolean get() = state == State.DONE
+    public val isComplete: Boolean get() = state == State.DONE
 
-    fun feed(
+    public fun feed(
         bytes: ByteArray,
         offset: Int = 0,
         length: Int = bytes.size,
@@ -80,7 +80,7 @@ class AwsChunkedDecoder(
     }
 
     /** Call when the sender is done: catches a body that stopped in the middle of a frame. */
-    fun finish() {
+    public fun finish() {
         if (state != State.DONE) throw MalformedBody(S3Error.INCOMPLETE_BODY, "body ended inside a frame")
         if (produced != decodedLength) {
             throw MalformedBody(

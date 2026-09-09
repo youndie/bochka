@@ -11,7 +11,7 @@ package io.github.youndie.bochka.s3.sigv4
  * built around a single key cannot run half the suite it is going to be measured by — and the
  * suite is the measure (Р6).
  */
-class Credentials(
+public class Credentials(
     keys: Map<String, String>,
     scopes: Map<String, KeyScope> = emptyMap(),
 ) {
@@ -31,17 +31,17 @@ class Credentials(
         require(keys.values.none { it.isBlank() }) { "a secret cannot be blank" }
     }
 
-    val ids: Set<String> get() = keys.keys
+    public val ids: Set<String> get() = keys.keys
 
     /** `null` when the key is unknown — the caller answers [S3Error.INVALID_ACCESS_KEY_ID]. */
-    fun secretFor(accessKeyId: String): String? = keys[accessKeyId]
+    public fun secretFor(accessKeyId: String): String? = keys[accessKeyId]
 
     /** Unrestricted for a key nobody narrowed, which is every key by default. */
-    fun scopeFor(accessKeyId: String): KeyScope = scopes[accessKeyId] ?: UNRESTRICTED
+    public fun scopeFor(accessKeyId: String): KeyScope = scopes[accessKeyId] ?: UNRESTRICTED
 
-    companion object {
+    public companion object {
         private val UNRESTRICTED = KeyScope()
 
-        fun of(vararg pairs: Pair<String, String>): Credentials = Credentials(pairs.toMap())
+        public fun of(vararg pairs: Pair<String, String>): Credentials = Credentials(pairs.toMap())
     }
 }

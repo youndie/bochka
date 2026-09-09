@@ -17,14 +17,14 @@ import java.security.SecureRandom
  * because without it a support request is not looked at; a server that omits it makes every one of
  * its failures unreportable.
  */
-object S3ErrorResponse {
-    class Rendered(
-        val status: Int,
-        val headers: List<Pair<String, String>>,
-        val body: ByteArray,
+public object S3ErrorResponse {
+    public class Rendered(
+        public val status: Int,
+        public val headers: List<Pair<String, String>>,
+        public val body: ByteArray,
     )
 
-    fun render(
+    public fun render(
         error: S3Error,
         resource: String,
         requestId: String = newRequestId(),
@@ -59,7 +59,7 @@ object S3ErrorResponse {
      * Sixteen hex characters, like the ones S3 hands out. Random rather than sequential: a counter
      * tells anybody who asks twice how many requests the server has served.
      */
-    fun newRequestId(): String {
+    public fun newRequestId(): String {
         val bytes = ByteArray(8)
         RANDOM.nextBytes(bytes)
         return buildString(16) {

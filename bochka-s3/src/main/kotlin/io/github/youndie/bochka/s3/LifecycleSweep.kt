@@ -25,7 +25,7 @@ import java.time.Instant
  * tags, sizes and tombstones would have to be explained to the core. The cost is one extra
  * `versions()` pass per key, and it is paid by a background thread once a period.
  */
-class LifecycleSweep(
+public class LifecycleSweep(
     private val store: ObjectStore,
     private val lifecycles: Lifecycles,
     /**
@@ -38,7 +38,7 @@ class LifecycleSweep(
     private val day: Duration = Lifecycle.DAY,
 ) {
     /** What the sweep did. Zero on all four is the ordinary outcome and not worth printing. */
-    data class Report(
+    public data class Report(
         val objects: Int = 0,
         val versions: Int = 0,
         val markers: Int = 0,
@@ -56,7 +56,7 @@ class LifecycleSweep(
      * `lastModified` the store stamped, and the two sides of that subtraction have to be the same
      * clock.
      */
-    fun sweep(now: Instant = store.clock()): Report {
+    public fun sweep(now: Instant = store.clock()): Report {
         var report = Report()
         for (bucket in store.bucketNames()) {
             val lifecycle = lifecycles.of(bucket) ?: continue

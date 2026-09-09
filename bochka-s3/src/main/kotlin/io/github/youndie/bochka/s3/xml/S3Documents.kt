@@ -18,7 +18,7 @@ import io.github.youndie.bochka.s3.UriCodec
  * Everything here is a pure function of its arguments. There is no storage behind it, which is what
  * lets the whole protocol layer be tested on recorded bytes (Р8).
  */
-object S3Documents {
+public object S3Documents {
     /** The two groups a canned ACL can name, spelled the way AWS spells them. */
     private const val ALL_USERS = "http://acs.amazonaws.com/groups/global/AllUsers"
 
@@ -27,12 +27,12 @@ object S3Documents {
     private val XSI_NAMESPACE = "xmlns:xsi" to "http://www.w3.org/2001/XMLSchema-instance"
 
     /** How keys are written in a listing: `encoding-type=url` was asked for, or it was not. */
-    enum class KeyEncoding {
+    public enum class KeyEncoding {
         NONE,
         URL,
     }
 
-    data class ObjectEntry(
+    public data class ObjectEntry(
         val key: ObjectKey,
         val lastModified: String,
         val eTag: String,
@@ -48,12 +48,12 @@ object S3Documents {
         val owner: String? = null,
     )
 
-    data class BucketEntry(
+    public data class BucketEntry(
         val name: String,
         val creationDate: String,
     )
 
-    data class PartEntry(
+    public data class PartEntry(
         val partNumber: Int,
         val lastModified: String,
         val eTag: String,
@@ -62,7 +62,7 @@ object S3Documents {
         val checksum: Pair<String, String>? = null,
     )
 
-    data class DeletedEntry(
+    public data class DeletedEntry(
         val key: ObjectKey,
         /**
          * The version the request named, when it named one.
@@ -82,7 +82,7 @@ object S3Documents {
         val deleteMarkerVersionId: String? = null,
     )
 
-    data class DeleteError(
+    public data class DeleteError(
         val key: ObjectKey,
         val code: String,
         val message: String,
@@ -106,7 +106,7 @@ object S3Documents {
      * next door records why: without that pair AWS support will not look at a report, so clients
      * carry them into their exceptions unconditionally.
      */
-    fun error(
+    public fun error(
         code: String,
         message: String,
         resource: String,
@@ -126,7 +126,7 @@ object S3Documents {
         }
 
     @Suppress("LongParameterList")
-    fun listBucketResult(
+    public fun listBucketResult(
         bucket: String,
         prefix: ByteArray?,
         delimiter: ByteArray?,
@@ -192,7 +192,7 @@ object S3Documents {
      * received, while a page that ended on a rolled-up prefix has no such key.
      */
     @Suppress("LongParameterList")
-    fun listObjectsResult(
+    public fun listObjectsResult(
         bucket: String,
         prefix: ByteArray,
         delimiter: ByteArray?,
@@ -247,7 +247,7 @@ object S3Documents {
      * object is the difference between a header-sized answer and a megabyte.
      */
     @Suppress("LongParameterList")
-    fun getObjectAttributesResult(
+    public fun getObjectAttributesResult(
         eTag: String?,
         checksum: Pair<String, String>?,
         checksumType: String?,
@@ -311,7 +311,7 @@ object S3Documents {
      * representation whichever way it was put — and `test_put_obj_with_tags:12281` compares the
      * document rather than the set.
      */
-    fun taggingResult(tags: Map<String, String>): ByteArray =
+    public fun taggingResult(tags: Map<String, String>): ByteArray =
         XmlWriter(128 + tags.size * 64).document("Tagging") {
             element("TagSet") {
                 for ((key, value) in tags.toSortedMap()) {
@@ -324,7 +324,7 @@ object S3Documents {
         }
 
     /** `<CORSConfiguration>` — `s3-service-2.json:2241`. */
-    fun corsResult(rules: io.github.youndie.bochka.s3.CorsRules): ByteArray =
+    public fun corsResult(rules: io.github.youndie.bochka.s3.CorsRules): ByteArray =
         XmlWriter(256 + rules.rules.size * 128).document("CORSConfiguration") {
             for (rule in rules.rules) {
                 element("CORSRule") {
@@ -346,7 +346,7 @@ object S3Documents {
      * compares what it put with what it got back, whole — so normalising one form into the other is
      * not tidying up, it is a different answer.
      */
-    fun lifecycleResult(lifecycle: Lifecycle): ByteArray =
+    public fun lifecycleResult(lifecycle: Lifecycle): ByteArray =
         XmlWriter(256 + lifecycle.rules.size * 256).document("LifecycleConfiguration") {
             for (rule in lifecycle.rules) {
                 element("Rule") {
@@ -404,7 +404,7 @@ object S3Documents {
      * does, and it is the difference this repository has already paid for once: `NotImplemented`
      * reads to a client as "the server is broken", and it cost 837 cases on `?versions` in M3.
      */
-    fun versioningResult(state: ObjectStore.Versioning): ByteArray =
+    public fun versioningResult(state: ObjectStore.Versioning): ByteArray =
         XmlWriter(128).document("VersioningConfiguration") {
             when (state) {
                 ObjectStore.Versioning.ENABLED -> text("Status", "Enabled")
@@ -413,7 +413,7 @@ object S3Documents {
             }
         }
 
-    fun objectLockResult(lock: ObjectStore.ObjectLock): ByteArray =
+    public fun objectLockResult(lock: ObjectStore.ObjectLock): ByteArray =
         XmlWriter(256).document("ObjectLockConfiguration") {
             text("ObjectLockEnabled", "Enabled")
             if (lock.defaultMode != null) {
@@ -433,7 +433,7 @@ object S3Documents {
      * The object is there; what is absent is a rule about it, and those are different facts. The
      * same distinction the bucket sub-resources already draw.
      */
-    fun retentionResult(retention: ObjectStore.Retention?): ByteArray =
+    public fun retentionResult(retention: ObjectStore.Retention?): ByteArray =
         XmlWriter(192).document("Retention") {
             if (retention != null) {
                 text("Mode", retention.mode)
@@ -446,7 +446,7 @@ object S3Documents {
             }
         }
 
-    fun legalHoldResult(held: Boolean): ByteArray =
+    public fun legalHoldResult(held: Boolean): ByteArray =
         XmlWriter(128).document("LegalHold") {
             text("Status", if (held) "ON" else "OFF")
         }
@@ -464,7 +464,7 @@ object S3Documents {
      * [XmlWriter.text] over a `Boolean` spells it that way, which is why the flag is not formatted
      * here.
      */
-    fun policyStatusResult(isPublic: Boolean): ByteArray =
+    public fun policyStatusResult(isPublic: Boolean): ByteArray =
         XmlWriter(96).document("PolicyStatus") {
             text("IsPublic", isPublic)
         }
@@ -484,7 +484,7 @@ object S3Documents {
      *
      * The group URIs are AWS's own constants, and are what botocore compares against.
      */
-    fun accessControlPolicy(
+    public fun accessControlPolicy(
         ownerId: String,
         ownerDisplayName: String,
         acl: String? = null,
@@ -571,7 +571,7 @@ object S3Documents {
         }
     }
 
-    fun listAllMyBucketsResult(
+    public fun listAllMyBucketsResult(
         buckets: List<BucketEntry>,
         ownerId: String,
         ownerDisplayName: String,
@@ -613,7 +613,7 @@ object S3Documents {
      * finishes, with the outcome in the body. bochka copies before answering, so the status is
      * always the true one — the same choice as `CompleteMultipartUpload` and for the same reason.
      */
-    fun copyObjectResult(
+    public fun copyObjectResult(
         eTag: String,
         lastModified: String,
     ): ByteArray =
@@ -629,7 +629,7 @@ object S3Documents {
      * `204` and no body at all. `Location` is here because the browser that posted has no other way
      * to learn where the object landed.
      */
-    fun postResponse(
+    public fun postResponse(
         location: String,
         bucket: String,
         key: String,
@@ -648,7 +648,7 @@ object S3Documents {
         }
 
     /** `<CopyPartResult>` — the answer to `UploadPartCopy`, and the same shape as a copy's. */
-    fun copyPartResult(
+    public fun copyPartResult(
         eTag: String,
         lastModified: String,
     ): ByteArray =
@@ -657,7 +657,7 @@ object S3Documents {
             text("ETag", eTag)
         }
 
-    fun initiateMultipartUploadResult(
+    public fun initiateMultipartUploadResult(
         bucket: String,
         key: ObjectKey,
         uploadId: String,
@@ -676,7 +676,7 @@ object S3Documents {
      * `s3-service-2.json`, which makes them elements. An SDK reads them from there and nowhere
      * else, so the same value in a header would be invisible to it.
      */
-    fun completeMultipartUploadResult(
+    public fun completeMultipartUploadResult(
         location: String,
         bucket: String,
         key: ObjectKey,
@@ -696,7 +696,7 @@ object S3Documents {
         }
 
     @Suppress("LongParameterList")
-    fun listPartsResult(
+    public fun listPartsResult(
         bucket: String,
         key: ObjectKey,
         uploadId: String,
@@ -731,7 +731,7 @@ object S3Documents {
             }
         }
 
-    data class UploadEntry(
+    public data class UploadEntry(
         val key: ObjectKey,
         val uploadId: String,
         val initiated: String,
@@ -754,7 +754,7 @@ object S3Documents {
      * `AbortMultipartUpload` is how they go (M-57).
      */
     @Suppress("LongParameterList")
-    fun listMultipartUploadsResult(
+    public fun listMultipartUploadsResult(
         bucket: String,
         prefix: ByteArray,
         delimiter: ByteArray?,
@@ -798,7 +798,7 @@ object S3Documents {
      * holds no bytes, so it has neither `ETag` nor `Size`. Emitting them as zero would let a client
      * compare a tombstone against an empty object and find them equal.
      */
-    data class VersionEntry(
+    public data class VersionEntry(
         val key: ObjectKey,
         val versionId: String,
         val isLatest: Boolean,
@@ -823,7 +823,7 @@ object S3Documents {
      * here errored 837 of 838 tests without any of them reaching the thing they check.
      */
     @Suppress("LongParameterList")
-    fun listVersionsResult(
+    public fun listVersionsResult(
         bucket: String,
         prefix: ByteArray?,
         delimiter: ByteArray?,
@@ -879,7 +879,7 @@ object S3Documents {
      * `<DeleteResult>`. In quiet mode the successes are left out and only the failures are
      * reported; the caller decides, this only writes what it is given.
      */
-    fun deleteResult(
+    public fun deleteResult(
         deleted: List<DeletedEntry>,
         errors: List<DeleteError>,
     ): ByteArray =

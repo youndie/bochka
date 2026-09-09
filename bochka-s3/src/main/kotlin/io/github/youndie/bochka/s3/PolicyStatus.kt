@@ -20,7 +20,7 @@ package io.github.youndie.bochka.s3
  * looser: an answer of `false` about a bucket that is in fact open is the one error here that
  * hurts, because it is read by somebody checking whether they have a leak.
  */
-object PolicyStatus {
+public object PolicyStatus {
     /**
      * `IsPublic` for a bucket with this [acl] and this [policy] (`null` when it has none).
      *
@@ -28,7 +28,7 @@ object PolicyStatus {
      * `s3:ListBucket` to `*` is public because of the policy; a bucket with no policy at all and
      * `public-read` on it is public because of the ACL.
      */
-    fun isPublic(
+    public fun isPublic(
         acl: String?,
         policy: BucketPolicy.Policy?,
     ): Boolean = aclIsPublic(acl) || (policy != null && BucketPolicy.isPublic(policy))
@@ -47,7 +47,7 @@ object PolicyStatus {
      * named an ACL for reads as `private` and is not public
      * (`test_get_bucket_policy_status:14086`).
      */
-    fun aclIsPublic(acl: String?): Boolean =
+    public fun aclIsPublic(acl: String?): Boolean =
         when (AccessControl.Canned.of(acl)) {
             AccessControl.Canned.PUBLIC_READ,
             AccessControl.Canned.PUBLIC_READ_WRITE,

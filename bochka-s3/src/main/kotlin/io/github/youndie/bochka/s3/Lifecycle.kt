@@ -35,10 +35,10 @@ import java.time.temporal.ChronoUnit
  * Refusing the document would also have been defensible — but then a rule the client believes is in
  * place is not in place, and it finds out from a deletion that never happened.
  */
-data class Lifecycle(
+public data class Lifecycle(
     val rules: List<Rule>,
 ) {
-    data class Rule(
+    public data class Rule(
         val id: String,
         val enabled: Boolean,
         /** The rule's own `<Prefix>` — the old form, marked `deprecated` in the model. */
@@ -56,7 +56,7 @@ data class Lifecycle(
          * `tom=sawyer` means "there is a tag with this key and this value" rather than "such a pair
          * exists somewhere among the duplicates".
          */
-        fun matches(
+        public fun matches(
             key: ObjectKey,
             size: Long,
             tags: Map<String, String>,
@@ -80,11 +80,11 @@ data class Lifecycle(
          * Which prefix the rule names, whichever place it names it in. For abandoned uploads: a
          * multipart upload has neither a size nor tags, so this is all of a filter that reaches it.
          */
-        fun statedPrefix(): String? = prefix ?: filter?.prefix ?: filter?.and?.prefix
+        public fun statedPrefix(): String? = prefix ?: filter?.prefix ?: filter?.and?.prefix
     }
 
     /** `LifecycleRuleFilter` (`:7960`). */
-    data class Filter(
+    public data class Filter(
         val prefix: String? = null,
         val tags: List<Tag> = emptyList(),
         val sizeGreaterThan: Long? = null,
@@ -93,14 +93,14 @@ data class Lifecycle(
     )
 
     /** `LifecycleRuleAndOperator` (`:7936`) — the same thing, with a list of tags. */
-    data class And(
+    public data class And(
         val prefix: String? = null,
         val tags: List<Tag> = emptyList(),
         val sizeGreaterThan: Long? = null,
         val sizeLessThan: Long? = null,
     )
 
-    data class Tag(
+    public data class Tag(
         val key: String,
         val value: String,
     )
@@ -113,7 +113,7 @@ data class Lifecycle(
      * `Days`/`Date` are about the object itself, `ExpiredObjectDeleteMarker` about a tombstone with
      * no versions left under it.
      */
-    data class Expiration(
+    public data class Expiration(
         val days: Int? = null,
         val date: Instant? = null,
         val expiredObjectDeleteMarker: Boolean = false,
@@ -126,7 +126,7 @@ data class Lifecycle(
      * of age: `NewerNoncurrentVersions: 5` with ten versions keeps the current one and the five
      * below it, and deletes the bottom four.
      */
-    data class Noncurrent(
+    public data class Noncurrent(
         val days: Int,
         val newerVersions: Int? = null,
     )
@@ -143,7 +143,7 @@ data class Lifecycle(
      * choosing between them would be pretending that a document which should never have arrived
      * means something.
      */
-    fun expiryOf(
+    public fun expiryOf(
         key: ObjectKey,
         size: Long,
         tags: Map<String, String>,
@@ -159,15 +159,15 @@ data class Lifecycle(
         return null
     }
 
-    companion object {
+    public companion object {
         /**
          * How long a "day" lasts by default — twenty-four hours, the only value at which rounding
          * to midnight means anything.
          */
-        val DAY: Duration = Duration.ofDays(1)
+        public val DAY: Duration = Duration.ofDays(1)
 
         /** The `ID` length bound (`shapes.ID`, the `PutBucketLifecycleConfiguration` docs). */
-        const val MAX_ID_LENGTH: Int = 255
+        public const val MAX_ID_LENGTH: Int = 255
 
         /**
          * The instant a rule's term expires, or `null` if the rule is about a tombstone rather than
@@ -179,7 +179,7 @@ data class Lifecycle(
          * `BOCHKA_LIFECYCLE_DAY_SECONDS`) there is no calendar at all, and rounding to midnight
          * would push the term a whole day out — which would undo the shortening.
          */
-        fun expiresAt(
+        public fun expiresAt(
             expiration: Expiration,
             created: Instant,
             day: Duration,

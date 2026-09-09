@@ -20,26 +20,26 @@ import java.util.Locale
  * Two ways in, both handled here because they differ in four small places and nowhere else: the
  * `Authorization` header, and a presigned URL where the same fields travel in the query.
  */
-class SignatureVerifier(
+public class SignatureVerifier(
     /**
      * Public because one operation carries its signature outside the headers: the upload form of
      * `POST /<bucket>` signs a policy that lives in the body, and the check happens after the body
      * has been parsed rather than in [verify]. The keys are handed out, not the secrets —
      * [Credentials] answers only `secretFor`.
      */
-    val credentials: Credentials,
+    public val credentials: Credentials,
     /** Public for the same reason as [credentials]: the form's credential scope names a region. */
-    val region: String = "us-east-1",
+    public val region: String = "us-east-1",
     private val clock: Clock = Clock.systemUTC(),
     private val skew: Duration = MAX_SKEW,
 ) {
-    sealed interface Result {
+    public sealed interface Result {
         /**
          * [payloadHash] is what the canonical request was built with — the literal value of
          * `x-amz-content-sha256`. The body path reads it to learn which of the four framings to
          * expect (research, §1.1), so it travels on rather than being thrown away.
          */
-        data class Ok(
+        public data class Ok(
             val accessKeyId: String,
             val payloadHash: String,
             /**
@@ -62,7 +62,7 @@ class SignatureVerifier(
          * minute and guessing for a day: with both canonical requests side by side the diff is one
          * line. There is nothing secret in them — every byte came from the caller's own request.
          */
-        data class Failure(
+        public data class Failure(
             val error: S3Error,
             val detail: String,
             val canonicalRequest: String? = null,
@@ -83,10 +83,10 @@ class SignatureVerifier(
          * what with that is the access model's answer, and while the server's switch is off the
          * answer is nobody.
          */
-        data object Anonymous : Result
+        public data object Anonymous : Result
     }
 
-    fun verify(request: CanonicalRequest.Request): Result {
+    public fun verify(request: CanonicalRequest.Request): Result {
         val query = QueryParams(request.query)
         return if (query["X-Amz-Algorithm"] != null) {
             verifyPresigned(request, query)
@@ -337,29 +337,29 @@ class SignatureVerifier(
             String(UriCodec.decode(component, plusIsSpace = true), Charsets.UTF_8)
     }
 
-    companion object {
+    public companion object {
         /**
          * 15 minutes, the same window the reference server allows (`cmd/globals.go:98`). Wider
          * makes a stolen request replayable for longer; narrower starts refusing honest clients
          * whose clock is merely bad.
          */
-        val MAX_SKEW: Duration = Duration.ofMinutes(15)
+        public val MAX_SKEW: Duration = Duration.ofMinutes(15)
 
         /** Seven days (`smithy-typescript`, `MAX_PRESIGNED_TTL`). */
-        const val MAX_PRESIGN_TTL_SECONDS: Long = 604_800
+        public const val MAX_PRESIGN_TTL_SECONDS: Long = 604_800
 
-        const val UNSIGNED_PAYLOAD: String = "UNSIGNED-PAYLOAD"
+        public const val UNSIGNED_PAYLOAD: String = "UNSIGNED-PAYLOAD"
 
         /** The framings whose chunks carry signatures (research, §1.1). */
-        const val STREAMING_SIGNED: String = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
-        const val STREAMING_SIGNED_TRAILER: String = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"
+        public const val STREAMING_SIGNED: String = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD"
+        public const val STREAMING_SIGNED_TRAILER: String = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER"
 
         /** Frames without signatures, checksum in the trailer. What modern SDKs send by default. */
-        const val STREAMING_UNSIGNED_TRAILER: String = "STREAMING-UNSIGNED-PAYLOAD-TRAILER"
+        public const val STREAMING_UNSIGNED_TRAILER: String = "STREAMING-UNSIGNED-PAYLOAD-TRAILER"
 
-        val SIGNED_STREAMING: Set<String> = setOf(STREAMING_SIGNED, STREAMING_SIGNED_TRAILER)
+        public val SIGNED_STREAMING: Set<String> = setOf(STREAMING_SIGNED, STREAMING_SIGNED_TRAILER)
 
-        val ALL_STREAMING: Set<String> = SIGNED_STREAMING + STREAMING_UNSIGNED_TRAILER
+        public val ALL_STREAMING: Set<String> = SIGNED_STREAMING + STREAMING_UNSIGNED_TRAILER
 
         private val TIMESTAMP: DateTimeFormatter =
             DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC)
