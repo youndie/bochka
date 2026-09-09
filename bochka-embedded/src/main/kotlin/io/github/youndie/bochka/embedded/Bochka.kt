@@ -42,7 +42,7 @@ import java.time.Duration
  * it here rather than choosing silently, because a store that quietly does not flush is the kind
  * of default somebody finds out about in production.
  */
-class Bochka private constructor(
+public class Bochka private constructor(
     private val store: ObjectStore,
     private val server: HttpServer,
     private val failures: InjectedFailures,
@@ -50,20 +50,20 @@ class Bochka private constructor(
     private val ownsRoot: Boolean,
     private val lifecycle: LifecycleSweep,
     private val lifecycleThread: java.util.concurrent.ScheduledExecutorService,
-    val accessKeyId: String,
-    val secretKey: String,
-    val region: String,
+    public val accessKeyId: String,
+    public val secretKey: String,
+    public val region: String,
 ) : Closeable {
-    val port: Int get() = server.boundPort
+    public val port: Int get() = server.boundPort
 
     /** `http://127.0.0.1:<port>`, which is what an SDK wants as its endpoint override. */
-    val endpoint: String get() = "http://127.0.0.1:$port"
+    public val endpoint: String get() = "http://127.0.0.1:$port"
 
     /** Where the objects are, for a test that wants to look at the disk rather than through S3. */
-    val dataDirectory: Path get() = root
+    public val dataDirectory: Path get() = root
 
     /** How many objects exist right now, without listing anything. */
-    val objectCount: Int get() = store.objectCount
+    public val objectCount: Int get() = store.objectCount
 
     /**
      * Which buckets exist — for an assertion in a test rather than for work.
@@ -72,7 +72,7 @@ class Bochka private constructor(
      * assertion starts depending on two things instead of one. A test that failed on the signature
      * says nothing about buckets.
      */
-    val bucketNames: List<String> get() = store.bucketNames()
+    public val bucketNames: List<String> get() = store.bucketNames()
 
     /**
      * Forgets everything without restarting the server: the port, the endpoint and the keys stay
@@ -83,7 +83,7 @@ class Bochka private constructor(
      * cleared too — otherwise a refusal set up in one test fires in the next, and it gets hunted
      * for where it was never set up.
      */
-    fun reset() {
+    public fun reset() {
         store.reset()
         failures.clear()
     }
@@ -96,7 +96,7 @@ class Bochka private constructor(
      * Here the sweep is called and finishes before returning: a rule with a term of one "day" and
      * `lifecycleDay = Duration.ofMillis(1)` is checked without a single pause.
      */
-    fun sweepLifecycle(): LifecycleSweep.Report = lifecycle.sweep()
+    public fun sweepLifecycle(): LifecycleSweep.Report = lifecycle.sweep()
 
     /**
      * Puts an object directly, bypassing HTTP: a fixture for a test that starts **from a state**.
@@ -106,7 +106,7 @@ class Bochka private constructor(
      * calls and the first minute of its reader's attention.
      */
     @JvmOverloads
-    fun put(
+    public fun put(
         bucket: String,
         key: String,
         content: ByteArray,
@@ -141,10 +141,10 @@ class Bochka private constructor(
      * that code.
      */
     @JvmOverloads
-    fun failNext(
+    public fun failNext(
         status: Int = 503,
         times: Int = 1,
-    ) = failures.failNext(status, times)
+    ): Unit = failures.failNext(status, times)
 
     override fun close() {
         lifecycleThread.shutdownNow()
@@ -157,9 +157,9 @@ class Bochka private constructor(
         }
     }
 
-    companion object {
-        const val DEFAULT_ACCESS_KEY_ID = "bochkaadmin"
-        const val DEFAULT_SECRET_KEY = "bochkasecret"
+    public companion object {
+        public const val DEFAULT_ACCESS_KEY_ID: String = "bochkaadmin"
+        public const val DEFAULT_SECRET_KEY: String = "bochkasecret"
 
         /**
          * Starts one. The port is chosen by the operating system unless [port] says otherwise.
@@ -169,7 +169,7 @@ class Bochka private constructor(
          */
         @JvmStatic
         @JvmOverloads
-        fun start(
+        public fun start(
             port: Int = 0,
             directory: Path? = null,
             accessKeyId: String = DEFAULT_ACCESS_KEY_ID,

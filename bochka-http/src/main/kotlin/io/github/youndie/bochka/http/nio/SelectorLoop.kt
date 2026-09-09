@@ -28,7 +28,7 @@ import kotlin.coroutines.resumeWithException
  * the [Selector.wakeup] after each post. Skipping that wakeup does not fail; it hangs, once, under
  * load, in a way that looks like a slow client.
  */
-class SelectorLoop : Closeable {
+public class SelectorLoop : Closeable {
     private val selector: Selector = Selector.open()
     private val pending = ConcurrentLinkedQueue<() -> Unit>()
     private val closed = AtomicBoolean(false)
@@ -40,7 +40,7 @@ class SelectorLoop : Closeable {
         }
 
     /** Registers [channel] with no interest yet. The key is the handle used by the await calls. */
-    fun register(channel: SelectableChannel): SelectionKey {
+    public fun register(channel: SelectableChannel): SelectionKey {
         channel.configureBlocking(false)
         // Registration also has to happen on the loop thread: `register` blocks against a
         // concurrent `select()` on some JDK implementations, which is a deadlock rather than a
@@ -57,13 +57,13 @@ class SelectorLoop : Closeable {
     }
 
     /** Suspends until [key]'s channel can be read from. */
-    suspend fun awaitReadable(key: SelectionKey) = await(key, SelectionKey.OP_READ)
+    public suspend fun awaitReadable(key: SelectionKey): Unit = await(key, SelectionKey.OP_READ)
 
     /** Suspends until [key]'s channel can be written to. */
-    suspend fun awaitWritable(key: SelectionKey) = await(key, SelectionKey.OP_WRITE)
+    public suspend fun awaitWritable(key: SelectionKey): Unit = await(key, SelectionKey.OP_WRITE)
 
     /** Suspends until [key]'s channel has a connection to accept. */
-    suspend fun awaitAcceptable(key: SelectionKey) = await(key, SelectionKey.OP_ACCEPT)
+    public suspend fun awaitAcceptable(key: SelectionKey): Unit = await(key, SelectionKey.OP_ACCEPT)
 
     private suspend fun await(
         key: SelectionKey,

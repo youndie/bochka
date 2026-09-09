@@ -26,10 +26,10 @@ import java.util.Properties
  * this run's. A key is spelled `data.dir` in the file and `BOCHKA_DATA_DIR` in the environment,
  * and the mapping between them is mechanical rather than a table somebody maintains.
  */
-class Configuration private constructor(
+public class Configuration private constructor(
     private val values: Map<String, String>,
 ) {
-    class Refused(
+    public class Refused(
         override val message: String,
     ) : RuntimeException(message)
 
@@ -39,10 +39,10 @@ class Configuration private constructor(
      * The documentation lives here rather than in a README because it is what the process prints
      * when it refuses to start, and a README does not reach the person reading a container log.
      */
-    enum class Key(
-        val property: String,
-        val default: String?,
-        val what: String,
+    public enum class Key(
+        public val property: String,
+        public val default: String?,
+        public val what: String,
     ) {
         PORT("port", "9000", "the port to listen on"),
         BIND_ADDRESS("bind.address", "127.0.0.1", "the address to bind; 0.0.0.0 to accept from anywhere"),
@@ -96,26 +96,26 @@ class Configuration private constructor(
         ;
 
         /** `data.dir` is `BOCHKA_DATA_DIR`. Mechanical, so that neither list can drift from the other. */
-        val environment: String get() = "BOCHKA_" + property.uppercase().replace('.', '_')
+        public val environment: String get() = "BOCHKA_" + property.uppercase().replace('.', '_')
     }
 
-    operator fun get(key: Key): String? = values[key.property] ?: key.default
+    public operator fun get(key: Key): String? = values[key.property] ?: key.default
 
-    fun int(key: Key): Int? = get(key)?.trim()?.toIntOrNull()
+    public fun int(key: Key): Int? = get(key)?.trim()?.toIntOrNull()
 
-    fun long(key: Key): Long? = get(key)?.trim()?.toLongOrNull()
+    public fun long(key: Key): Long? = get(key)?.trim()?.toLongOrNull()
 
-    fun list(key: Key): List<String> =
+    public fun list(key: Key): List<String> =
         get(key)?.split(',')?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
 
     /** What the process prints at startup, so a log says what it is running with. */
-    fun describe(): String =
+    public fun describe(): String =
         Key.entries.joinToString("\n") { key ->
             val value = get(key)
             "  %-22s %s".format(key.property, (if (key == Key.KEYS) redact(value) else value) ?: "(unset)")
         }
 
-    companion object {
+    public companion object {
         /**
          * Keeps the shape of a value whose content has no business being in a log.
          *
@@ -168,7 +168,7 @@ class Configuration private constructor(
          */
         private const val HARNESS_PREFIX = "BOCHKA_MEASURE_"
 
-        fun load(
+        public fun load(
             environment: Map<String, String> = System.getenv(),
             configPath: String? = environment["BOCHKA_CONFIG"],
         ): Configuration {

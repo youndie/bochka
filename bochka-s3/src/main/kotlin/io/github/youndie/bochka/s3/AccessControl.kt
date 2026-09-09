@@ -24,7 +24,7 @@ package io.github.youndie.bochka.s3
  * names are accepted, and everything else is refused **by name** rather than stored and ignored —
  * a permission accepted and not enforced is discovered as a leak.
  */
-object AccessControl {
+public object AccessControl {
     /**
      * The canned ACLs this server understands, spelled as they travel.
      *
@@ -33,8 +33,8 @@ object AccessControl {
      * other. `log-delivery-write` is deliberately absent — it grants to a group, and groups are
      * the part of ACLs this server does not have.
      */
-    enum class Canned(
-        val wireName: String,
+    public enum class Canned(
+        public val wireName: String,
         /**
          * Whether this name is **public** in the sense `PublicAccessBlock` uses (M-227).
          *
@@ -44,7 +44,7 @@ object AccessControl {
          * `test_block_public_put_bucket_acls:14283` requires it refused beside the two `public-*`
          * names. The `bucket-owner-*` pair names one key each and is never public.
          */
-        val public: Boolean = false,
+        public val public: Boolean = false,
     ) {
         PRIVATE("private"),
         PUBLIC_READ("public-read", public = true),
@@ -54,8 +54,8 @@ object AccessControl {
         BUCKET_OWNER_FULL_CONTROL("bucket-owner-full-control"),
         ;
 
-        companion object {
-            fun of(name: String?): Canned? = entries.firstOrNull { it.wireName == name }
+        public companion object {
+            public fun of(name: String?): Canned? = entries.firstOrNull { it.wireName == name }
         }
     }
 
@@ -66,7 +66,7 @@ object AccessControl {
      * the last two are separate because a canned ACL that opens the data to everybody never opens
      * its own ACL to anybody: `public-read` is not "public-read-and-rewritable-permissions".
      */
-    enum class Permission {
+    public enum class Permission {
         READ,
         WRITE,
         READ_ACP,
@@ -81,7 +81,7 @@ object AccessControl {
      * has named one, and that reads as [Canned.PRIVATE]: an object written without an ACL into a
      * bucket that has one is private, which is what the suite means by "b gets default (private)".
      */
-    data class Resource(
+    public data class Resource(
         val owner: String?,
         val acl: String?,
     ) {
@@ -102,7 +102,7 @@ object AccessControl {
      * [bucketOwner] is needed only by the two `bucket-owner-*` names, and is the owner of the
      * bucket the object lives in — for a bucket resource it is the resource's own owner.
      */
-    fun allows(
+    public fun allows(
         resource: Resource,
         requester: String?,
         permission: Permission,
@@ -154,13 +154,13 @@ object AccessControl {
      * (`test_access_bucket_publicread_object_private`). The tempting model — "the object ACL
      * narrows the bucket ACL" — is wrong in both directions at once.
      */
-    fun allowsObjectRead(
+    public fun allowsObjectRead(
         obj: Resource,
         requester: String?,
         bucketOwner: String?,
     ): Boolean = allows(obj, requester, Permission.READ, bucketOwner)
 
-    fun allowsObjectWrite(
+    public fun allowsObjectWrite(
         bucket: Resource,
         requester: String?,
     ): Boolean = allows(bucket, requester, Permission.WRITE, bucket.owner)

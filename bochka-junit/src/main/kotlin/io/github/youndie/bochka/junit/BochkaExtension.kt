@@ -42,7 +42,7 @@ import org.junit.jupiter.api.extension.ExtensionContext
  * somebody else's work. For those, take one extension per test (`@RegisterExtension` on a
  * non-static field) — then the cost of starting is paid for isolation knowingly.
  */
-class BochkaExtension
+public class BochkaExtension
     @JvmOverloads
     constructor(
         private val durable: Boolean = false,
@@ -54,13 +54,13 @@ class BochkaExtension
 
         /** The running server. Asking for it before the start is a usage error rather than a
          *  `null`. */
-        val bochka: Bochka
+        public val bochka: Bochka
             get() = running ?: error("bochka is not up yet: the extension is registered but no test has started")
 
-        val endpoint: String get() = bochka.endpoint
-        val accessKeyId: String get() = bochka.accessKeyId
-        val secretKey: String get() = bochka.secretKey
-        val region: String get() = bochka.region
+        public val endpoint: String get() = bochka.endpoint
+        public val accessKeyId: String get() = bochka.accessKeyId
+        public val secretKey: String get() = bochka.secretKey
+        public val region: String get() = bochka.region
 
         override fun beforeAll(context: ExtensionContext) {
             running = Bochka.start(durable = durable, log = log)

@@ -19,7 +19,7 @@ import java.util.zip.Checksum
  * shifts right. Getting that backwards produces a well-formed checksum of the same length that
  * agrees with nothing, which is why the check value is a test and not a comment.
  */
-class Crc64Nvme : Checksum {
+public class Crc64Nvme : Checksum {
     private var crc: Long = INITIAL
 
     override fun update(b: Int) {

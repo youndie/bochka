@@ -28,7 +28,7 @@ import java.util.zip.CRC32C
  * `CRC32C` and not `CRC32`: the JDK compiles it to one instruction on any processor made this
  * century, and this runs over every byte of the index.
  */
-class RecordLog(
+public class RecordLog(
     private val path: Path,
 ) : Closeable {
     private val channel: FileChannel =
@@ -42,7 +42,7 @@ class RecordLog(
     private var end: Long = 0
 
     /** Bytes of log that recovery accepted; where the next record goes. */
-    val sizeBytes: Long get() = end
+    public val sizeBytes: Long get() = end
 
     /**
      * Reads what survived and hands each payload over, then truncates to the boundary it found.
@@ -51,7 +51,7 @@ class RecordLog(
      * half-record and leaves the rest of it behind, so a later recovery can find a valid header
      * followed by somebody else's bytes — the exact situation the framing exists to prevent.
      */
-    fun recover(consume: (ByteArray) -> Unit): Recovery {
+    public fun recover(consume: (ByteArray) -> Unit): Recovery {
         val size = channel.size()
         val window = Window(channel, size)
         var position = 0L
@@ -96,7 +96,7 @@ class RecordLog(
         return Recovery(records, position, size, stopped)
     }
 
-    fun append(payload: ByteArray): Long {
+    public fun append(payload: ByteArray): Long {
         require(payload.isNotEmpty()) { "a zero-length record would be indistinguishable from the end of the log" }
         val at = end
 
@@ -115,9 +115,9 @@ class RecordLog(
     }
 
     /** `fsync`. What turns "the kernel has it" into "the disk has it". */
-    fun force() = channel.force(false)
+    public fun force(): Unit = channel.force(false)
 
-    override fun close() = channel.close()
+    override fun close(): Unit = channel.close()
 
     private fun writeFully(
         buffer: ByteBuffer,
@@ -181,7 +181,7 @@ class RecordLog(
     }
 
     /** Why recovery stopped. Everything but [Stop.CLEAN] means the tail of the log was lost. */
-    enum class Stop {
+    public enum class Stop {
         CLEAN,
         TORN_WRITE,
         TRUNCATED_HEADER,
@@ -189,7 +189,7 @@ class RecordLog(
         CHECKSUM,
     }
 
-    data class Recovery(
+    public data class Recovery(
         val records: Long,
         val acceptedBytes: Long,
         val fileBytes: Long,
@@ -198,11 +198,11 @@ class RecordLog(
         val discardedBytes: Long get() = fileBytes - acceptedBytes
     }
 
-    companion object {
-        const val HEADER_BYTES = 8
+    public companion object {
+        public const val HEADER_BYTES: Int = 8
         private const val BUFFER_BYTES = 1024 * 1024
 
-        fun crc32c(payload: ByteArray): Int {
+        public fun crc32c(payload: ByteArray): Int {
             val crc = CRC32C()
             crc.update(payload)
             return crc.value.toInt()

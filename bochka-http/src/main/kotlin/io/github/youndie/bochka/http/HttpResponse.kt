@@ -10,7 +10,7 @@ import java.nio.charset.StandardCharsets
  * that can be five gigabytes, and reading it into a `ByteArray` to answer would defeat the point of
  * never holding one. The file case is what M-59 hands to `transferTo`.
  */
-data class HttpResponse(
+public data class HttpResponse(
     val status: Int,
     val reason: String,
     val headers: List<Pair<String, String>> = emptyList(),
@@ -43,7 +43,7 @@ data class HttpResponse(
      * it when it writes it, and a handler that opened it would have to close it on every path a
      * response can fail on.
      */
-    data class FileSlice(
+    public data class FileSlice(
         val path: java.nio.file.Path,
         val offset: Long,
         val length: Long,
@@ -67,8 +67,8 @@ data class HttpResponse(
      * socket on every byte of an object: allocating per chunk here is the one place in this server
      * where it would show.
      */
-    fun interface Filter {
-        fun apply(
+    public fun interface Filter {
+        public fun apply(
             buffer: ByteArray,
             offset: Int,
             length: Int,
@@ -76,7 +76,7 @@ data class HttpResponse(
     }
 
     /** Whether the body goes on the wire. `HEAD` answers with the headers of a `GET` and no body. */
-    fun render(withBody: Boolean = true): ByteArray {
+    public fun render(withBody: Boolean = true): ByteArray {
         val head =
             buildString {
                 append("HTTP/1.1 ")
@@ -120,10 +120,10 @@ data class HttpResponse(
         (((status * 31 + reason.hashCode()) * 31 + headers.hashCode()) * 31 + body.contentHashCode()) * 31 +
             close.hashCode()
 
-    companion object {
+    public companion object {
         private val EMPTY = ByteArray(0)
 
         /** The interim answer to `Expect: 100-continue`; it has no headers and no body by definition. */
-        val CONTINUE: ByteArray = "HTTP/1.1 100 Continue\r\n\r\n".toByteArray(StandardCharsets.ISO_8859_1)
+        public val CONTINUE: ByteArray = "HTTP/1.1 100 Continue\r\n\r\n".toByteArray(StandardCharsets.ISO_8859_1)
     }
 }

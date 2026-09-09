@@ -30,23 +30,23 @@ package io.github.youndie.bochka.http
  *   `ci/smuggling.sh` sends the same bytes to nginx and to this server, and nginx refused what
  *   this accepted.
  */
-class HttpRequestParser(
+public class HttpRequestParser(
     private val limits: Limits = Limits.DEFAULT,
 ) {
-    data class Limits(
+    public data class Limits(
         val requestLineBytes: Int,
         val headerLineBytes: Int,
         val headerCount: Int,
         val headBytes: Int,
     ) {
-        companion object {
+        public companion object {
             /**
              * Eight kilobytes for a line is what the common servers allow, and a presigned URL with
              * a long key plus its query is the honest case that needs room. The head as a whole is
              * bounded separately so that a thousand short headers cannot do what one long one
              * cannot.
              */
-            val DEFAULT =
+            public val DEFAULT: Limits =
                 Limits(
                     requestLineBytes = 8 * 1024,
                     headerLineBytes = 8 * 1024,
@@ -56,12 +56,12 @@ class HttpRequestParser(
         }
     }
 
-    class Malformed(
-        val status: Int,
+    public class Malformed(
+        public val status: Int,
         message: String,
     ) : IllegalArgumentException(message)
 
-    data class Head(
+    public data class Head(
         val method: String,
         val target: String,
         val version: String,
@@ -71,7 +71,7 @@ class HttpRequestParser(
 
         val query: String get() = target.substringAfter('?', "")
 
-        fun header(name: String): String? {
+        public fun header(name: String): String? {
             val found = headers.firstOrNull { it.first.equals(name, ignoreCase = true) }
             return found?.second
         }
@@ -119,16 +119,16 @@ class HttpRequestParser(
     private var consumed = 0
     private var complete = false
 
-    val isComplete: Boolean get() = complete
+    public val isComplete: Boolean get() = complete
 
-    var head: Head? = null
+    public var head: Head? = null
         private set
 
     /**
      * Consumes bytes until the head ends, and returns how many it took. Anything left over is the
      * body and belongs to the caller — the parser never looks at it.
      */
-    fun feed(
+    public fun feed(
         bytes: ByteArray,
         offset: Int = 0,
         length: Int = bytes.size,

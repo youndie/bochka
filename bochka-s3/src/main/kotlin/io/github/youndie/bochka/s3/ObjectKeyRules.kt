@@ -17,19 +17,19 @@ import io.github.youndie.bochka.core.ObjectKey
  *
  * What remains are the two limits that come from S3 itself rather than from a disk.
  */
-object ObjectKeyRules {
+public object ObjectKeyRules {
     /**
      * 1024 bytes, and note that it is bytes and not characters — a key of 400 emoji is over the
      * limit. Absent from the machine model (`shapes.ObjectKey` states only `min: 1`), so it comes
      * from the prose documentation; recorded here rather than in a comment somewhere because it is
      * the kind of number that otherwise gets re-invented.
      */
-    const val MAX_LENGTH_BYTES: Int = 1024
+    public const val MAX_LENGTH_BYTES: Int = 1024
 
     /** Why a key was refused. `null` from [check] means it was not. */
-    enum class Rejection(
-        val code: String,
-        val message: String,
+    public enum class Rejection(
+        public val code: String,
+        public val message: String,
     ) {
         /**
          * The model gives `ObjectKey` a `min: 1`. In practice an empty key is unreachable through
@@ -58,7 +58,7 @@ object ObjectKeyRules {
         NOT_UTF8("InvalidURI", "Couldn't parse the specified URI"),
     }
 
-    fun check(key: ObjectKey): Rejection? =
+    public fun check(key: ObjectKey): Rejection? =
         when {
             key.size == 0 -> Rejection.EMPTY
             key.size > MAX_LENGTH_BYTES -> Rejection.TOO_LONG

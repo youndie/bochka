@@ -26,7 +26,7 @@ import java.util.Arrays
  * Instances are immutable: the array is copied in and copied out. The copy is paid once per key at
  * parse time, and it buys the only thing that makes a key usable as a map key at all.
  */
-class ObjectKey(
+public class ObjectKey(
     bytes: ByteArray,
 ) : Comparable<ObjectKey> {
     private val bytes: ByteArray = bytes.copyOf()
@@ -35,9 +35,9 @@ class ObjectKey(
     // change. Not lazy on purpose: a race on a lazy field would be a lock in the hot path.
     private val hash: Int = this.bytes.contentHashCode()
 
-    val size: Int get() = bytes.size
+    public val size: Int get() = bytes.size
 
-    fun toByteArray(): ByteArray = bytes.copyOf()
+    public fun toByteArray(): ByteArray = bytes.copyOf()
 
     /**
      * Unsigned byte order, which is what "lexicographical" means for a byte string.
@@ -59,8 +59,8 @@ class ObjectKey(
      */
     override fun toString(): String = String(bytes, StandardCharsets.UTF_8)
 
-    companion object {
+    public companion object {
         /** Encodes as UTF-8. Keys that arrive as text — from a test, or from a decoded URL path. */
-        fun of(text: String): ObjectKey = ObjectKey(text.toByteArray(StandardCharsets.UTF_8))
+        public fun of(text: String): ObjectKey = ObjectKey(text.toByteArray(StandardCharsets.UTF_8))
     }
 }

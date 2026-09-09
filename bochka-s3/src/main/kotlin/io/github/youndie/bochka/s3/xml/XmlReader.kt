@@ -15,7 +15,7 @@ package io.github.youndie.bochka.s3.xml
  * The reader is deliberately dumb about structure — it walks elements and hands out text — because
  * both documents are two levels deep. It is not a general parser and must not become one.
  */
-class XmlReader(
+public class XmlReader(
     private val text: String,
 ) {
     private var pos = 0
@@ -30,7 +30,7 @@ class XmlReader(
      */
     private var empty = false
 
-    class MalformedXmlException(
+    public class MalformedXmlException(
         message: String,
     ) : IllegalArgumentException(message)
 
@@ -40,7 +40,7 @@ class XmlReader(
      * in which case it is skipped whole — an unknown element is not an error, because S3 request
      * bodies grow members over time and refusing them would break clients that send newer ones.
      */
-    fun root(
+    public fun root(
         expected: String,
         onElement: (String) -> Unit,
     ) {
@@ -50,7 +50,7 @@ class XmlReader(
         children(onElement)
     }
 
-    fun children(onElement: (String) -> Unit) {
+    public fun children(onElement: (String) -> Unit) {
         // An element written `<Filter/>` has no children and no closing tag to walk to.
         if (empty) {
             empty = false
@@ -78,7 +78,7 @@ class XmlReader(
     }
 
     /** Text content of the element whose opening tag was just read, and its closing tag. */
-    fun textOf(name: String): String {
+    public fun textOf(name: String): String {
         // `<Prefix/>` is the empty string, and the empty string is a prefix: it means "every key".
         if (empty) {
             empty = false

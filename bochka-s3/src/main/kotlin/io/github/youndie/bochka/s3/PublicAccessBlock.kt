@@ -27,9 +27,9 @@ import java.nio.charset.StandardCharsets
  * account-level configuration here to combine with — S3 takes the most restrictive of bucket and
  * account, and this server has one level.
  */
-object PublicAccessBlock {
-    class Refused(
-        val error: S3Error,
+public object PublicAccessBlock {
+    public class Refused(
+        public val error: S3Error,
         override val message: String,
     ) : RuntimeException(message)
 
@@ -38,7 +38,7 @@ object PublicAccessBlock {
      * restriction: botocore sends only what its caller passed, and `Setting` has no default of its
      * own in the model.
      */
-    data class Configuration(
+    public data class Configuration(
         val blockPublicAcls: Boolean = false,
         val ignorePublicAcls: Boolean = false,
         val blockPublicPolicy: Boolean = false,
@@ -46,7 +46,7 @@ object PublicAccessBlock {
     )
 
     /** The name this configuration is stored under, and the query parameter it arrives on. */
-    const val NAME = "publicAccessBlock"
+    public const val NAME: String = "publicAccessBlock"
 
     private val MEMBERS =
         setOf("BlockPublicAcls", "IgnorePublicAcls", "BlockPublicPolicy", "RestrictPublicBuckets")
@@ -62,7 +62,7 @@ object PublicAccessBlock {
      * it is not. `TargetGrants` in [BucketLogging] is refused for the same reason and only when it
      * actually carries something.
      */
-    fun decode(body: ByteArray): Configuration {
+    public fun decode(body: ByteArray): Configuration {
         val settings = HashMap<String, Boolean>()
         val reader = XmlReader(body.toString(StandardCharsets.UTF_8))
         reader.root("PublicAccessBlockConfiguration") { field ->
@@ -98,7 +98,7 @@ object PublicAccessBlock {
      * `test_put_public_block:14277`. The same shape as `TargetObjectKeyFormat` in bucket logging:
      * a default here is a value, not an absence.
      */
-    fun encode(configuration: Configuration): ByteArray =
+    public fun encode(configuration: Configuration): ByteArray =
         XmlWriter(256).document("PublicAccessBlockConfiguration") {
             text("BlockPublicAcls", configuration.blockPublicAcls)
             text("IgnorePublicAcls", configuration.ignorePublicAcls)

@@ -12,7 +12,7 @@ package io.github.youndie.bochka.core
  * case-insensitive, so `x-amz-meta-Foo` and `x-amz-meta-foo` are one entry, and keeping both would
  * mean the object has two values for the same metadata depending on how the client asked.
  */
-data class Metadata(
+public data class Metadata(
     val contentType: String? = null,
     val cacheControl: String? = null,
     val contentDisposition: String? = null,
@@ -38,14 +38,14 @@ data class Metadata(
      */
     val tags: Map<String, String> = emptyMap(),
 ) {
-    data class Checksum(
+    public data class Checksum(
         /** Lowercase, as it appears in the header name: `crc32`, `crc32c`, `sha1`, `sha256`. */
         val algorithm: String,
         /** Base64, exactly as the client sent it. */
         val value: String,
     )
 
-    companion object {
-        val EMPTY = Metadata()
+    public companion object {
+        public val EMPTY: Metadata = Metadata()
     }
 }

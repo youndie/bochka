@@ -18,15 +18,15 @@ import java.lang.management.ManagementFactory
  * different verdicts about the same code. Two variants run in the same process, minutes apart, on
  * the same files, and what is published is how they compare.
  */
-class Measurement(
-    val name: String,
-    val bytes: Long,
-    val wallNanos: Long,
-    val cpuNanos: Long,
+public class Measurement(
+    public val name: String,
+    public val bytes: Long,
+    public val wallNanos: Long,
+    public val cpuNanos: Long,
 ) {
-    val gibibytes: Double get() = bytes / (1024.0 * 1024 * 1024)
-    val cpuSecondsPerGiB: Double get() = (cpuNanos / 1e9) / gibibytes
-    val gibPerSecond: Double get() = gibibytes / (wallNanos / 1e9)
+    public val gibibytes: Double get() = bytes / (1024.0 * 1024 * 1024)
+    public val cpuSecondsPerGiB: Double get() = (cpuNanos / 1e9) / gibibytes
+    public val gibPerSecond: Double get() = gibibytes / (wallNanos / 1e9)
 
     override fun toString(): String =
         "%-34s %8.3f GiB  %7.3f s wall  %7.3f s cpu  %6.3f cpu-s/GiB  %6.2f GiB/s".format(
@@ -38,7 +38,7 @@ class Measurement(
             gibPerSecond,
         )
 
-    companion object {
+    public companion object {
         private val threads = ManagementFactory.getThreadMXBean()
 
         /**
@@ -50,7 +50,7 @@ class Measurement(
          * system time, which is where `sendfile` does its work — a measurement that counted only
          * user time would report zero-copy as free and be wrong in the other direction.
          */
-        inline fun of(
+        public inline fun of(
             name: String,
             bytes: Long,
             work: () -> Unit,
@@ -62,7 +62,7 @@ class Measurement(
             return Measurement(name, bytes, wall, currentThreadCpuNanos() - cpuBefore)
         }
 
-        fun currentThreadCpuNanos(): Long =
+        public fun currentThreadCpuNanos(): Long =
             if (threads.isCurrentThreadCpuTimeSupported) threads.currentThreadCpuTime else 0L
 
         /**
@@ -77,7 +77,7 @@ class Measurement(
          * The spread is printed rather than smoothed away: a variant that varies by half is not a
          * variant with a value, and saying so is the honest output.
          */
-        inline fun repeated(
+        public inline fun repeated(
             name: String,
             bytes: Long,
             times: Int = 3,
@@ -88,7 +88,7 @@ class Measurement(
         }
 
         /** `b` against `a`, which is the only form a claim about performance is made in here. */
-        fun compare(
+        public fun compare(
             a: Measurement,
             b: Measurement,
         ): String =
@@ -102,14 +102,14 @@ class Measurement(
 }
 
 /** A variant measured more than once: the median, and how far the runs were apart. */
-class Repeated(
-    val name: String,
-    val median: Measurement,
-    val fastest: Measurement,
-    val slowest: Measurement,
+public class Repeated(
+    public val name: String,
+    public val median: Measurement,
+    public val fastest: Measurement,
+    public val slowest: Measurement,
 ) {
     /** How much the runs disagreed. Anything much above 1 means the stand, not the code. */
-    val spread: Double get() = slowest.cpuSecondsPerGiB / fastest.cpuSecondsPerGiB
+    public val spread: Double get() = slowest.cpuSecondsPerGiB / fastest.cpuSecondsPerGiB
 
     override fun toString(): String {
         val line =

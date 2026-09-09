@@ -23,7 +23,7 @@ package io.github.youndie.bochka.s3
  * (`minio/minio`, `cmd/api-utils.go:28-44`), whose own comment lists the exceptions: "Avoid
  * encoding '/' and '*'", "Force encoding of '~'".
  */
-object UriCodec {
+public object UriCodec {
     /**
      * The URI cannot be read. `400 InvalidURI`, and typed so that the layer above can say so.
      *
@@ -33,7 +33,7 @@ object UriCodec {
      * a URI cost five requests and taught nobody anything. Found by fuzzing `S3Router.route`
      * (M-258), which throws nothing of its own and reaches here through `parseQuery`.
      */
-    class Malformed(
+    public class Malformed(
         override val message: String,
     ) : IllegalArgumentException(message)
 
@@ -54,7 +54,7 @@ object UriCodec {
      *   line as ISO-8859-1 and every byte survives. A char above 0xFF means somebody decoded it as
      *   UTF-8 first and the original bytes are already gone.
      */
-    fun decode(
+    public fun decode(
         raw: String,
         plusIsSpace: Boolean = false,
     ): ByteArray {
@@ -98,7 +98,7 @@ object UriCodec {
      * Unreserved is `A-Za-z0-9-_.~`; `/` stays because it separates segments. Checked against
      * `docs/spec/s3-signing-vectors/key-encoding`.
      */
-    fun encodePath(bytes: ByteArray): String = encode(bytes, spaceAsPlus = false, ::unreservedOnPath)
+    public fun encodePath(bytes: ByteArray): String = encode(bytes, spaceAsPlus = false, ::unreservedOnPath)
 
     /**
      * Bytes to the form a listing uses when the caller asked for `encoding-type=url`.
@@ -114,7 +114,7 @@ object UriCodec {
      * this codec encoded and decoded `+` the same way, so every test written against it passed.
      * Only a client that did not share the mistake could find it.
      */
-    fun encodeForListing(bytes: ByteArray): String = encode(bytes, spaceAsPlus = false, ::unreservedInListing)
+    public fun encodeForListing(bytes: ByteArray): String = encode(bytes, spaceAsPlus = false, ::unreservedInListing)
 
     /**
      * Bytes to a query component, for canonicalising a request before checking its signature.
@@ -123,7 +123,7 @@ object UriCodec {
      * it is a value rather than a separator (`docs/spec/reference/botocore-auth.py:268`). This is
      * the third rule in this class and the narrowest of them.
      */
-    fun encodeQueryComponent(bytes: ByteArray): String = encode(bytes, spaceAsPlus = false, ::unreservedInQuery)
+    public fun encodeQueryComponent(bytes: ByteArray): String = encode(bytes, spaceAsPlus = false, ::unreservedInQuery)
 
     private inline fun encode(
         bytes: ByteArray,

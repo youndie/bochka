@@ -27,7 +27,7 @@ package io.github.youndie.bochka.core
  * Here it can, just worse, and a person is entitled to raise the heap. They are not entitled to
  * not be told.
  */
-object GcProfile {
+public object GcProfile {
     /**
      * The collector the numbers in `docs/measurements.md` were taken under, and the one the
      * distribution sets.
@@ -40,7 +40,7 @@ object GcProfile {
      * that number (M-148). ParallelGC was refused by the measurement rather than by taste — 139
      * full collections in one run and stalls up to 992 ms.
      */
-    const val MEASURED_COLLECTOR = "Serial"
+    public const val MEASURED_COLLECTOR: String = "Serial"
 
     /**
      * The largest heap the shipped collector was measured on and found acceptable.
@@ -51,10 +51,10 @@ object GcProfile {
      * roughly two seconds. Above it nothing breaks; it stops being a number this project has stood
      * behind.
      */
-    const val MEASURED_HEAP_BYTES = 1024L * 1024 * 1024
+    public const val MEASURED_HEAP_BYTES: Long = 1024L * 1024 * 1024
 
     /** What the process is running under, as the JVM reports it: `Serial`, `Parallel`, `G1`, `Z`. */
-    fun collector(): String {
+    public fun collector(): String {
         val names =
             java.lang.management.ManagementFactory
                 .getGarbageCollectorMXBeans()
@@ -70,7 +70,7 @@ object GcProfile {
     }
 
     /** The line printed at startup beside the object ceiling. */
-    fun describe(
+    public fun describe(
         collector: String = collector(),
         heapBytes: Long = Runtime.getRuntime().maxMemory(),
     ): String = "collector: $collector at ${heapBytes / (1024 * 1024)} MiB of heap"
@@ -83,7 +83,7 @@ object GcProfile {
      * collector other than the measured one moves the **published ceiling**, which is a number
      * somebody sized a deployment by.
      */
-    fun beyondWhatWasMeasured(
+    public fun beyondWhatWasMeasured(
         collector: String = collector(),
         heapBytes: Long = Runtime.getRuntime().maxMemory(),
     ): String? =

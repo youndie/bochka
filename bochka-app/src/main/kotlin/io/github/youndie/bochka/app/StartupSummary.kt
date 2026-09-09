@@ -16,12 +16,12 @@ import io.github.youndie.bochka.core.RecordLog
  * store, and everything else — the JVM, the configuration, binding a socket — is the half that
  * does not.
  */
-object StartupSummary {
+public object StartupSummary {
     /**
      * @param totalMillis from the process starting to the socket being ready to answer
      * @param recoveryMillis the part of it spent opening the store and replaying its log
      */
-    fun of(
+    public fun of(
         totalMillis: Long,
         recoveryMillis: Long,
         recovery: RecordLog.Recovery,

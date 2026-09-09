@@ -21,9 +21,9 @@ import kotlin.io.path.createTempDirectory
  * into a start script are M11 — a configuration system invented now would be shaped by what the
  * live-client harness happens to need this week.
  */
-object Main {
+public object Main {
     @JvmStatic
-    fun main(args: Array<String>) {
+    public fun main(args: Array<String>) {
         val configuration =
             try {
                 Configuration.load()

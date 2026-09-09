@@ -13,7 +13,7 @@ import java.nio.channels.WritableByteChannel
  * feeds it to a parser that knows where things end. A `readFully` shape would need the session to
  * know the length of something before reading it, which is exactly what it is trying to find out.
  */
-interface Connection : Closeable {
+public interface Connection : Closeable {
     /**
      * The channel `FileChannel.transferTo` will be handed in M-59.
      *
@@ -21,12 +21,12 @@ interface Connection : Closeable {
      * **only** when the target is a `SocketChannelImpl`, and wrapping the socket in any decorator
      * turns the read path into a copy loop that returns identical bytes (research, §1.6.3).
      */
-    val transferTarget: WritableByteChannel
+    public val transferTarget: WritableByteChannel
 
     /** Reads whatever is available into [buffer]; returns -1 when the peer is done. */
-    suspend fun readSome(buffer: ByteBuffer): Int
+    public suspend fun readSome(buffer: ByteBuffer): Int
 
-    suspend fun writeFully(buffer: ByteBuffer)
+    public suspend fun writeFully(buffer: ByteBuffer)
 
     /**
      * Suspends until the socket will take more.
@@ -35,11 +35,11 @@ interface Connection : Closeable {
      * channel itself, so when it returns zero there is no buffer to retry with — only a socket to
      * wait on.
      */
-    suspend fun awaitWritable()
+    public suspend fun awaitWritable()
 }
 
 /** Non-blocking transport: readiness comes from [SelectorLoop], the coroutine suspends meanwhile. */
-class SelectorConnection(
+public class SelectorConnection(
     private val channel: SocketChannel,
     private val key: SelectionKey,
     private val loop: SelectorLoop,
@@ -63,7 +63,7 @@ class SelectorConnection(
         }
     }
 
-    override suspend fun awaitWritable() = loop.awaitWritable(key)
+    override suspend fun awaitWritable(): Unit = loop.awaitWritable(key)
 
     override fun close() {
         key.cancel()

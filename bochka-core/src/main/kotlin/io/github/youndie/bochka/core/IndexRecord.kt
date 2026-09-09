@@ -13,10 +13,10 @@ import java.nio.charset.StandardCharsets
  * to answer what a key containing that delimiter does. Length-prefixed fields do not have the
  * question.
  */
-sealed interface IndexRecord {
-    val bucket: String
+public sealed interface IndexRecord {
+    public val bucket: String
 
-    data class BucketCreated(
+    public data class BucketCreated(
         override val bucket: String,
         /**
          * When, so a listing can say. Zero for a bucket recorded before this field existed — the
@@ -46,12 +46,12 @@ sealed interface IndexRecord {
      * [BucketVersioning]: `PutBucketAcl` knows the new ACL and nothing else, so rewriting the
      * creation record would make it carry a creation time it did not witness.
      */
-    data class BucketAcl(
+    public data class BucketAcl(
         override val bucket: String,
         val acl: String,
     ) : IndexRecord
 
-    data class BucketDeleted(
+    public data class BucketDeleted(
         override val bucket: String,
     ) : IndexRecord
 
@@ -67,7 +67,7 @@ sealed interface IndexRecord {
      * the journal is replayed in order, and "removed" has to be an event, or the removal disappears
      * during recovery.
      */
-    data class BucketSubresource(
+    public data class BucketSubresource(
         override val bucket: String,
         val name: String,
         val document: ByteArray?,
@@ -87,7 +87,7 @@ sealed interface IndexRecord {
             (bucket.hashCode() * 31 + name.hashCode()) * 31 + (document?.contentHashCode() ?: 0)
     }
 
-    data class Put(
+    public data class Put(
         override val bucket: String,
         val key: ObjectKey,
         val fileId: String,
@@ -141,7 +141,7 @@ sealed interface IndexRecord {
     ) : IndexRecord
 
     /** Object lock on a bucket: the default rule, and by its presence that lock is on at all. */
-    data class BucketObjectLock(
+    public data class BucketObjectLock(
         override val bucket: String,
         val defaultMode: String?,
         val days: Int?,
@@ -149,7 +149,7 @@ sealed interface IndexRecord {
     ) : IndexRecord
 
     /** Every version of a key goes. Written by a bucket that has no versioning, and by old logs. */
-    data class Deleted(
+    public data class Deleted(
         override val bucket: String,
         val key: ObjectKey,
     ) : IndexRecord
@@ -161,7 +161,7 @@ sealed interface IndexRecord {
      * through the version id would need the version still present to find it, which is the one
      * thing replay cannot count on.
      */
-    data class DeletedVersion(
+    public data class DeletedVersion(
         override val bucket: String,
         val key: ObjectKey,
         val sequence: Long,
@@ -175,7 +175,7 @@ sealed interface IndexRecord {
      * learn whether a `PUT` makes a version would need an XML parser in the layer that has none,
      * and the state would live twice — once as bytes and once as behaviour.
      */
-    data class BucketVersioning(
+    public data class BucketVersioning(
         override val bucket: String,
         val state: ObjectStore.Versioning,
     ) : IndexRecord
@@ -186,7 +186,7 @@ sealed interface IndexRecord {
      * In the log rather than only in memory because such an upload runs for minutes: a client has
      * been told its parts were accepted, and a restart that forgot them would make that a lie.
      */
-    data class UploadStarted(
+    public data class UploadStarted(
         override val bucket: String,
         val key: ObjectKey,
         val uploadId: String,
@@ -234,7 +234,7 @@ sealed interface IndexRecord {
         val acl: String? = null,
     ) : IndexRecord
 
-    data class UploadPart(
+    public data class UploadPart(
         override val bucket: String,
         val uploadId: String,
         val number: Int,
@@ -256,17 +256,17 @@ sealed interface IndexRecord {
     ) : IndexRecord
 
     /** Completed or aborted — from the index's side those are the same event: the upload is over. */
-    data class UploadEnded(
+    public data class UploadEnded(
         override val bucket: String,
         val uploadId: String,
     ) : IndexRecord
 
     /** A record kind this build has no case for; see [ObjectStore.JournalFromNewerVersion]. */
-    class UnknownKind(
-        val kind: Int,
+    public class UnknownKind(
+        public val kind: Int,
     ) : IllegalArgumentException("unknown index record kind $kind")
 
-    companion object {
+    public companion object {
         private const val KIND_BUCKET_CREATED: Byte = 1
         private const val KIND_BUCKET_DELETED: Byte = 2
 
@@ -403,7 +403,7 @@ sealed interface IndexRecord {
          */
         private const val MAX_USER_METADATA = 256L
 
-        fun encode(record: IndexRecord): ByteArray {
+        public fun encode(record: IndexRecord): ByteArray {
             val out = ByteArrayOutputStream(128)
             when (record) {
                 is BucketCreated -> {
@@ -578,7 +578,7 @@ sealed interface IndexRecord {
             return out.toByteArray()
         }
 
-        fun decode(payload: ByteArray): IndexRecord {
+        public fun decode(payload: ByteArray): IndexRecord {
             val buffer = ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN)
             return when (val kind = buffer.get()) {
                 KIND_BUCKET_CREATED -> {

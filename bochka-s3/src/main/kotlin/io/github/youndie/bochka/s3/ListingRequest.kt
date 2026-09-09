@@ -23,17 +23,17 @@ import java.util.Base64
  * a running listing might still want, which is versioning by another name, and this store keeps one
  * version of a key on purpose. S3 itself promises no more than this.
  */
-class ListingRequest(
-    val prefix: ByteArray,
-    val delimiter: ByteArray?,
+public class ListingRequest(
+    public val prefix: ByteArray,
+    public val delimiter: ByteArray?,
     /** What the page is actually bounded by: the requested value, capped at [MAX_KEYS_LIMIT]. */
-    val maxKeys: Int,
+    public val maxKeys: Int,
     /** What goes back in `MaxKeys`, which is what the client asked for even when it was too much. */
-    val requestedMaxKeys: Int,
-    val startAfter: ByteArray?,
-    val encodeKeys: Boolean,
+    public val requestedMaxKeys: Int,
+    public val startAfter: ByteArray?,
+    public val encodeKeys: Boolean,
     /** The token exactly as it arrived, so it can be echoed back in `ContinuationToken`. */
-    val continuationToken: String?,
+    public val continuationToken: String?,
     /**
      * `""` when the client sent `continuation-token=` with nothing after it, `null` when it sent
      * no such parameter at all.
@@ -42,25 +42,25 @@ class ListingRequest(
      * for the first, and omits the element for the second. Folding the two together makes a page
      * that says nothing about where it started.
      */
-    val emptyContinuationToken: String?,
+    public val emptyContinuationToken: String?,
     /** `start-after` as it arrived; `StartAfter` is echoed even when a token overrode it. */
-    val startAfterParameter: ByteArray?,
-    val marker: ByteArray?,
+    public val startAfterParameter: ByteArray?,
+    public val marker: ByteArray?,
     /** `key-marker`, which is what `ListObjectVersions` calls the same position. */
-    val keyMarker: ByteArray?,
+    public val keyMarker: ByteArray?,
     /** `fetch-owner=true`: the owner is not in a listing unless it was asked for. */
-    val fetchOwner: Boolean,
+    public val fetchOwner: Boolean,
 ) {
-    class Malformed(
-        val error: S3Error,
+    public class Malformed(
+        public val error: S3Error,
         override val message: String,
     ) : RuntimeException(message)
 
-    companion object {
+    public companion object {
         /** AWS caps a page at 1000 whatever `max-keys` says, and so does every reference server. */
-        const val MAX_KEYS_LIMIT = 1000
+        public const val MAX_KEYS_LIMIT: Int = 1000
 
-        fun of(params: Map<String, ByteArray>): ListingRequest {
+        public fun of(params: Map<String, ByteArray>): ListingRequest {
             val requested =
                 params["max-keys"]?.let { raw ->
                     val text = String(raw).trim()
@@ -105,7 +105,8 @@ class ListingRequest(
          * not pretend to be: what it buys is that a client cannot build one by hand and then depend
          * on the shape of it.
          */
-        fun encodeToken(position: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(position)
+        public fun encodeToken(position: ByteArray): String =
+            Base64.getUrlEncoder().withoutPadding().encodeToString(position)
 
         private fun decodeToken(token: String): ByteArray =
             try {

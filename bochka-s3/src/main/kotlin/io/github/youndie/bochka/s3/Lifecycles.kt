@@ -18,13 +18,13 @@ import java.util.concurrent.ConcurrentHashMap
  * invalidation, nor a notification on write. Comparing by content would cost a walk of the
  * document, which is about what parsing costs.
  */
-class Lifecycles(
+public class Lifecycles(
     private val store: ObjectStore,
 ) {
     private val parsed = ConcurrentHashMap<String, Pair<ByteArray, Lifecycle>>()
 
     /** A bucket's rules, or `null` if it has none. */
-    fun of(bucket: String): Lifecycle? {
+    public fun of(bucket: String): Lifecycle? {
         val document = store.bucketSubresource(bucket, NAME) ?: return null
         parsed[bucket]?.let { (from, lifecycle) -> if (from === document) return lifecycle }
         // The document in the journal was rendered by this same server, so it has to parse. Has to
@@ -36,8 +36,8 @@ class Lifecycles(
         return lifecycle
     }
 
-    companion object {
+    public companion object {
         /** The setting's name in the store, which is also the subresource's name in a request. */
-        const val NAME: String = "lifecycle"
+        public const val NAME: String = "lifecycle"
     }
 }

@@ -24,38 +24,38 @@ import java.nio.charset.StandardCharsets
  * `TargetGrants` is refused by name for the reason grants are refused everywhere here: it names
  * users, and this server has access keys (§3.6).
  */
-object BucketLogging {
-    class Refused(
-        val error: S3Error,
+public object BucketLogging {
+    public class Refused(
+        public val error: S3Error,
         override val message: String,
     ) : RuntimeException(message)
 
     /** How the name of a delivered log object is built. Only the format is stored; nothing delivers yet. */
-    sealed interface KeyFormat {
-        data object Simple : KeyFormat
+    public sealed interface KeyFormat {
+        public data object Simple : KeyFormat
 
-        data class Partitioned(
+        public data class Partitioned(
             val dateSource: String,
         ) : KeyFormat
     }
 
-    data class Enabled(
+    public data class Enabled(
         val targetBucket: String,
         val targetPrefix: String,
         val keyFormat: KeyFormat = KeyFormat.Simple,
     )
 
     /** The two values `PartitionDateSource` may take; anything else is `InvalidArgument`. */
-    val DATE_SOURCES = setOf("DeliveryTime", "EventTime")
+    public val DATE_SOURCES: Set<String> = setOf("DeliveryTime", "EventTime")
 
     /** The name this configuration is stored under, and the query parameter it arrives on. */
-    const val NAME = "logging"
+    public const val NAME: String = "logging"
 
     /**
      * The document, or `null` when it carries no `LoggingEnabled` — which is the request to switch
      * logging off rather than a malformed one.
      */
-    fun decode(body: ByteArray): Enabled? {
+    public fun decode(body: ByteArray): Enabled? {
         var targetBucket: String? = null
         var targetPrefix: String? = null
         var keyFormat: KeyFormat = KeyFormat.Simple
@@ -146,7 +146,7 @@ object BucketLogging {
      * configuration and then compares the read-back with `{'SimplePrefix': {}}` added — the
      * default is a value, not an absence.
      */
-    fun encode(enabled: Enabled?): ByteArray =
+    public fun encode(enabled: Enabled?): ByteArray =
         XmlWriter(256).document("BucketLoggingStatus") {
             if (enabled == null) return@document
             element("LoggingEnabled") {

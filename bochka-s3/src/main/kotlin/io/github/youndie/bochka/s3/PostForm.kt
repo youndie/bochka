@@ -16,7 +16,7 @@ import io.github.youndie.bochka.s3.sigv4.S3Error
  * The `file` field is last by definition: S3 ignores everything after it and clients rely on that.
  * So the parsing runs in order and stops there.
  */
-object PostForm {
+public object PostForm {
     /**
      * The bound on the whole form, the file's contents aside.
      *
@@ -24,10 +24,10 @@ object PostForm {
      * larger than that is either a mistake or an attempt to make the server parse what it never
      * meant to read. Checked **before** parsing, because afterwards is too late.
      */
-    const val LIMIT: Int = 20 * 1024
+    public const val LIMIT: Int = 20 * 1024
 
-    class Malformed(
-        val error: S3Error,
+    public class Malformed(
+        public val error: S3Error,
         override val message: String,
     ) : RuntimeException(message)
 
@@ -38,18 +38,18 @@ object PostForm {
      * whole in memory (there is no other way to check the signature), and making a second copy of a
      * gigabyte for convenience would double the one place this server is forced to hold a body.
      */
-    data class Parsed(
+    public data class Parsed(
         val fields: Map<String, String>,
         val fileOffset: Int,
         val fileLength: Int,
         val fileName: String?,
     ) {
-        operator fun get(name: String): String? = fields[name.lowercase()]
+        public operator fun get(name: String): String? = fields[name.lowercase()]
     }
 
     /** `multipart/form-data; boundary=…` — the boundary from the header; without it there is
      *  nothing to parse. */
-    fun boundaryOf(contentType: String?): String? {
+    public fun boundaryOf(contentType: String?): String? {
         val value = contentType ?: return null
         if (!value.startsWith("multipart/form-data", ignoreCase = true)) return null
         val marker = value.indexOf("boundary=", ignoreCase = true)
@@ -61,7 +61,7 @@ object PostForm {
             .takeIf { it.isNotEmpty() }
     }
 
-    fun parse(
+    public fun parse(
         body: ByteArray,
         boundary: String,
     ): Parsed {

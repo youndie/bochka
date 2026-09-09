@@ -18,8 +18,8 @@ import java.nio.charset.StandardCharsets
  * rather than what the client said about it, and `Content-MD5` is a statement about one transfer,
  * not a property of the object.
  */
-object ObjectHeaders {
-    const val USER_PREFIX = "x-amz-meta-"
+public object ObjectHeaders {
+    public const val USER_PREFIX: String = "x-amz-meta-"
 
     /**
      * AWS caps user metadata at 2 KiB, "measured as the sum of the number of bytes in the UTF-8
@@ -27,15 +27,15 @@ object ObjectHeaders {
      * Enforced because the index holds it in memory for the life of the object: an unbounded map
      * per key turns the published object ceiling (Р1) into a number that depends on the client.
      */
-    const val MAX_USER_BYTES = 2 * 1024
+    public const val MAX_USER_BYTES: Int = 2 * 1024
 
-    data class Rejection(
+    public data class Rejection(
         val error: S3Error,
         val detail: String,
     )
 
     /** Collects what the head says about the object being written. */
-    fun read(headers: List<Pair<String, String>>): Metadata {
+    public fun read(headers: List<Pair<String, String>>): Metadata {
         fun one(name: String) = headers.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second?.trim()
 
         val user = LinkedHashMap<String, String>()
@@ -88,7 +88,7 @@ object ObjectHeaders {
     }
 
     /** A header that is present and cannot be read at all. Typed, so a caller can answer `400`. */
-    class Malformed(
+    public class Malformed(
         override val message: String,
     ) : RuntimeException(message)
 
@@ -99,7 +99,7 @@ object ObjectHeaders {
      * so both are decidable here — and the tag half was not checked at all until M-176, which is
      * how `x-amz-tagging` with eleven tags became an object with eleven tags.
      */
-    fun check(metadata: Metadata): Rejection? {
+    public fun check(metadata: Metadata): Rejection? {
         val bytes =
             metadata.user.entries.sumOf {
                 it.key.toByteArray(StandardCharsets.UTF_8).size + it.value.toByteArray(StandardCharsets.UTF_8).size
@@ -118,7 +118,7 @@ object ObjectHeaders {
      * encodes or decodes anything. A response that dropped it would hand back bytes the client
      * cannot interpret.
      */
-    fun write(metadata: Metadata): List<Pair<String, String>> =
+    public fun write(metadata: Metadata): List<Pair<String, String>> =
         buildList {
             metadata.contentType?.let { add("Content-Type" to it) }
             metadata.cacheControl?.let { add("Cache-Control" to it) }

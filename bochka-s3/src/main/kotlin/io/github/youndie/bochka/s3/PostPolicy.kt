@@ -19,30 +19,30 @@ import java.util.Base64
  * `["starts-with", "$field", "prefix"]`, or `["content-length-range", from, to]`. Dragging a
  * general-purpose JSON parser in here would mean a dependency for the sake of five written forms.
  */
-object PostPolicy {
-    class Refused(
-        val error: S3Error,
+public object PostPolicy {
+    public class Refused(
+        public val error: S3Error,
         override val message: String,
     ) : RuntimeException(message)
 
-    sealed interface Condition {
-        data class Exact(
+    public sealed interface Condition {
+        public data class Exact(
             val field: String,
             val value: String,
         ) : Condition
 
-        data class StartsWith(
+        public data class StartsWith(
             val field: String,
             val prefix: String,
         ) : Condition
 
-        data class LengthRange(
+        public data class LengthRange(
             val from: Long,
             val to: Long,
         ) : Condition
     }
 
-    data class Policy(
+    public data class Policy(
         val expiration: Instant,
         val conditions: List<Condition>,
     )
@@ -75,7 +75,7 @@ object PostPolicy {
             "x-ignore-",
         )
 
-    fun decode(encoded: String): Policy {
+    public fun decode(encoded: String): Policy {
         val json =
             try {
                 String(Base64.getDecoder().decode(encoded.trim()), Charsets.UTF_8)
@@ -111,7 +111,7 @@ object PostPolicy {
      *   POST upload travels in the URL, while a condition on it is in every policy. The caller
      *   supplies it, because only the route knows it.
      */
-    fun check(
+    public fun check(
         policy: Policy,
         fields: Map<String, String>,
         fileLength: Long,

@@ -38,13 +38,13 @@ import javax.crypto.spec.SecretKeySpec
  * bytes before it, so a `Range` read stays a `Range` read instead of becoming a read of everything
  * up to the range.
  */
-data class SseC(
+public data class SseC(
     val algorithm: String,
     val keyBytes: ByteArray,
     val keyMd5: String,
 ) {
     /** A cipher positioned at [offset] bytes into the object, which is what a `Range` needs. */
-    fun cipherAt(
+    public fun cipherAt(
         iv: ByteArray,
         offset: Long,
     ): Cipher {
@@ -90,7 +90,7 @@ data class SseC(
      * clients parse it as thirty-two hex characters. Nothing here relies on MD5's collision
      * resistance: what is needed is a function of the content that is unpredictable without the key.
      */
-    fun eTagMac(): Mac =
+    public fun eTagMac(): Mac =
         Mac.getInstance("HmacMD5").apply {
             init(SecretKeySpec(keyBytes, "HmacMD5"))
         }
@@ -105,18 +105,18 @@ data class SseC(
     override fun hashCode(): Int = keyMd5.hashCode()
 
     /** What went wrong with the three headers, in the shape the handler answers with. */
-    class Refused(
-        val error: S3Error,
-        val detail: String,
+    public class Refused(
+        public val error: S3Error,
+        public val detail: String,
     ) : RuntimeException(detail)
 
-    companion object {
-        const val ALGORITHM_HEADER = "x-amz-server-side-encryption-customer-algorithm"
-        const val KEY_HEADER = "x-amz-server-side-encryption-customer-key"
-        const val KEY_MD5_HEADER = "x-amz-server-side-encryption-customer-key-md5"
+    public companion object {
+        public const val ALGORITHM_HEADER: String = "x-amz-server-side-encryption-customer-algorithm"
+        public const val KEY_HEADER: String = "x-amz-server-side-encryption-customer-key"
+        public const val KEY_MD5_HEADER: String = "x-amz-server-side-encryption-customer-key-md5"
 
         /** The only algorithm S3 names for SSE-C, and the only one accepted here. */
-        const val AES256 = "AES256"
+        public const val AES256: String = "AES256"
 
         private const val BLOCK = 16
         private const val KEY_BYTES = 32
@@ -127,7 +127,7 @@ data class SseC(
          * Partial sets are refused rather than half-read: a request with an algorithm and no key is
          * not "unencrypted", it is a client that believes it is encrypting.
          */
-        fun of(header: (String) -> String?): SseC? {
+        public fun of(header: (String) -> String?): SseC? {
             val algorithm = header(ALGORITHM_HEADER)?.trim()
             val key = header(KEY_HEADER)?.trim()
             val md5 = header(KEY_MD5_HEADER)?.trim()
@@ -161,6 +161,6 @@ data class SseC(
         }
 
         /** A fresh initialisation vector. Not a secret, and never reused: one per stored file. */
-        fun newIv(): ByteArray = ByteArray(BLOCK).also { java.security.SecureRandom().nextBytes(it) }
+        public fun newIv(): ByteArray = ByteArray(BLOCK).also { java.security.SecureRandom().nextBytes(it) }
     }
 }

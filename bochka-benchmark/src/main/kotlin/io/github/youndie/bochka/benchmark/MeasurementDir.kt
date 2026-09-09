@@ -15,14 +15,14 @@ import java.nio.file.Path
  * The rule is a refusal rather than a warning on purpose: a warning in a log is indistinguishable
  * from no warning at all by the time the number reaches a README.
  */
-object MeasurementDir {
+public object MeasurementDir {
     private val VOLATILE = setOf("tmpfs", "ramfs", "devtmpfs")
 
-    class Refused(
+    public class Refused(
         override val message: String,
     ) : RuntimeException(message)
 
-    fun of(path: Path): Path {
+    public fun of(path: Path): Path {
         Files.createDirectories(path)
         val store = Files.getFileStore(path)
         if (store.type() in VOLATILE) {
@@ -35,7 +35,7 @@ object MeasurementDir {
     }
 
     /** Printed beside every number, because a number without its filesystem is about nothing. */
-    fun describe(path: Path): String {
+    public fun describe(path: Path): String {
         val store = Files.getFileStore(path)
         return "${store.name()} (${store.type()})"
     }
