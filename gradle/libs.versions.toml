@@ -3,7 +3,7 @@
 sborka = "0.4.0.43"
 # Checked against maven-metadata.xml of org.jetbrains.kotlin:kotlin-stdlib on 2026-08-17: 2.4.10 is
 # the last stable, 2.4.20-RC is a release candidate.
-kotlin = "2.4.10"
+kotlin = "2.4.20"
 # The Gradle wrapper is pinned to 9.7.0 and the toolchain to JDK 25. This pair is not a guess — it
 # is what the neighbouring project already builds on. Note that KGP declares a supported Gradle
 # range: raising the wrapper alone fails with a message about an unsupported Gradle version rather
