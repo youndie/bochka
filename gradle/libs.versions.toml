@@ -3,7 +3,7 @@
 # The compiler comes with them: the `wip` catalog this sborka release publishes carries `kotlin`,
 # so there is no Kotlin version in this file to drift from the rest of the portfolio. The note that
 # stood here — 2.4.10 being the last stable and 2.4.20 a release candidate — had outlived itself.
-sborka = "0.4.0.87"
+sborka = "0.4.0.90"
 # The Gradle wrapper is pinned to 9.7.0 and the toolchain to JDK 25. This pair is not a guess — it
 # is what the neighbouring project already builds on. Note that KGP declares a supported Gradle
 # range: raising the wrapper alone fails with a message about an unsupported Gradle version rather
