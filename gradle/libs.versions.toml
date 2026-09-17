@@ -1,9 +1,9 @@
 [versions]
 # The shared build conventions. One number: every sborka plugin below takes its version from here.
-sborka = "0.4.0.43"
-# Checked against maven-metadata.xml of org.jetbrains.kotlin:kotlin-stdlib on 2026-08-17: 2.4.10 is
-# the last stable, 2.4.20-RC is a release candidate.
-kotlin = "2.4.10"
+# The compiler comes with them: the `wip` catalog this sborka release publishes carries `kotlin`,
+# so there is no Kotlin version in this file to drift from the rest of the portfolio. The note that
+# stood here — 2.4.10 being the last stable and 2.4.20 a release candidate — had outlived itself.
+sborka = "0.4.0.87"
 # The Gradle wrapper is pinned to 9.7.0 and the toolchain to JDK 25. This pair is not a guess — it
 # is what the neighbouring project already builds on. Note that KGP declares a supported Gradle
 # range: raising the wrapper alone fails with a message about an unsupported Gradle version rather
@@ -72,8 +72,6 @@ sborkaJvm = { id = "io.github.youndie.sborka.jvm", version.ref = "sborka" }
 sborkaLint = { id = "io.github.youndie.sborka.lint", version.ref = "sborka" }
 sborkaPublish = { id = "io.github.youndie.sborka.publish", version.ref = "sborka" }
 sborkaMutation = { id = "io.github.youndie.sborka.mutation", version.ref = "sborka" }
-kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 # JMH needs its state classes open; Kotlin classes are final by default.
-kotlin-allopen = { id = "org.jetbrains.kotlin.plugin.allopen", version.ref = "kotlin" }
 ktlint = { id = "org.jlleitschuh.gradle.ktlint", version.ref = "ktlintGradle" }
 benchmark = { id = "org.jetbrains.kotlinx.benchmark", version.ref = "benchmark" }

@@ -27,12 +27,23 @@ readonly NAME=bochka-consume
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
 
-# The Kotlin version is read out of the version catalogue rather than written here. bochka emits
-# JVM 25 bytecode, and a consumer on an older Kotlin cannot target 25 — the build then fails with
-# "compileJava (25) and compileKotlin (24)", which reads as a bug in the consumer's project and is
-# really a version that cannot compile against this artefact at all. Hardcoding a version here
-# made this script assert something about a Kotlin nobody uses.
-readonly KOTLIN=${BOCHKA_KOTLIN:-$(sed -n 's/^kotlin *= *"\(.*\)"/\1/p' "$root/gradle/libs.versions.toml" | head -1)}
+# The Kotlin version is read rather than written here. bochka emits JVM 25 bytecode, and a consumer
+# on an older Kotlin cannot target 25 — the build then fails with "compileJava (25) and
+# compileKotlin (24)", which reads as a bug in the consumer's project and is really a version that
+# cannot compile against this artefact at all. Hardcoding a version here made this script assert
+# something about a Kotlin nobody uses.
+#
+# It is no longer in this repository's catalogue: the compiler comes from `wip`, the catalogue a
+# sborka release publishes. So the sborka pin names the release, and the version is read out of
+# that release — the same one the build resolved its plugins from. An empty answer is fatal rather
+# than silently becoming a consumer with no Kotlin version at all.
+readonly SBORKA=$(sed -n 's/^sborka *= *"\(.*\)"/\1/p' "$root/gradle/libs.versions.toml" | head -1)
+readonly SHARED_CATALOGUE="https://reposilite.kotlin.website/snapshots/io/github/youndie/sborka/catalog/$SBORKA/catalog-$SBORKA.toml"
+readonly KOTLIN=${BOCHKA_KOTLIN:-$(curl -fsSL "$SHARED_CATALOGUE" | sed -n 's/^kotlin *= *"\(.*\)"/\1/p' | head -1)}
+if [ -z "$KOTLIN" ]; then
+  echo "no kotlin version: could not read $SHARED_CATALOGUE (set BOCHKA_KOTLIN to override)" >&2
+  exit 1
+fi
 # Empty when the answer has to come from Central, so that the consumer has exactly one place to
 # find the artefact and a resolution failure means what it says.
 if [ "$REPO" = central ]; then
