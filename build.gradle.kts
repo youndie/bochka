@@ -1,6 +1,6 @@
 plugins {
-    alias(libs.plugins.kotlin.jvm) apply false
-    alias(libs.plugins.kotlin.allopen) apply false
+    alias(wip.plugins.kotlinJvm) apply false
+    alias(wip.plugins.kotlinAllOpen) apply false
     alias(libs.plugins.benchmark) apply false
     alias(libs.plugins.sborkaJvm) apply false
     alias(libs.plugins.sborkaLint) apply false
