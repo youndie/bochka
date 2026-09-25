@@ -50,7 +50,7 @@ jobs:
       # After the copy rather than before it: a description pushed for an image that failed to
       # arrive describes nothing.
       - name: The page people land on
-        uses: peter-evans/dockerhub-description@v4
+        uses: peter-evans/dockerhub-description@v5
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           # The description API does not take the pull token: it needs a password or a personal
