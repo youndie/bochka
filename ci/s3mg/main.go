@@ -64,7 +64,13 @@ func run(args []string) error {
 		if len(args) != 5 {
 			return fmt.Errorf("usage: s3mg <endpoint> get <bucket> <key> <file>")
 		}
-		return client.FGetObject(ctx, bucket, args[3], args[4], minio.GetObjectOptions{})
+		if err := client.FGetObject(ctx, bucket, args[3], args[4], minio.GetObjectOptions{}); err != nil {
+			return err
+		}
+		// FGetObject creates the file 0600, and this runs as root in a container: without this the
+		// harness on the host cannot read back what it downloaded, and a round trip that worked
+		// fails at `sha256sum` with "Permission denied".
+		return os.Chmod(args[4], 0o644)
 	case "ls":
 		for object := range client.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
 			if object.Err != nil {
