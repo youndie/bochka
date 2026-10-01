@@ -152,17 +152,20 @@ if have_image golang:1.25; then
     cat "$work/s3mg-build.log" >&2
   fi
 fi
-s3mg() { docker_run golang:1.25 /work/s3mg "$ENDPOINT" "$@"; }
+# Its own output goes to a file rather than to /dev/null: a failure here is a disagreement between
+# the server and a client it has to satisfy, and the client's error message is the evidence.
+s3mg() { docker_run golang:1.25 /work/s3mg "$ENDPOINT" "$@" >>"$work/s3mg.log" 2>&1; }
+s3mg_failed() { fail "$1"; sed 's/^/      /' "$work/s3mg.log" >&2; : >"$work/s3mg.log"; }
 
 if [ -n "$s3mg_ready" ]; then
-  if s3mg put $BUCKET minio-go.bin /work/payload.bin >/dev/null 2>&1 &&
-     s3mg get $BUCKET minio-go.bin /work/back-minio-go.bin >/dev/null 2>&1 &&
+  if s3mg put $BUCKET minio-go.bin /work/payload.bin &&
+     s3mg get $BUCKET minio-go.bin /work/back-minio-go.bin &&
      [ "$(sha256sum "$work/back-minio-go.bin" | cut -d' ' -f1)" = "$expected" ]; then
     pass "minio-go round trip"
   else
-    fail "minio-go round trip"
+    s3mg_failed "minio-go round trip"
   fi
-  s3mg ls $BUCKET >/dev/null 2>&1 && pass "minio-go listing" || fail "minio-go listing"
+  s3mg ls $BUCKET && pass "minio-go listing" || s3mg_failed "minio-go listing"
 elif have_image golang:1.25; then
   : # the build failure above is already counted
 else
@@ -233,12 +236,12 @@ fi
 
 if [ -n "$s3mg_ready" ] && [ -f "$work/large.bin" ]; then
   # 17 MB against minio-go's 16 MiB part size: two parts, split where aws-cli does not split.
-  if s3mg put $BUCKET large-minio-go.bin /work/large.bin >/dev/null 2>&1 &&
-     s3mg get $BUCKET large-minio-go.bin /work/large-minio-go-back.bin >/dev/null 2>&1 &&
+  if s3mg put $BUCKET large-minio-go.bin /work/large.bin &&
+     s3mg get $BUCKET large-minio-go.bin /work/large-minio-go-back.bin &&
      [ "$(sha256sum "$work/large-minio-go-back.bin" | cut -d' ' -f1)" = "$large_expected" ]; then
     pass "minio-go multipart round trip"
   else
-    fail "minio-go multipart round trip"
+    s3mg_failed "minio-go multipart round trip"
   fi
 else
   skip "minio-go multipart" "${s3mg_ready:+no large file}${s3mg_ready:-client unavailable}"
