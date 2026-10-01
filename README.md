@@ -1,6 +1,6 @@
 # bochka
 
-[![kotlin](https://img.shields.io/badge/Kotlin-2.4.10-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
+[![kotlin](https://img.shields.io/badge/Kotlin-2.4.20-blue?logo=kotlin&logoColor=white)](https://kotlinlang.org)
 [![jvm](https://img.shields.io/badge/JVM-25-blue?logoColor=white)](https://openjdk.org/projects/jdk/25/)
 [![status](https://img.shields.io/badge/status-early-orange)](BACKLOG.md)
 [![s3-tests](https://img.shields.io/badge/ceph%2Fs3--tests-519%2F744-green)](ci/s3-tests.sh)
@@ -236,8 +236,9 @@ Five levels, because each is blind to what the others catch:
 
 - **the gate** — `./gradlew check`, including the 34 official AWS SigV4 vectors run in the
   *verifying* direction, and a bytecode check that fails on a lock in the read path;
-- **other people's clients** — `aws-cli`, `boto3`, `mc` and `rclone` as containers over a real
-  socket ([`ci/live-clients.sh`](ci/live-clients.sh)), plus `io.minio:minio` inside the gate,
+- **other people's clients** — `aws-cli`, `boto3`, `rclone` and minio-go (the library `mc` is built
+  on, compiled from [`ci/s3mg`](ci/s3mg) since `mc`'s images stopped being pullable) as containers over
+  a real socket ([`ci/live-clients.sh`](ci/live-clients.sh)), plus `io.minio:minio` inside the gate,
   because the embedded mode's client is a library and cannot be a container;
 - **somebody else's suite** — [`ci/s3-tests.sh`](ci/s3-tests.sh), which can also be pointed at a
   deployment so the number includes whatever proxies it ([docs/s3-tests.md](docs/s3-tests.md));
