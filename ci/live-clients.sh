@@ -125,33 +125,48 @@ else
   skip "boto3" "image unavailable"
 fi
 
-# --- mc: MinIO's own client, a third independent implementation --------------------------------
+# --- minio-go: the library mc was built on, a third independent implementation -----------------
 #
-# quay.io, not Docker Hub, and pinned to an exact release rather than `latest`. MinIO withdrew both
-# `minio/mc` and `minio/minio` from Docker Hub — the repositories answer "object not found" now —
-# and quay.io is MinIO's own registry, serving the same images anonymously. s3kn hit this first and
-# its docker-compose.yml says the same thing; this is that fix, in the one place here that needs it.
+# This used to be `mc`, and it is not any more because there is nowhere left to pull it from. MinIO
+# withdrew `minio/mc` from Docker Hub first; the harness moved to quay.io, MinIO's own registry, and
+# by 2026-10 that started answering "Requires authentication" to an anonymous pull. A client the
+# harness can only have by somebody's leave is a client it does not have.
 #
-# The pin matters beyond reproducibility: `latest` on quay stopped moving on 2025-09-07, so
-# following it would neither bring updates nor stay honest about what was tested.
+# What mattered about mc was never the binary. It is the only client here that sends
+# STREAMING-AWS4-HMAC-SHA256-PAYLOAD — over plain HTTP its library signs a PUT body chunk by chunk
+# — and when the image went away that framing stopped being sent by anybody, and the coverage guard
+# at the bottom went red for it, twice. `ci/s3mg` is a small program on that same library, minio-go,
+# pinned by its go.sum and built here from source in the official Go image. Same signer, same part
+# sizes, and nothing to withdraw.
 #
-# THIS IS WHAT THE COVERAGE GUARD BELOW WAS FAILING ON, and the failure was worth having: the image
-# went away, mc was skipped, and STREAMING-AWS4-HMAC-SHA256-PAYLOAD stopped being sent by anybody —
-# mc is the only client here that sends it. The guard said so and went red for six days, which is
-# exactly what a guard against a vacuous run is for.
-if have_image quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z; then
-  mc() { docker_run quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z mc --config-dir /work/mc "$@"; }
-  mc alias set bochka "$ENDPOINT" $KEY $SECRET >/dev/null 2>&1
-  if mc cp /work/payload.bin bochka/$BUCKET/mc.bin >/dev/null 2>&1 &&
-     mc cp bochka/$BUCKET/mc.bin /work/back-mc.bin >/dev/null 2>&1 &&
-     [ "$(sha256sum "$work/back-mc.bin" | cut -d' ' -f1)" = "$expected" ]; then
-    pass "mc round trip"
+# A build that fails is a FAILURE, not a skip: the image being unavailable is somebody else's outage,
+# but code in this repository not compiling is this repository's.
+s3mg_ready=""
+if have_image golang:1.25; then
+  if docker run --rm -v "$root/ci/s3mg:/src:ro" -v "$work:/work" -w /src \
+       -e CGO_ENABLED=0 -e GOFLAGS=-mod=readonly -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
+       golang:1.25 go build -o /work/s3mg . >"$work/s3mg-build.log" 2>&1; then
+    s3mg_ready=yes
   else
-    fail "mc round trip"
+    fail "ci/s3mg does not build; log follows"
+    cat "$work/s3mg-build.log" >&2
   fi
-  mc ls bochka/$BUCKET >/dev/null 2>&1 && pass "mc ls" || fail "mc ls"
+fi
+s3mg() { docker_run golang:1.25 /work/s3mg "$ENDPOINT" "$@"; }
+
+if [ -n "$s3mg_ready" ]; then
+  if s3mg put $BUCKET minio-go.bin /work/payload.bin >/dev/null 2>&1 &&
+     s3mg get $BUCKET minio-go.bin /work/back-minio-go.bin >/dev/null 2>&1 &&
+     [ "$(sha256sum "$work/back-minio-go.bin" | cut -d' ' -f1)" = "$expected" ]; then
+    pass "minio-go round trip"
+  else
+    fail "minio-go round trip"
+  fi
+  s3mg ls $BUCKET >/dev/null 2>&1 && pass "minio-go listing" || fail "minio-go listing"
+elif have_image golang:1.25; then
+  : # the build failure above is already counted
 else
-  skip "mc" "image unavailable"
+  skip "minio-go" "image unavailable"
 fi
 
 # --- rclone: a fourth, and the one least like the others ---------------------------------------
@@ -181,7 +196,7 @@ fi
 # like it — the bytes come back identical, and the ETag carries the `-N` suffix that says the
 # object was assembled rather than written whole.
 #
-# `mc` is here as well because it splits differently, which is the point of having two: the part
+# minio-go is here as well because it splits differently, which is the point of having two: the part
 # boundaries a server sees are the client's choice, not the protocol's.
 if have_image amazon/aws-cli:latest; then
   aws_cli() { docker_run amazon/aws-cli:latest aws --endpoint-url "$ENDPOINT" "$@"; }
@@ -216,21 +231,17 @@ else
   skip "multipart" "image unavailable"
 fi
 
-if have_image quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z; then
-  # The config directory is on the mounted volume, not inside the container: every `mc` here is a
-  # fresh container, so an alias written to the container's own /tmp is gone by the next call —
-  # and what that looks like is not an error but a client that quietly does nothing.
-  mc() { docker_run quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z mc --config-dir /work/mc "$@"; }
-  mc alias set bochka "$ENDPOINT" $KEY $SECRET >/dev/null 2>&1
-  if mc cp /work/large.bin bochka/$BUCKET/large-mc.bin >/dev/null 2>&1 &&
-     mc cp bochka/$BUCKET/large-mc.bin /work/large-mc-back.bin >/dev/null 2>&1 &&
-     [ "$(sha256sum "$work/large-mc-back.bin" | cut -d' ' -f1)" = "$large_expected" ]; then
-    pass "mc multipart round trip"
+if [ -n "$s3mg_ready" ] && [ -f "$work/large.bin" ]; then
+  # 17 MB against minio-go's 16 MiB part size: two parts, split where aws-cli does not split.
+  if s3mg put $BUCKET large-minio-go.bin /work/large.bin >/dev/null 2>&1 &&
+     s3mg get $BUCKET large-minio-go.bin /work/large-minio-go-back.bin >/dev/null 2>&1 &&
+     [ "$(sha256sum "$work/large-minio-go-back.bin" | cut -d' ' -f1)" = "$large_expected" ]; then
+    pass "minio-go multipart round trip"
   else
-    fail "mc multipart round trip"
+    fail "minio-go multipart round trip"
   fi
 else
-  skip "mc multipart" "image unavailable"
+  skip "minio-go multipart" "${s3mg_ready:+no large file}${s3mg_ready:-client unavailable}"
 fi
 
 # --- everything at once ------------------------------------------------------------------------
