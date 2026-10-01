@@ -3,11 +3,11 @@
 # The compiler comes with them: the `wip` catalog this sborka release publishes carries `kotlin`,
 # so there is no Kotlin version in this file to drift from the rest of the portfolio. The note that
 # stood here — 2.4.10 being the last stable and 2.4.20 a release candidate — had outlived itself.
-sborka = "0.4.0.87"
-# The Gradle wrapper is pinned to 9.7.0 and the toolchain to JDK 25. This pair is not a guess — it
-# is what the neighbouring project already builds on. Note that KGP declares a supported Gradle
-# range: raising the wrapper alone fails with a message about an unsupported Gradle version rather
-# than about Kotlin.
+sborka = "0.4.0.111"
+# The Gradle wrapper is pinned to 9.7.1 and the toolchain to JDK 25. This pair is not a guess — it
+# is the stack the whole portfolio builds on, and 9.8.0 is held back on purpose until Kotlin 2.5.20
+# (youndie/sborka#113). Note that KGP declares a supported Gradle range: raising the wrapper alone
+# fails with a message about an unsupported Gradle version rather than about Kotlin.
 #
 # The CLI and the Gradle plugin are versioned independently: the plugin only launches the CLI of the
 # requested version, so the formatter is pinned here rather than left to the plugin default. Left to
