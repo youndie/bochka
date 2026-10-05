@@ -28,7 +28,7 @@ jobs:
       # A JDK-free runner therefore cannot configure this build at all, never mind compile it. The
       # toolchain is still declared and still what compiles the code; what is gone is the proof that
       # nothing else was needed.
-      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      - uses: youndie/sborka/.github/actions/setup-kotlin@v0.5.0.130
       - run: ./gradlew check
 
   live-clients:
@@ -42,7 +42,7 @@ jobs:
       #
       # The shared action installs 21 and 25 and leaves 25 as the default, which is what this job
       # needs; the version lives in sborka now rather than in three copies here.
-      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      - uses: youndie/sborka/.github/actions/setup-kotlin@v0.5.0.130
       # The metric this project is measured by is other people's clients, not its own tests (Р6).
       - run: ./ci/live-clients.sh
 
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      - uses: youndie/sborka/.github/actions/setup-kotlin@v0.5.0.130
       # A volume that ends, which no ordinary `check` can produce: the stand needs `mount`, and a
       # gate that runs as root to get one would be paying more than the check is worth (M-264).
       #
@@ -64,7 +64,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      - uses: youndie/sborka/.github/actions/setup-kotlin@v0.5.0.130
       # The pair of parsers a request passes on the way in, asked to disagree (M-281). It needs
       # nginx in front, which the gate cannot have, and it uses the configuration from `deploy/`
       # rather than one written for the test - the point is the pair somebody runs.
@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      - uses: youndie/sborka/.github/actions/setup-kotlin@v0.5.0.130
       # The systems that build a table on top of an object store, which ask for promises no
       # round-trip test reaches: a commit decided by a conditional write, a snapshot found by
       # walking a listing, somebody else's file layout read by range (M41). The harness refuses a
@@ -85,7 +85,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      - uses: youndie/sborka/.github/actions/setup-kotlin@v0.5.0.130
       # The server going down underneath a client that is in the middle of a sync (M-294). Every
       # other harness stops the server when it has finished asking; this one stops it while the
       # question is still being asked, twice - the stop an orchestrator sends and the stop that
@@ -96,7 +96,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      - uses: youndie/sborka/.github/actions/setup-kotlin@v0.5.0.130
       # No `|| true`, and that was a real bug rather than a tidy-up. The script already exits zero
       # for **any** score — a threshold on somebody else's suite would be a threshold on their
       # release schedule — and non-zero only when the run itself is broken: nothing ran, the build
@@ -108,7 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: youndie/sborka/.github/actions/setup-kotlin@main
+      - uses: youndie/sborka/.github/actions/setup-kotlin@v0.5.0.130
       # A JDK is installed here for the same reason as in the gate: Gradle itself has to run on 21+
       # to resolve the settings plugin. It does not weaken what this job tests — the image's runtime
       # is the one inside the image, and the smoke test runs it in a container that has no access to
