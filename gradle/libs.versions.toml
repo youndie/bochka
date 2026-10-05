@@ -3,7 +3,7 @@
 # The compiler comes with them: the `wip` catalog this sborka release publishes carries `kotlin`,
 # so there is no Kotlin version in this file to drift from the rest of the portfolio. The note that
 # stood here — 2.4.10 being the last stable and 2.4.20 a release candidate — had outlived itself.
-sborka = "0.4.0.111"
+sborka = "0.5.0.133"
 # The Gradle wrapper and the JDK 25 toolchain are the portfolio's, not this repository's choice: the
 # Gradle version is decided by `gradle` in sborka's published catalog, and the wrapper here follows it
 # (youndie/sborka#129).
