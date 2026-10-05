@@ -24,7 +24,7 @@ plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
     // The repositories with their content filters, the shared `wip` catalog, and the check that this
     // repository's `.editorconfig` is the one the rest of them use.
-    id("io.github.youndie.sborka.settings") version "0.4.0.111"
+    id("io.github.youndie.sborka.settings") version "0.5.0.133"
 }
 
 rootProject.name = "bochka"
