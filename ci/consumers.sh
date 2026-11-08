@@ -18,6 +18,13 @@ readonly KEY=bochkaadmin
 readonly SECRET=bochkasecret
 readonly PORT=${BOCHKA_PORT:-19200}
 readonly ENDPOINT="http://127.0.0.1:${PORT}"
+# DuckDB is pinned, and the pin is what Renovate moves - the regex manager in `renovate.json` reads
+# the comment above the line. Unpinned, whatever pip resolved on the day was the client under test:
+# 2.0.0 came out on 21.10, changed how its uploader cuts a file into parts, and the "duckdb parts"
+# section went red on pull requests that had nothing to do with it (see M-297 below). A bump now
+# arrives as its own pull request, and a red `consumers` on it names the client that moved.
+# renovate: datasource=pypi depName=duckdb
+readonly DUCKDB_VERSION=2.0.0
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
@@ -360,7 +367,7 @@ DUCKDB
   ranged_before=$(grep -ac -- '-> 206' "$log")
   closed_before=$(ss -tan state time-wait "( sport = :$PORT )" 2>/dev/null | tail -n +2 | wc -l)
   docker run --rm --network host -v "$work:/w" python:3.12-slim \
-    sh -c "pip install -q duckdb pyarrow boto3 && python /w/duck.py" >"$work/duck.out" 2>&1
+    sh -c "pip install -q duckdb==$DUCKDB_VERSION pyarrow boto3 && python /w/duck.py" >"$work/duck.out" 2>&1
   sleep 1
   if grep -q '^ok ' "$work/duck.out"; then
     listings=$(( $(grep -ac 'list-type=2' "$log") - listings_before ))
@@ -465,7 +472,7 @@ DUCKWRITE
   listings_before=$(grep -ac 'list-type=2' "$log")
   writes_before=$(grep -ac 'handled PUT' "$log")
   docker run --rm --network host -v "$work:/w" python:3.12-slim \
-    sh -c "pip install -q duckdb boto3 && python /w/duckwrite.py" >"$work/duckwrite.out" 2>&1
+    sh -c "pip install -q duckdb==$DUCKDB_VERSION boto3 && python /w/duckwrite.py" >"$work/duckwrite.out" 2>&1
   if grep -q '^ok ' "$work/duckwrite.out"; then
     listings=$(( $(grep -ac 'list-type=2' "$log") - listings_before ))
     writes=$(( $(grep -ac 'handled PUT' "$log") - writes_before ))
@@ -493,13 +500,29 @@ fi
 # back one object.
 #
 # Measured before this was written, because the task assumed the sections above already reached it
-# and they do not: a `COPY` of 1.6 MB goes as one `PUT` with a plain `ETag`. DuckDB splits by part
-# size, which it derives as `s3_uploader_max_filesize / 10000`, so the threshold is about 80 MB as
-# shipped. Writing 80 MB in CI to prove a code path is not worth it; lowering the ceiling to 50 GB
-# makes the part 5 MiB, and about 23 MB of uncompressed parquet then arrives in five.
+# and they do not: a `COPY` of 1.6 MB goes as one `PUT` with a plain `ETag`. What decides the parts
+# is the client's version, and it changed under this section once already:
 #
-# `COMPRESSION uncompressed` is not decoration either: with the default the same rows compress to
-# under a part and the section silently becomes a single `PUT` - green, and about nothing.
+#   * DuckDB 1.x cut parts itself at `s3_uploader_max_filesize / 10000`: 8 MB as shipped, 5 MiB
+#     with the ceiling lowered to 50 GB, which is what this section used to do - about 23 MB of
+#     parquet arrived as five parts of 5.25 MiB, from some 25 smaller writes;
+#   * DuckDB 2.0 hands every write that is bigger than a part straight to the uploader as one part,
+#     and its new async write queue coalesces the writer's buffers, for a remote file system, into
+#     writes of 8 to 16 MiB with a smaller last one (`REMOTE_COALESCE_THRESHOLD` and
+#     `DRAIN_TASK_BYTE_BUDGET` in v2.0.0). So the parts are the queue's writes - 8.4 to 13.2 MiB
+#     measured, and the ceiling no longer matters - and where they fall depends on how far the
+#     drain lagged. The same 23 MB came out as 3 parts on
+#     most runs and as 2 on some (one 9.16 + 4.05 MiB coalesced), and the assertion below failed on
+#     unrelated pull requests from 21.10, when 2.0.0 was released and pip picked it up.
+#
+# Hence the size: with no part over 16 MiB, ~67 MiB cannot arrive in fewer than five parts, and
+# usually arrives in eight - far enough from the `>= 3` below that timing cannot reach it. The
+# alternative, `SET async_threads=0`, makes the parts deterministic by making the writes
+# synchronous, and the writes that are no longer concurrent are the subject of this section.
+#
+# `COMPRESSION uncompressed` is not decoration either: the size above is the uncompressed size, and
+# with the default codec the same rows are smaller by an amount nobody here has measured - which is
+# a margin this section would be quietly giving away.
 if have_image python:3.12-slim; then
   cat > "$work/duckparts.py" <<'DUCKPARTS'
 import boto3
@@ -507,7 +530,7 @@ import duckdb
 
 ENDPOINT = "http://127.0.0.1:19200"
 BUCKET = "consumers"
-ROWS = 300000
+ROWS = 900000
 
 client = boto3.client(
     "s3",
@@ -530,8 +553,6 @@ for setting in (
     "SET s3_access_key_id='bochkaadmin'",
     "SET s3_secret_access_key='bochkasecret'",
     "SET s3_region='us-east-1'",
-    # The part size, said the only way DuckDB lets it be said.
-    "SET s3_uploader_max_filesize='50GB'",
 ):
     connection.execute(setting)
 
@@ -563,7 +584,7 @@ DUCKPARTS
   parts_before=$(grep -ac 'partNumber=' "$log")
   completes_before=$(grep -acE 'POST [^ ]*uploadId=' "$log")
   docker run --rm --network host -v "$work:/w" python:3.12-slim \
-    sh -c "pip install -q duckdb boto3 && python /w/duckparts.py" >"$work/duckparts.out" 2>&1
+    sh -c "pip install -q duckdb==$DUCKDB_VERSION boto3 && python /w/duckparts.py" >"$work/duckparts.out" 2>&1
   if grep -q '^ok ' "$work/duckparts.out"; then
     creates=$(( $(grep -ac 'uploads' "$log") - creates_before ))
     uploaded=$(( $(grep -ac 'partNumber=' "$log") - parts_before ))
