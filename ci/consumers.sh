@@ -515,9 +515,9 @@ fi
 #     most runs and as 2 on some (one 9.16 + 4.05 MiB coalesced), and the assertion below failed on
 #     unrelated pull requests from 21.10, when 2.0.0 was released and pip picked it up.
 #
-# Hence the size: with no part over 16 MiB, ~67 MiB cannot arrive in fewer than five parts, and
-# usually arrives in eight - far enough from the `>= 3` below that timing cannot reach it. The
-# alternative, `SET async_threads=0`, makes the parts deterministic by making the writes
+# Hence the size: with no part over 16 MiB, ~67 MiB cannot arrive in fewer than five parts (the
+# first CI run of this shape got six) - far enough from the `>= 3` below that timing cannot reach
+# it. The alternative, `SET async_threads=0`, makes the parts deterministic by making the writes
 # synchronous, and the writes that are no longer concurrent are the subject of this section.
 #
 # `COMPRESSION uncompressed` is not decoration either: the size above is the uncompressed size, and
