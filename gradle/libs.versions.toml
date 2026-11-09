@@ -3,7 +3,7 @@
 # The compiler comes with them: the `wip` catalog this sborka release publishes carries `kotlin`,
 # so there is no Kotlin version in this file to drift from the rest of the portfolio. The note that
 # stood here — 2.4.10 being the last stable and 2.4.20 a release candidate — had outlived itself.
-sborka = "0.4.0.111"
+sborka = "0.5.0.135"
 # The Gradle wrapper and the JDK 25 toolchain are the portfolio's, not this repository's choice: the
 # Gradle version is decided by `gradle` in sborka's published catalog, and the wrapper here follows it
 # (youndie/sborka#129).
@@ -32,13 +32,13 @@ junit = "6.1.3"
 # Coverage-guided fuzzing of the parsers that read unauthenticated bytes (M38). Checked against
 # maven-metadata.xml on 2026-08-26: 0.30.0 is the last version, released 2026-02-24.
 jazzer = "0.30.0"
-asm = "9.10.1"
+asm = "9.11.1"
 # The client the embedded niche is actually occupied with on the JVM, and a test dependency of
 # `bochka-embedded` only (M-230). It is here as an **oracle**, not as a reference: the MinIO
 # *server* rejects keys S3 accepts and is explicitly not the standard here (project rule), while
 # its *client* is somebody else's signer and framer, which is the whole point. Checked against
 # maven-metadata.xml on 2026-08-23: 9.0.3 is the last version.
-minio = "9.0.3"
+minio = "9.0.4"
 testcontainers = "2.0.5"
 lincheck = "2.39"
 # Mutation testing. **Run as a CLI rather than through the Gradle plugin**, and that is not a
@@ -46,7 +46,7 @@ lincheck = "2.39"
 # for Gradle 8, while the engine itself is alive and shipped 2026-08-04 — both checked against
 # maven-metadata.xml. Going through the plugin would mean fixing somebody else's Gradle 9
 # compatibility to obtain a run that already exists as a standalone program.
-pitest = "1.30.0"
+pitest = "1.30.2"
 # A separate artefact, because pitest knows no test engine by itself: without it a run finds zero
 # tests and reads as code that nothing can kill.
 pitestJunit5 = "1.2.3"
