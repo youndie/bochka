@@ -24,7 +24,7 @@ readonly ENDPOINT="http://127.0.0.1:${PORT}"
 # section went red on pull requests that had nothing to do with it (see M-297 below). A bump now
 # arrives as its own pull request, and a red `consumers` on it names the client that moved.
 # renovate: datasource=pypi depName=duckdb
-readonly DUCKDB_VERSION=2.0.0
+readonly DUCKDB_VERSION=2.0.1
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=$(mktemp -d)
