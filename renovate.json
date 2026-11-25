@@ -2,10 +2,31 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "description": [
     "The portfolio's Renovate configuration lives in sborka and is extended by name. What was here before was `config:recommended` and nothing else, and #157 and #158 are what that costs: one sborka release, 0.2.0.30, as two pull requests. The version is named in settings.gradle.kts and again in the catalog, and only a grouping rule makes them one change.",
-    "Automerge is a separate preset (`github>youndie/sborka:automerge-harness`) and is not extended here: nothing merges itself in this repository today. Its precondition holds — check.yml runs on `pull_request` — so it can be added as its own change, and this is the repository where that is worth thinking about: publish.yml runs on push to main, so what merges here reaches a release path quickly."
+    "sborka's `automerge-harness` is extended second, so `github-actions` and `gradle-wrapper` updates merge themselves on green — with the exception below. The precondition holds, re-checked 2026-11-25: `check.yml` runs on every `pull_request`. This file used to say `publish.yml` runs on every push to `main`; it now runs on a tag, and `dockerhub.yaml` only by hand, and the docker actions they use are used by no pull request — those wait for a person."
   ],
   "extends": [
-    "github>youndie/sborka"
+    "github>youndie/sborka",
+    "github>youndie/sborka:automerge-harness"
+  ],
+  "packageRules": [
+    {
+      "description": [
+        "The actions that only `publish.yml` (a tag) and `dockerhub.yaml` (by hand) uses wait for a person: that workflow runs on a tag (or by hand), no pull request runs it, so a green pull request says nothing about them and a broken one would surface at the next release, not on the merge. Every other action and the wrapper merge themselves through `automerge-harness`, because the pull-request workflows ran exactly those versions.",
+        "AFTER the presets, because the last match wins, and in a group of its own: Renovate merges a grouped pull request only when every update in it may merge, so left in `ci actions` these would hold every other action with them. The list is what that workflow uses and no pull-request workflow does (re-checked 2026-11-25); an action added to that workflow later is not on it until somebody adds it here."
+      ],
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchDepNames": [
+        "docker/login-action",
+        "docker/setup-buildx-action",
+        "docker/setup-qemu-action",
+        "docker/build-push-action",
+        "peter-evans/dockerhub-description"
+      ],
+      "groupName": "ci release actions",
+      "automerge": false
+    }
   ],
   "customManagers": [
     {
