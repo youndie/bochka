@@ -142,10 +142,10 @@ fi
 # A build that fails is a FAILURE, not a skip: the image being unavailable is somebody else's outage,
 # but code in this repository not compiling is this repository's.
 s3mg_ready=""
-if have_image golang:1.25; then
+if have_image golang:1.26; then
   if docker run --rm -v "$root/ci/s3mg:/src:ro" -v "$work:/work" -w /src \
        -e CGO_ENABLED=0 -e GOFLAGS=-mod=readonly -e GOCACHE=/tmp/gocache -e GOMODCACHE=/tmp/gomod \
-       golang:1.25 go build -o /work/s3mg . >"$work/s3mg-build.log" 2>&1; then
+       golang:1.26 go build -o /work/s3mg . >"$work/s3mg-build.log" 2>&1; then
     s3mg_ready=yes
   else
     fail "ci/s3mg does not build; log follows"
@@ -154,7 +154,7 @@ if have_image golang:1.25; then
 fi
 # Its own output goes to a file rather than to /dev/null: a failure here is a disagreement between
 # the server and a client it has to satisfy, and the client's error message is the evidence.
-s3mg() { docker_run golang:1.25 /work/s3mg "$ENDPOINT" "$@" >>"$work/s3mg.log" 2>&1; }
+s3mg() { docker_run golang:1.26 /work/s3mg "$ENDPOINT" "$@" >>"$work/s3mg.log" 2>&1; }
 s3mg_failed() { fail "$1"; sed 's/^/      /' "$work/s3mg.log" >&2; : >"$work/s3mg.log"; }
 
 if [ -n "$s3mg_ready" ]; then
@@ -166,7 +166,7 @@ if [ -n "$s3mg_ready" ]; then
     s3mg_failed "minio-go round trip"
   fi
   s3mg ls $BUCKET && pass "minio-go listing" || s3mg_failed "minio-go listing"
-elif have_image golang:1.25; then
+elif have_image golang:1.26; then
   : # the build failure above is already counted
 else
   skip "minio-go" "image unavailable"
